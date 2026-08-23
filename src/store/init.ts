@@ -116,6 +116,15 @@ export async function ensureStore(
 				// `init.defaultBranch` gave it. Two hosts on different branches would
 				// each "first-push" their own and never see each other's memory.
 				await ensureBranch(storePath);
+				// A store this host *cloned* is as much Muninn's as one it created,
+				// but arrives with no identity in its config. Muninn's own commits
+				// carry one in their environment; this is for the person who runs
+				// `git commit` in the store by hand on a machine with no global
+				// identity. One file read, no subprocess, when it is already set.
+				if (identity && !hasConfiguredIdentity(storePath)) {
+					await git(storePath, { kind: "config", key: "user.name", value: identity.name });
+					await git(storePath, { kind: "config", key: "user.email", value: identity.email });
+				}
 			}
 		}
 
@@ -209,4 +218,13 @@ async function ensureBranch(storePath: string): Promise<void> {
 	}
 	if (branch === "" || branch === STORE_BRANCH) return;
 	await git(storePath, { kind: "branch-rename", to: STORE_BRANCH });
+}
+
+/** Whether the repository's own config names a committer. */
+function hasConfiguredIdentity(storePath: string): boolean {
+	try {
+		return /^\[user\]/m.test(readFileSync(join(storePath, ".git", "config"), "utf-8"));
+	} catch {
+		return false;
+	}
 }

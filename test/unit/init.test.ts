@@ -276,3 +276,19 @@ describe("the store branch", () => {
 		expect(stdout.trim()).toBe(`muninn ${host.name} <muninn@${host.id}>`);
 	});
 });
+
+describe("a cloned store", () => {
+	it("gets the muninn identity in its config, so hand commits work on a bare machine", async () => {
+		// The host that clones a store never ran `init` on it. Muninn's own
+		// commits carry an identity in their environment regardless; this is
+		// for `git commit` typed by a person on a machine with no global config.
+		await ensureStore(store, { host });
+		const clone = join(root, "clone");
+		await execFileAsync("git", ["clone", "--quiet", store, clone]);
+		expect(readFileSync(join(clone, ".git", "config"), "utf-8")).not.toMatch(/^\[user\]/m);
+
+		await ensureStore(clone, { host });
+		const { stdout } = await execFileAsync("git", ["config", "user.email"], { cwd: clone });
+		expect(stdout.trim()).toBe(`muninn@${host.id}`);
+	});
+});
