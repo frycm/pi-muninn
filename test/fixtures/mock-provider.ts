@@ -9,18 +9,56 @@
  */
 import { createServer, type Server } from "node:http";
 
+export interface MockRequest {
+	messages: Array<{ role: string; content: unknown }>;
+	/** True when this is Muninn asking for an outcome entry rather than pi running the task. */
+	isOutcomeCall: boolean;
+	raw: string;
+}
+
+/** What the scripted model does next: say something, or call a tool. */
+export type MockReply = string | { toolCall: { name: string; arguments: Record<string, unknown> } };
+
+export type MockScript = (request: MockRequest, callIndex: number) => MockReply;
+
 export interface MockProvider {
 	url: string;
 	port: number;
 	/** Prompts pi has sent, in order. */
-	requests: Array<{ messages: Array<{ role: string; content: unknown }> }>;
+	requests: MockRequest[];
 	close(): Promise<void>;
 }
 
-/** Serve `replies` in order; the last is repeated if pi asks again. */
-export async function startMockProvider(replies: string[], fixedPort = 0): Promise<MockProvider> {
-	const requests: MockProvider["requests"] = [];
+/** Recognises Muninn's outcome prompt, so a script can answer it differently. */
+const OUTCOME_MARKER = "journal entry recording the outcome";
+
+export interface MockOptions {
+	/** Fixed port, for driving pi from a shell. Default: an ephemeral one. */
+	port?: number;
+	/**
+	 * Prompt tokens to report.
+	 *
+	 * pi decides when to compact from the usage a provider reports, so a test
+	 * that wants compaction has to claim a nearly full context — a mock that
+	 * always reports a handful of tokens can never trigger it.
+	 */
+	promptTokens?: number;
+}
+
+/**
+ * Serve `script` — either replies in order (the last repeating), or a function
+ * that decides from the request.
+ */
+export async function startMockProvider(
+	script: string[] | MockScript,
+	options: MockOptions = {},
+): Promise<MockProvider> {
+	const fixedPort = options.port ?? 0;
+	const promptTokens = options.promptTokens ?? 10;
+	const requests: MockRequest[] = [];
 	let call = 0;
+	const decide: MockScript =
+		typeof script === "function" ? script : (_request, index) => script[Math.min(index, script.length - 1)] ?? "";
 
 	const server: Server = createServer((req, res) => {
 		let body = "";
@@ -32,13 +70,20 @@ export async function startMockProvider(replies: string[], fixedPort = 0): Promi
 				res.writeHead(404).end();
 				return;
 			}
+			let parsed: MockRequest;
 			try {
-				requests.push(JSON.parse(body));
+				const json = JSON.parse(body) as { messages?: MockRequest["messages"] };
+				parsed = {
+					messages: json.messages ?? [],
+					isOutcomeCall: body.includes(OUTCOME_MARKER),
+					raw: body,
+				};
 			} catch {
-				requests.push({ messages: [] });
+				parsed = { messages: [], isOutcomeCall: false, raw: body };
 			}
+			requests.push(parsed);
 
-			const reply = replies[Math.min(call, replies.length - 1)] ?? "";
+			const reply = decide(parsed, call);
 			call++;
 
 			res.writeHead(200, {
@@ -56,8 +101,24 @@ export async function startMockProvider(replies: string[], fixedPort = 0): Promi
 				})}\n\n`;
 
 			res.write(chunk({ role: "assistant", content: "" }));
-			res.write(chunk({ content: reply }));
-			res.write(chunk({}, "stop"));
+			if (typeof reply === "string") {
+				res.write(chunk({ content: reply }));
+				res.write(chunk({}, "stop"));
+			} else {
+				res.write(
+					chunk({
+						tool_calls: [
+							{
+								index: 0,
+								id: `call_${call}`,
+								type: "function",
+								function: { name: reply.toolCall.name, arguments: JSON.stringify(reply.toolCall.arguments) },
+							},
+						],
+					}),
+				);
+				res.write(chunk({}, "tool_calls"));
+			}
 			res.write(
 				`data: ${JSON.stringify({
 					id: "chatcmpl-mock",
@@ -65,7 +126,7 @@ export async function startMockProvider(replies: string[], fixedPort = 0): Promi
 					created: 0,
 					model: "mock",
 					choices: [],
-					usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+					usage: { prompt_tokens: promptTokens, completion_tokens: 5, total_tokens: promptTokens + 5 },
 				})}\n\n`,
 			);
 			res.write("data: [DONE]\n\n");

@@ -73,8 +73,21 @@ describe("formatStatus", () => {
 		expect(status({ scopes: decision })).toContain("(not created yet)");
 	});
 
-	it("is honest about what is not implemented yet", () => {
-		expect(status()).toContain("outcome entries land in step 6");
+	it("surfaces runs pi never sent an agent_end for", () => {
+		// The measurement that decides whether a turn-summary payload is worth
+		// asking pi for.
+		const report = formatStatus({
+			muninnVersion: "0.1.0",
+			piVersion: "0.84.2",
+			runtime: "node v22.19.0",
+			session: session(),
+			runsWithoutAgentEnd: 2,
+		});
+		expect(report).toContain("2 run(s) settled without pi's agent_end payload");
+	});
+
+	it("says nothing about agent_end when every run had one", () => {
+		expect(status()).not.toContain("agent_end");
 	});
 
 	it("surfaces a failed journal write rather than losing it silently", () => {

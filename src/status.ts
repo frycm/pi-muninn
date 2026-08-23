@@ -18,6 +18,8 @@ export interface StatusInput {
 	journal?: ScopeJournalStats[];
 	/** Journal writes that failed this session. Silence here would be the worst outcome. */
 	captureFailures?: string[];
+	/** Runs assembled without pi's authoritative `agent_end` payload. */
+	runsWithoutAgentEnd?: number;
 }
 
 function describeSource(source: SettingsSource): string {
@@ -57,8 +59,12 @@ export function formatStatus(input: StatusInput): string {
 		settings.capture.toolFacts ? "tool facts" : null,
 	].filter((kind): kind is string => kind !== null);
 	lines.push(`capture   ${captureKinds.length > 0 ? captureKinds.join(", ") : "nothing (all kinds disabled)"}`);
-	lines.push("          outcome entries land in step 6 of Phase 1");
 	for (const failure of input.captureFailures ?? []) lines.push(`          ! ${failure}`);
+	if (input.runsWithoutAgentEnd) {
+		// Worth surfacing: those runs were assembled from turn_end alone, which is
+		// the path a turn-summary payload on agent_settled would remove.
+		lines.push(`          ! ${input.runsWithoutAgentEnd} run(s) settled without pi's agent_end payload`);
+	}
 
 	if (input.journal) {
 		if (input.journal.length === 0) {

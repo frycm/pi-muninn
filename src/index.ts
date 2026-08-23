@@ -1,9 +1,9 @@
 /**
  * pi-muninn extension entry point.
  *
- * Phase 1 step 5: sessions now leave a journal. Explicit requests to remember
- * and corrections of the agent are captured as they happen; outcome entries and
- * recall arrive in steps 6 and 9.
+ * Phase 1 step 6: sessions now leave a journal of what the user asked to be
+ * remembered, what they corrected, and how each task turned out. Recall — the
+ * other half — arrives in step 9.
  */
 import {
 	CONFIG_DIR_NAME,
@@ -11,8 +11,11 @@ import {
 	getAgentDir,
 	VERSION as PI_VERSION,
 } from "@earendil-works/pi-coding-agent";
+import { RunAccumulator } from "./capture/accumulate.ts";
 import { decideCapture } from "./capture/capture.ts";
 import { channelForMode } from "./capture/cues.ts";
+import { shouldWriteOutcome } from "./capture/outcome.ts";
+import { type OutcomeModel, runOutcome } from "./capture/outcome-run.ts";
 import { AppendQueue } from "./capture/queue.ts";
 import {
 	assistantText,
@@ -53,6 +56,18 @@ export default function (pi: ExtensionAPI): void {
 	/** The agent's last turn — what a correction is a correction *of*. */
 	let previousAssistantText: string | undefined;
 	const queue = new AppendQueue();
+	const run = new RunAccumulator();
+	/** Set when the pre-compaction path already wrote this run's outcome entry. */
+	let runAlreadyJournaled = false;
+	/** Aborts an outcome call when the session goes away mid-flight. */
+	let outcomeAbort: AbortController | undefined;
+	/**
+	 * Runs that settled without pi's authoritative `agent_end` payload, and so
+	 * were assembled from `turn_end` alone. Reported by `/muninn`; if this stays
+	 * at zero across real use, core change #2 is an ergonomics ask rather than a
+	 * gap worth proposing.
+	 */
+	let runsWithoutAgentEnd = 0;
 
 	const load = async (cwd: string, projectTrusted: boolean, createStores: boolean): Promise<SessionContext> => {
 		session ??= await buildSessionContext({
@@ -87,6 +102,7 @@ export default function (pi: ExtensionAPI): void {
 						session: current,
 						journal: journalStats(current),
 						captureFailures: queue.peekFailures().map((failure) => `${failure.label}: ${failure.message}`),
+						runsWithoutAgentEnd,
 					}),
 					"info",
 				);
@@ -138,6 +154,13 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("turn_end", (event) => {
 		const text = assistantText(event.message);
 		if (text !== undefined) previousAssistantText = text;
+		run.onTurnEnd(event.message, event.toolResults);
+	});
+
+	// pi's own view of the run. Where it and the accumulated turns disagree, pi
+	// is right.
+	pi.on("agent_end", (event) => {
+		run.onAgentEnd(event.messages);
 	});
 
 	pi.on("input", (event, ctx) => {
@@ -169,7 +192,100 @@ export default function (pi: ExtensionAPI): void {
 		});
 	});
 
+	/**
+	 * Write the outcome entry for the run just finished.
+	 *
+	 * Shared by `agent_settled` and the pre-compaction path, because both are
+	 * "the run is over as far as memory is concerned" — the only difference is
+	 * that one of them happens before pi summarises the context away.
+	 */
+	const writeOutcome = async (
+		ctx: {
+			mode: string;
+			model: unknown;
+			modelRegistry: { complete(model: never, context: never, options?: never): Promise<unknown> };
+			sessionManager: { getSessionFile(): string | undefined; getLeafId(): string | null };
+		},
+		buffer: ReturnType<RunAccumulator["peek"]>,
+	): Promise<void> => {
+		const current = session;
+		const currentState = state;
+		if (!current || !currentState) return;
+
+		const storePath = captureTargetPath(current);
+		if (!storePath) return;
+
+		const skip = shouldWriteOutcome(buffer, {
+			outcomesEnabled: current.loaded.settings.capture.outcomes,
+			alreadyJournaled: runAlreadyJournaled,
+		});
+		if (skip) return;
+
+		const model = ctx.model;
+		if (!model) {
+			queue.enqueue("outcome", async () => {
+				throw new Error("no model available to write an outcome entry");
+			});
+			return;
+		}
+
+		outcomeAbort = new AbortController();
+		const signal = outcomeAbort.signal;
+		const outcomeModel: OutcomeModel = {
+			async complete(context, abort) {
+				const reply = (await ctx.modelRegistry.complete(
+					model as never,
+					{ systemPrompt: context.systemPrompt, messages: context.messages } as never,
+					{ signal: abort } as never,
+				)) as { content?: unknown };
+				return extractText(reply);
+			},
+		};
+
+		const result = await runOutcome({
+			request: { buffer, state: currentState },
+			model: outcomeModel,
+			channel: channelForMode(ctx.mode),
+			session: sessionPointer(ctx.sessionManager),
+			signal,
+		});
+
+		if (!result.ok) {
+			// Not written is not the same as broken: "nothing durable was learned"
+			// is a legitimate outcome the template invites.
+			if (!signal.aborted) {
+				process.stderr.write(`muninn: no outcome entry — ${result.problem}\n`);
+			}
+			return;
+		}
+
+		runAlreadyJournaled = true;
+		queue.enqueue("outcome", async () => {
+			const written = await appendEntry(result.entry, { storePath, hostId: current.host.id });
+			currentState.written.push(written.id);
+			pi.appendEntry(STATE_CUSTOM_TYPE, { kind: "written", ids: [written.id] } satisfies StateDelta);
+		});
+	};
+
+	pi.on("agent_settled", async (_event, ctx) => {
+		// The run is over and pi will not continue on its own: no retry, no
+		// compaction, no queued continuation.
+		if (!run.isEmpty && !run.hadAuthoritativeEnd) runsWithoutAgentEnd++;
+		const buffer = run.take();
+		await writeOutcome(ctx as never, buffer);
+		runAlreadyJournaled = false;
+	});
+
+	pi.on("session_before_compact", async (_event, ctx) => {
+		// Write the outcome *before* the summary is produced, so nothing
+		// compaction drops is lost to the journal. Returning nothing leaves pi's
+		// compaction exactly as it was.
+		await writeOutcome(ctx as never, run.peek());
+	});
+
 	pi.on("session_shutdown", async (_event, ctx) => {
+		// An outcome call still in flight is the session ending, not a failure.
+		outcomeAbort?.abort();
 		// Closes the window where a queued entry could be lost to process exit.
 		await queue.flush();
 		const failures = queue.takeFailures();
@@ -179,4 +295,17 @@ export default function (pi: ExtensionAPI): void {
 		process.stderr.write(`${["muninn: capture failed", ...report].join("\n")}\n`);
 		ctx.ui.notify(`muninn: ${failures.length} journal write(s) failed`, "error");
 	});
+}
+
+/** Plain text of an assistant reply, whatever block shape it arrived in. */
+function extractText(reply: { content?: unknown }): string {
+	if (typeof reply.content === "string") return reply.content;
+	if (!Array.isArray(reply.content)) return "";
+	const parts: string[] = [];
+	for (const block of reply.content) {
+		if (typeof block !== "object" || block === null) continue;
+		const typed = block as { type?: unknown; text?: unknown };
+		if (typed.type === "text" && typeof typed.text === "string") parts.push(typed.text);
+	}
+	return parts.join("");
 }
