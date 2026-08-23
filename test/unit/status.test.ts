@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
+import type { SessionContext } from "../../src/session.ts";
 import { DEFAULT_SETTINGS, type SettingsWarning } from "../../src/settings.ts";
 import type { LoadedSettingsWithSources } from "../../src/settings-io.ts";
-import { formatStatus, formatStatusLine } from "../../src/status.ts";
+import { formatScopes, formatStatus, formatStatusLine } from "../../src/status.ts";
+import type { ScopeDecision } from "../../src/store/scopes.ts";
+
+const HOST_ID = "0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b01";
 
 function loaded(overrides: Partial<LoadedSettingsWithSources> = {}): LoadedSettingsWithSources {
 	return {
@@ -15,16 +19,34 @@ function loaded(overrides: Partial<LoadedSettingsWithSources> = {}): LoadedSetti
 	};
 }
 
-function status(overrides: Partial<Parameters<typeof formatStatus>[0]> = {}): string {
+function scopes(overrides: Partial<ScopeDecision> = {}): ScopeDecision {
+	return {
+		active: [
+			{ scope: "global", path: "/home/u/.pi/agent/muninn", exists: true, inRepo: false },
+			{ scope: "project", path: "/home/u/.pi/agent/muninn-projects/app-abc123", exists: true, inRepo: false },
+		],
+		captureTarget: "project",
+		reasons: ["global: active", "project: active, separate store at /p", "capture target: project"],
+		...overrides,
+	};
+}
+
+function session(overrides: Partial<SessionContext> = {}): SessionContext {
+	return {
+		host: { id: HOST_ID, name: "mbp", createdAt: "2026-08-23T00:00:00.000Z" },
+		loaded: loaded(),
+		scopes: scopes(),
+		problems: [],
+		...overrides,
+	};
+}
+
+function status(overrides: Partial<SessionContext> = {}): string {
 	return formatStatus({
 		muninnVersion: "0.1.0",
 		piVersion: "0.84.2",
 		runtime: "node v22.19.0",
-		cwd: "/src/app",
-		loaded: loaded(),
-		stores: [],
-		projectTrusted: true,
-		...overrides,
+		session: session(overrides),
 	});
 }
 
@@ -33,20 +55,32 @@ describe("formatStatus", () => {
 		expect(status()).toContain("⟡ muninn 0.1.0 · pi 0.84.2 · node v22.19.0");
 	});
 
-	it("says plainly that no store exists yet rather than implying memory works", () => {
+	it("shows the host by name and full id", () => {
+		// Ids are never truncated in anything that could be copied into a file or
+		// a tool call; only the renderer's own shortening does that.
+		expect(status()).toContain(`mbp · ${HOST_ID}`);
+	});
+
+	it("marks which store is the capture target", () => {
 		const report = status();
-		expect(report).toContain("none yet");
-		expect(report).not.toContain("entries)");
+		expect(report).toMatch(/→ project:/);
+		expect(report).not.toMatch(/→ global:/);
+	});
+
+	it("says a store has not been created yet rather than implying it exists", () => {
+		const decision = scopes();
+		(decision.active[1] as { exists: boolean }).exists = false;
+		expect(status({ scopes: decision })).toContain("(not created yet)");
+	});
+
+	it("is honest that journalling is not implemented yet", () => {
+		expect(status()).toContain("not implemented yet");
 	});
 
 	it("shows which settings files were read", () => {
 		const report = status();
 		expect(report).toContain("/home/u/.pi/agent/settings.json (muninn block)");
 		expect(report).toContain("/src/app/.pi/settings.json (absent)");
-	});
-
-	it("flags an untrusted project next to the project scope", () => {
-		expect(status({ projectTrusted: false })).toContain("project not trusted");
 	});
 
 	it("lists settings warnings", () => {
@@ -58,33 +92,53 @@ describe("formatStatus", () => {
 		expect(report).toContain('[project] ignored "sync.remote"');
 	});
 
+	it("lists store problems separately from settings warnings", () => {
+		const report = status({ problems: ["global store at /g: permission denied"] });
+		expect(report).toContain("1 store problem:");
+		expect(report).toContain("permission denied");
+	});
+
+	it("says so when every scope is off", () => {
+		expect(status({ scopes: scopes({ active: [], captureTarget: null }) })).toContain("none active");
+	});
+
 	it("says so when every capture kind is off", () => {
-		const settings = structuredClone(DEFAULT_SETTINGS);
-		settings.capture.corrections = false;
-		settings.capture.outcomes = false;
-		settings.capture.toolFacts = false;
-		expect(status({ loaded: loaded({ settings }) })).toContain("nothing (all kinds disabled)");
+		const l = loaded();
+		l.settings.capture.corrections = false;
+		l.settings.capture.outcomes = false;
+		l.settings.capture.toolFacts = false;
+		expect(status({ loaded: l })).toContain("nothing (all kinds disabled)");
+	});
+});
+
+describe("formatScopes", () => {
+	it("prints the reason for every decision", () => {
+		const report = formatScopes(session());
+		expect(report).toContain("global: active");
+		expect(report).toContain("capture target: project");
+	});
+
+	it("warns plainly when nothing will be captured", () => {
+		const report = formatScopes(session({ scopes: scopes({ active: [], captureTarget: null }) }));
+		expect(report).toContain("Nothing will be captured in this session.");
 	});
 });
 
 describe("formatStatusLine", () => {
-	it("reports no store", () => {
-		expect(formatStatusLine({ loaded: loaded(), stores: [] })).toBe("⟡ muninn · no store");
+	it("names the capture target", () => {
+		expect(formatStatusLine(session())).toBe("⟡ muninn · project");
 	});
 
-	it("counts warnings", () => {
-		const warnings: SettingsWarning[] = [
-			{ path: "a", scope: "project", kind: "unknown-key", message: "x" },
-			{ path: "b", scope: "global", kind: "unknown-key", message: "y" },
-		];
-		expect(formatStatusLine({ loaded: loaded({ warnings }), stores: [] })).toBe("⟡ muninn · no store · 2⚠");
+	it("reports no store when every scope is off", () => {
+		expect(formatStatusLine(session({ scopes: scopes({ active: [], captureTarget: null }) }))).toBe(
+			"⟡ muninn · no store",
+		);
 	});
 
-	it("names the active scopes once stores exist", () => {
-		const stores = [
-			{ scope: "global", path: "/g", entries: 3 },
-			{ scope: "project", path: "/p", entries: 1 },
-		];
-		expect(formatStatusLine({ loaded: loaded(), stores })).toBe("⟡ muninn · global+project");
+	it("counts settings warnings and store problems together", () => {
+		const warnings: SettingsWarning[] = [{ path: "a", scope: "project", kind: "unknown-key", message: "x" }];
+		expect(formatStatusLine(session({ loaded: loaded({ warnings }), problems: ["broken"] }))).toBe(
+			"⟡ muninn · project · 2⚠",
+		);
 	});
 });

@@ -37,8 +37,9 @@ daily file.
   <0.85.0"`, `tsc --noEmit` + biome for `check`, vitest for tests, `tsx` for scripts.
 - **Runtime dependencies: two.** `minisearch` (Tier 0 BM25) and `proper-lockfile` (the
   store lock; pi already depends on it, so it is the same lock semantics pi uses for
-  `settings.json`). UUIDv7 comes from `@earendil-works/pi-ai` (`uuidv7`), which pi itself
-  uses for session ids. `git` is invoked as a subprocess.
+  `settings.json`). UUIDv7 is minted in-tree: pi ships `@earendil-works/pi-ai` inside its
+  own shrinkwrapped `node_modules`, so its `uuidv7` is not resolvable from an extension
+  package. `git` is invoked as a subprocess, always via `execFile` with an argv array.
 - **The extension entry is thin.** `src/index.ts` wires pi events to modules; every module
   is testable without pi. Integration tests drive the real pi through the SDK
   (`createAgentSession`) with a scratch `HOME` and `PI_CODING_AGENT_DIR`.

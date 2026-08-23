@@ -1,26 +1,19 @@
 /**
- * The `/muninn` status report and the footer status line.
+ * The `/muninn` status report, `/muninn scope`, and the footer status line.
  *
  * Pure formatting: everything it needs is passed in, so the wording is testable
  * without a pi session.
  */
 
+import type { SessionContext } from "./session.ts";
 import type { SettingsWarning } from "./settings.ts";
-import type { LoadedSettingsWithSources, SettingsSource } from "./settings-io.ts";
+import type { SettingsSource } from "./settings-io.ts";
 
 export interface StatusInput {
 	muninnVersion: string;
 	piVersion: string;
 	runtime: string;
-	cwd: string;
-	loaded: LoadedSettingsWithSources;
-	/**
-	 * Stores discovered for this session. Empty until step 2 builds them, which
-	 * is why the report says "none yet" rather than pretending memory exists.
-	 */
-	stores: Array<{ scope: string; path: string; entries: number }>;
-	/** Whether pi considers this project trusted (`ctx.isProjectTrusted()`). */
-	projectTrusted: boolean;
+	session: SessionContext;
 }
 
 function describeSource(source: SettingsSource): string {
@@ -34,25 +27,23 @@ export function formatWarning(warning: SettingsWarning): string {
 
 /** The multi-line report printed by `/muninn` with no arguments. */
 export function formatStatus(input: StatusInput): string {
-	const { settings, warnings, sources } = input.loaded;
+	const { loaded, scopes, host, problems } = input.session;
+	const { settings, warnings, sources } = loaded;
 	const lines: string[] = [];
 
 	lines.push(`⟡ muninn ${input.muninnVersion} · pi ${input.piVersion} · ${input.runtime}`);
 	lines.push("");
+	lines.push(`host      ${host.name} · ${host.id}`);
 
-	if (input.stores.length === 0) {
-		lines.push("store     none yet — journal and recall land in step 2 of Phase 1");
+	if (scopes.active.length === 0) {
+		lines.push("stores    none active — nothing is captured or recalled");
 	} else {
-		for (const store of input.stores) {
-			lines.push(`store     ${store.scope}: ${store.path} (${store.entries} entries)`);
+		for (const scope of scopes.active) {
+			const marker = scope.scope === scopes.captureTarget ? "→" : " ";
+			const state = scope.exists ? "" : " (not created yet)";
+			lines.push(`stores  ${marker} ${scope.scope}: ${scope.path}${state}`);
 		}
 	}
-
-	const projectScope =
-		settings.scopes.project === false
-			? "off"
-			: `${settings.scopes.project}${input.projectTrusted ? "" : " (project not trusted)"}`;
-	lines.push(`scopes    global: ${settings.scopes.global ? "on" : "off"} · project: ${projectScope}`);
 
 	const captureKinds = [
 		settings.capture.corrections ? "corrections" : null,
@@ -60,6 +51,7 @@ export function formatStatus(input: StatusInput): string {
 		settings.capture.toolFacts ? "tool facts" : null,
 	].filter((kind): kind is string => kind !== null);
 	lines.push(`capture   ${captureKinds.length > 0 ? captureKinds.join(", ") : "nothing (all kinds disabled)"}`);
+	lines.push("journal   not implemented yet — capture lands in steps 3-6 of Phase 1");
 
 	lines.push(
 		`recall    ${settings.recall.factsPerTurn} facts/turn · ${settings.recall.tokenBudget} tokens · tier ${settings.recall.indexTier}`,
@@ -74,14 +66,31 @@ export function formatStatus(input: StatusInput): string {
 		for (const warning of warnings) lines.push(formatWarning(warning));
 	}
 
+	if (problems.length > 0) {
+		lines.push("");
+		lines.push(`${problems.length} store problem${problems.length === 1 ? "" : "s"}:`);
+		for (const problem of problems) lines.push(`  ! ${problem}`);
+	}
+
 	return lines.join("\n");
 }
 
+/** `/muninn scope` — which scopes are active here, and why. */
+export function formatScopes(session: SessionContext): string {
+	const lines: string[] = [];
+	for (const reason of session.scopes.reasons) lines.push(`  ${reason}`);
+	if (session.scopes.captureTarget === null) {
+		lines.push("");
+		lines.push("Nothing will be captured in this session.");
+	}
+	return ["scopes here:", ...lines].join("\n");
+}
+
 /** The compact footer entry set through `ctx.ui.setStatus`. */
-export function formatStatusLine(input: Pick<StatusInput, "loaded" | "stores">): string {
+export function formatStatusLine(session: SessionContext): string {
 	const parts = ["⟡ muninn"];
-	parts.push(input.stores.length === 0 ? "no store" : input.stores.map((store) => store.scope).join("+"));
-	const warnings = input.loaded.warnings.length;
-	if (warnings > 0) parts.push(`${warnings}⚠`);
+	parts.push(session.scopes.captureTarget ?? "no store");
+	const trouble = session.loaded.warnings.length + session.problems.length;
+	if (trouble > 0) parts.push(`${trouble}⚠`);
 	return parts.join(" · ");
 }

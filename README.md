@@ -230,8 +230,20 @@ muninn/
 ├─ dreams/
 │  └─ 2026-08-22T03-00.md       # dream report: what was read, what changed, eval result
 ├─ .index/                      # gitignored, rebuildable: chunks, embeddings, links
-└─ .gitignore                   # .index/
+├─ host.json                    # global scope only: this machine's id — gitignored, never synced
+├─ .lock · .lock.json           # the store lock and its holder — gitignored
+└─ .gitignore                   # .index/, host.json, .lock, .lock.json
 ```
+
+`host.json` sits inside the global store because that is where the agent directory is, but it
+is **machine-local and gitignored**. It must never sync: a second machine that adopted this
+one's host id would write into the same `journal/<host id>/` directory, and the guarantee
+that sync never has to merge two hosts' writes to one file would be gone.
+
+The lock is `.lock` (a directory, taken atomically) with the holder recorded beside it in
+`.lock.json` — separate because the locking library removes its own directory with a
+non-recursive `rmdir`, so a file placed inside would make every release fail and wedge the
+store.
 
 ### Formats
 
@@ -1159,7 +1171,13 @@ deleted as they land.
   facts from the snapshot, which stay searchable.
 - **Where the project store lives.** Separate store by default, keyed by git toplevel and
   synced on its own remote; committed stores remain an opt-in for projects that want memory
-  in their history. Migration command in Phase 5.
+  in their history. Migration command in Phase 5. The key is the toplevel *path*, so two
+  checkouts of one repository are deliberately separate stores — they may be worktrees of
+  different branches, and silently sharing memory between them would surprise.
+- **Committing into a repository Muninn does not own.** An in-repo store lives inside the
+  user's project, where a bare `git commit` would sweep up whatever they had staged for
+  their own work. Every Muninn commit is therefore limited to its own pathspec, and an
+  in-repo store never has the project's git identity reconfigured.
 - **Evaluate-phase cost.** Chronological held-out sample of *k* recent tasks plus a fixed
   canary set, not a replay of everything; the canaries are cheap and run every dream, the
   sample size is a setting.
