@@ -102,6 +102,17 @@ function repositoryRoot(scope: ActiveScope, toplevel: string | undefined): strin
 }
 
 /**
+ * The repository a store's git commands run against.
+ *
+ * Exported because worktree collection and the remember transaction both need
+ * it, and both would otherwise re-derive it — the kind of duplicated derivation
+ * that stays right until an in-repo store meets it.
+ */
+export async function repositoryFor(scope: ActiveScope): Promise<string> {
+	return repositoryRoot(scope, scope.inRepo ? await inRepoToplevel(scope.path) : undefined);
+}
+
+/**
  * Create the worktree a dream works in.
  *
  * The directory is removed first if something is there: a worktree left by a
