@@ -228,3 +228,27 @@ describe("chunkMarkdown — what is not indexed", () => {
 		expect(chunkMarkdown("doc.md", text, "topic")[0]?.body).toContain("this one is content");
 	});
 });
+
+describe("chunkRules — fences", () => {
+	it("does not take a shell comment inside a fenced block for a heading", () => {
+		const rules = [
+			"# Rules",
+			"",
+			"- R-07 · phase: ops · source: user",
+			"  Install first:",
+			"  ```sh",
+			"# retired? no — this is a comment in a shell snippet",
+			"  npm ci",
+			"  ```",
+			"",
+			"- R-08 · phase: ops · source: user",
+			"  Then deploy.",
+			"",
+		].join("\n");
+		const chunks = chunkRules("rules.md", rules);
+		expect(chunks.map((chunk) => chunk.id)).toEqual(["R-07", "R-08"]);
+		expect(chunks[0]?.body).toContain("npm ci");
+		expect(chunks[0]?.superseded).toBeUndefined();
+		expect(chunks[1]?.superseded).toBeUndefined();
+	});
+});

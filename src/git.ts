@@ -17,6 +17,7 @@
  * unguarded.)
  */
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -45,8 +46,14 @@ export type GitCommand =
 	| { kind: "add"; paths: string[] }
 	| { kind: "commit"; message: string; paths: string[] }
 	| { kind: "status-porcelain"; paths: string[] }
-	| { kind: "rev-parse"; target: "--show-toplevel" | "--is-inside-work-tree" | "HEAD" | "--abbrev-ref" }
+	| { kind: "rev-parse"; target: "--show-toplevel" | "--is-inside-work-tree" | "HEAD" }
 	| { kind: "log-count" }
+	/** The branch HEAD points at — works on an unborn branch, fails when detached. */
+	| { kind: "current-branch" }
+	/** Point an unborn HEAD at a branch: `git init` on any git version, without `--initial-branch`. */
+	| { kind: "set-head"; branch: string }
+	/** Rename the current branch. */
+	| { kind: "branch-rename"; to: string }
 	// --- sync -------------------------------------------------------------
 	| { kind: "remote-get-url"; name: string }
 	| { kind: "remote-add"; name: string; url: string }
@@ -135,11 +142,10 @@ function assertStageable(path: string): void {
 export function toArgv(command: GitCommand): string[] {
 	switch (command.kind) {
 		case "init":
-			// The branch name is pinned rather than inherited from
-			// `init.defaultBranch`: a store is Muninn's own repository, and two
-			// machines whose git defaults differ would otherwise create stores on
-			// different branches and push two of them to one remote.
-			return ["init", "--quiet", "--initial-branch=main"];
+			// The branch is pinned by a `set-head` right after, not by
+			// `--initial-branch`: that flag needs git ≥ 2.28, and a symbolic-ref
+			// on the unborn HEAD does the same on any version.
+			return ["init", "--quiet"];
 		case "config":
 			// Setter only — there is no read form, so an empty value here would
 			// silently blank the identity a store commits under.
@@ -163,9 +169,17 @@ export function toArgv(command: GitCommand): string[] {
 			for (const path of command.paths) assertStageable(path);
 			return command.paths.length === 0 ? ["status", "--porcelain"] : ["status", "--porcelain", "--", ...command.paths];
 		case "rev-parse":
-			return command.target === "--abbrev-ref" ? ["rev-parse", "--abbrev-ref", "HEAD"] : ["rev-parse", command.target];
+			return ["rev-parse", command.target];
 		case "log-count":
 			return ["rev-list", "--count", "HEAD"];
+		case "current-branch":
+			return ["symbolic-ref", "--short", "HEAD"];
+		case "set-head":
+			assertName("branch", command.branch);
+			return ["symbolic-ref", "HEAD", `refs/heads/${command.branch}`];
+		case "branch-rename":
+			assertName("branch", command.to);
+			return ["branch", "-M", command.to];
 
 		case "remote-get-url":
 			assertName("remote", command.name);
@@ -216,7 +230,23 @@ export interface GitResult {
 	stderr: string;
 }
 
+/** Who a commit is attributed to, for the stores Muninn owns. */
+export interface GitIdentity {
+	name: string;
+	email: string;
+}
+
 export interface GitOptions {
+	/**
+	 * The identity commits and rebases are made under.
+	 *
+	 * Passed through the environment rather than written to the repository's
+	 * config: it is needed only by the commands that create commits, and
+	 * supplying it there means no subprocess has to run on every session start
+	 * to make sure a config value is still set. A store Muninn owns gets the
+	 * muninn identity; an in-repo store passes nothing and keeps the project's.
+	 */
+	identity?: GitIdentity;
 	/**
 	 * Abort signal for the network operations.
 	 *
@@ -237,6 +267,14 @@ export interface GitOptions {
  */
 export async function git(cwd: string, command: GitCommand, options: GitOptions = {}): Promise<GitResult> {
 	const argv = toArgv(command);
+	const identity = options.identity
+		? {
+				GIT_AUTHOR_NAME: options.identity.name,
+				GIT_AUTHOR_EMAIL: options.identity.email,
+				GIT_COMMITTER_NAME: options.identity.name,
+				GIT_COMMITTER_EMAIL: options.identity.email,
+			}
+		: {};
 	try {
 		const { stdout, stderr } = await execFileAsync("git", argv, {
 			cwd,
@@ -248,19 +286,23 @@ export async function git(cwd: string, command: GitCommand, options: GitOptions 
 				// session shutdown forever; there is no terminal to answer it on.
 				GIT_EDITOR: "true",
 				GIT_SEQUENCE_EDITOR: "true",
+				...identity,
 			},
 			maxBuffer: 8 * 1024 * 1024,
 			...(options.signal ? { signal: options.signal } : {}),
 		});
 		return { stdout, stderr };
 	} catch (error) {
+		const stderr = (error as { stderr?: string }).stderr ?? "";
 		if (
 			(error as NodeJS.ErrnoException).code === "ENOENT" &&
 			(error as { syscall?: string }).syscall?.includes("spawn")
 		) {
+			// Node reports a missing *working directory* with the same ENOENT as
+			// a missing binary. The two have opposite remedies, so look.
+			if (!existsSync(cwd)) throw new GitError(command, `working directory does not exist: ${cwd}`, error);
 			throw new GitMissingError(error);
 		}
-		const stderr = (error as { stderr?: string }).stderr ?? "";
 		throw new GitError(command, stderr, error);
 	}
 }

@@ -21,7 +21,7 @@
  * where a race would cost data.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { JournalEntryWithContext } from "../journal/read.ts";
 import { listJournalFiles, readDailyFile } from "../journal/read.ts";
@@ -37,11 +37,19 @@ import { type Hit, type QueryOptions, type StoredChunk, type Tier0Data, Tier0Ind
  * differently. A mismatch deletes and rebuilds, which is the one migration
  * that is free.
  */
-export const INDEX_VERSION = 1;
+export const INDEX_VERSION = 2;
 
 export interface ManifestFile {
 	hash: string;
 	chunks: string[];
+	/**
+	 * What `stat` said when the file was hashed. A file whose mtime and size
+	 * both match is taken as unchanged without being read — which is what makes
+	 * a refresh after a no-op sync, or an open of a large unchanged store, cost
+	 * one `stat` per file rather than one read and one SHA-256.
+	 */
+	mtimeMs: number;
+	size: number;
 }
 
 export interface Manifest {
@@ -176,9 +184,14 @@ export class StoreIndex {
 		for (const file of listJournalFiles(this.storePath)) {
 			const path = this.relative(file.path);
 			seen.add(path);
+			const stamp = this.unchanged(path, file.path);
+			if (stamp === true) continue;
 			const text = readText(file.path, result.problems);
 			if (text === undefined) continue;
-			if (this.manifest.files[path]?.hash === hashOf(text)) continue;
+			if (this.manifest.files[path]?.hash === hashOf(text)) {
+				this.restamp(path, stamp);
+				continue;
+			}
 
 			const read = readDailyFile(file.path);
 			for (const problem of read.problems) result.problems.push(`${problem.kind}: ${problem.message}`);
@@ -187,16 +200,22 @@ export class StoreIndex {
 				const withContext: JournalEntryWithContext = { ...entry, date: file.date, host: file.host, path: file.path };
 				chunks.push(...chunkJournalEntry(withContext, path));
 			}
-			this.replace(path, hashOf(text), chunks);
+			this.replace(path, hashOf(text), chunks, stamp);
 			result.changed.push(path);
 		}
 
 		for (const path of derivedFiles(this.storePath)) {
 			seen.add(path);
-			const text = readText(join(this.storePath, path), result.problems);
+			const full = join(this.storePath, path);
+			const stamp = this.unchanged(path, full);
+			if (stamp === true) continue;
+			const text = readText(full, result.problems);
 			if (text === undefined) continue;
-			if (this.manifest.files[path]?.hash === hashOf(text)) continue;
-			this.replace(path, hashOf(text), chunkFile(path, text));
+			if (this.manifest.files[path]?.hash === hashOf(text)) {
+				this.restamp(path, stamp);
+				continue;
+			}
+			this.replace(path, hashOf(text), chunkFile(path, text), stamp);
 			result.changed.push(path);
 		}
 
@@ -213,17 +232,49 @@ export class StoreIndex {
 		return result;
 	}
 
-	/** Refresh, then write the index out. A no-op when nothing has changed. */
+	/**
+	 * Write the index out if anything changed in memory.
+	 *
+	 * No refresh first: the open already reconciled with disk, and an entry
+	 * appended this session is in the index by `addEntry`. Its file's manifest
+	 * stamp is left stale on purpose, so the *next* open re-reads that one
+	 * file and picks up whatever another session appended to it meanwhile.
+	 */
 	save(): void {
-		const result = this.refresh();
-		if (!this.dirty && result.kind === "none") return;
+		if (!this.dirty) return;
 		this.write();
 	}
 
-	private replace(path: string, hash: string, chunks: Chunk[]): void {
+	/**
+	 * The manifest's stamp for a file, or `true` when the file is unchanged.
+	 *
+	 * Unchanged means both mtime and size match what was recorded when the file
+	 * was last hashed. Either differing means "read and hash to find out".
+	 */
+	private unchanged(path: string, fullPath: string): true | { mtimeMs: number; size: number } {
+		let stat: { mtimeMs: number; size: number };
+		try {
+			stat = statSync(fullPath);
+		} catch {
+			return { mtimeMs: 0, size: -1 };
+		}
+		const recorded = this.manifest.files[path];
+		if (recorded && recorded.mtimeMs === stat.mtimeMs && recorded.size === stat.size) return true;
+		return { mtimeMs: stat.mtimeMs, size: stat.size };
+	}
+
+	/** Content unchanged but stamp stale (a `touch`, a checkout): record the new stamp. */
+	private restamp(path: string, stamp: { mtimeMs: number; size: number }): void {
+		const recorded = this.manifest.files[path];
+		if (!recorded) return;
+		this.manifest.files[path] = { ...recorded, ...stamp };
+		this.dirty = true;
+	}
+
+	private replace(path: string, hash: string, chunks: Chunk[], stamp: { mtimeMs: number; size: number }): void {
 		this.index.discard(this.manifest.files[path]?.chunks ?? []);
 		this.index.add(chunks);
-		this.manifest.files[path] = { hash, chunks: chunks.map((chunk) => chunk.id) };
+		this.manifest.files[path] = { hash, chunks: chunks.map((chunk) => chunk.id), ...stamp };
 		this.dirty = true;
 	}
 

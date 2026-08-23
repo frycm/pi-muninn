@@ -24,6 +24,7 @@ import { basename } from "node:path";
 import { isFactId } from "../ids.ts";
 import { claimsOf } from "../journal/format.ts";
 import type { JournalEntryWithContext } from "../journal/read.ts";
+import { parseTrailer } from "../journal/trailer.ts";
 import { tokenBudgetChars } from "../tokens.ts";
 
 export const CHUNK_KINDS = ["claim", "prose", "memory", "fact", "topic", "rule"] as const;
@@ -65,6 +66,23 @@ const MAX_CHUNK_CHARS = tokenBudgetChars(700);
 
 const HEADING = /^(#{1,6})\s+(.*)$/;
 const FENCE = /^\s*(```+|~~~+)/;
+
+/**
+ * Advance the fenced-block state by one line.
+ *
+ * `fence` is the marker that opened the current block, or undefined outside
+ * one. A block closes on a marker of the same character at least as long as
+ * the opener — CommonMark's rule, and the one the README's "never split a
+ * fenced block" promise depends on. One implementation, because every chunker
+ * has to agree on where a fence ends.
+ */
+function trackFence(line: string, fence: string | undefined): string | undefined {
+	const match = line.match(FENCE);
+	if (!match) return fence;
+	const marker = match[1] as string;
+	if (fence === undefined) return marker;
+	return marker.startsWith(fence[0] as string) && marker.length >= fence.length ? undefined : fence;
+}
 const BREADCRUMB = " › ";
 
 // ---------------------------------------------------------------------------
@@ -234,13 +252,7 @@ export function chunkMarkdown(
 
 	for (let i = front.from; i < lines.length; i++) {
 		const line = lines[i] as string;
-
-		const fenceMatch = line.match(FENCE);
-		if (fenceMatch) {
-			const marker = fenceMatch[1] as string;
-			if (fence === undefined) fence = marker;
-			else if (marker.startsWith(fence[0] as string) && marker.length >= fence.length) fence = undefined;
-		}
+		fence = trackFence(line, fence);
 
 		// HTML comments are instructions to whoever edits the file — the header
 		// every `MEMORY.md` carries, say. Indexing them would let a query match
@@ -293,12 +305,7 @@ function splitSection(lines: string[]): string[] {
 	let fence: string | undefined;
 
 	for (const line of lines) {
-		const fenceMatch = line.match(FENCE);
-		if (fenceMatch) {
-			const marker = fenceMatch[1] as string;
-			if (fence === undefined) fence = marker;
-			else if (marker.startsWith(fence[0] as string) && marker.length >= fence.length) fence = undefined;
-		}
+		fence = trackFence(line, fence);
 
 		// Only a blank line outside a fence is a legal break, and only once the
 		// piece is actually over budget.
@@ -323,17 +330,6 @@ function splitSection(lines: string[]): string[] {
 // Topic files and rules — written by dreams in Phase 2, read from the start
 // ---------------------------------------------------------------------------
 
-/** ` · `-separated `key: value` trailer, as every derived format uses. */
-function parseTrailer(text: string): Map<string, string> {
-	const fields = new Map<string, string>();
-	for (const part of text.split("·")) {
-		const colon = part.indexOf(":");
-		if (colon < 0) continue;
-		fields.set(part.slice(0, colon).trim(), part.slice(colon + 1).trim());
-	}
-	return fields;
-}
-
 /**
  * A topic file: one chunk per fact, plus its prose as context.
  *
@@ -350,14 +346,10 @@ export function chunkTopic(path: string, text: string): Chunk[] {
 	let fence: string | undefined;
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i] as string;
-		const fenceMatch = line.match(FENCE);
-		if (fenceMatch) {
-			const marker = fenceMatch[1] as string;
-			if (fence === undefined) fence = marker;
-			else if (marker.startsWith(fence[0] as string) && marker.length >= fence.length) fence = undefined;
-			continue;
-		}
-		if (fence !== undefined) continue;
+		const wasInside = fence !== undefined;
+		fence = trackFence(line, fence);
+		// Inside a fence, and the lines that open or close one, are code.
+		if (wasInside || fence !== undefined) continue;
 
 		const heading = line.match(HEADING);
 		if (heading) {
@@ -439,7 +431,17 @@ export function chunkRules(path: string, text: string): Chunk[] {
 		current = undefined;
 	};
 
+	let fence: string | undefined;
 	for (const line of lines) {
+		// A `# comment` inside a fenced shell block in a rule's body is not a
+		// heading; without this it would flush the rule and could flip `retired`.
+		const wasInside = fence !== undefined;
+		fence = trackFence(line, fence);
+		if (wasInside || fence !== undefined) {
+			if (current) current.body.push(line);
+			continue;
+		}
+
 		const heading = line.match(HEADING);
 		if (heading) {
 			flush();

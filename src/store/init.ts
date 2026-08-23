@@ -8,7 +8,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { git, gitToplevel } from "../git.ts";
+import { type GitIdentity, git, gitToplevel } from "../git.ts";
 import { newStoreId } from "../ids.ts";
 import type { HostIdentity } from "./host.ts";
 import { withStoreLock } from "./lock.ts";
@@ -50,6 +50,14 @@ export interface EnsureStoreResult {
 	problems: string[];
 }
 
+/** The branch every store lives on, whatever the machine's `init.defaultBranch` says. */
+export const STORE_BRANCH = "main";
+
+/** The identity a store Muninn owns commits under. */
+export function storeIdentity(host: HostIdentity): GitIdentity {
+	return { name: `muninn ${host.name}`, email: `muninn@${host.id}` };
+}
+
 export class SchemaTooNewError extends Error {
 	constructor(path: string, found: number) {
 		super(
@@ -79,6 +87,10 @@ export async function ensureStore(
 		const storeMdPath = join(storePath, "store.md");
 		const existed = existsSync(storeMdPath);
 		const staged = new Set<string>();
+		const identity = inRepo ? undefined : storeIdentity(options.host);
+		const commitOptions = identity ? { identity } : {};
+		/** This call created the repository — so nothing in it is tracked yet. */
+		let fresh = false;
 
 		if (!inRepo) {
 			// "Inside a work tree" is not the same question as "is this store its
@@ -91,21 +103,34 @@ export async function ensureStore(
 			const canonical = canonicalPath(storePath);
 			if (toplevel === undefined || canonicalPath(toplevel) !== canonical) {
 				await git(storePath, { kind: "init" });
+				await git(storePath, { kind: "set-head", branch: STORE_BRANCH });
+				// Written to the repository's config once, at creation, so that a
+				// person running `git commit` by hand in the store gets the same
+				// author. Muninn's own commits carry the identity in their
+				// environment and never depend on this being set.
+				await git(storePath, { kind: "config", key: "user.name", value: identity?.name ?? "" });
+				await git(storePath, { kind: "config", key: "user.email", value: identity?.email ?? "" });
+				fresh = true;
+			} else {
+				// A store created before the branch was pinned may sit on whatever
+				// `init.defaultBranch` gave it. Two hosts on different branches would
+				// each "first-push" their own and never see each other's memory.
+				await ensureBranch(storePath);
 			}
-			// Set on every open, not only on creation: a store this host *cloned*
-			// from its own remote is just as much Muninn's, and would otherwise
-			// commit under whatever identity the machine's git config happens to
-			// carry — or fail outright on a machine that has none. An in-repo
-			// store is the exception: it keeps the project's own author, because
-			// reconfiguring it would rewrite the user's git config as a side
-			// effect of turning memory on.
-			await git(storePath, { kind: "config", key: "user.name", value: `muninn ${options.host.name}` });
-			await git(storePath, { kind: "config", key: "user.email", value: `muninn@${options.host.id}` });
 		}
 
 		if (!existsSync(join(storePath, ".gitignore"))) {
 			writeFileSync(join(storePath, ".gitignore"), GITIGNORE);
 			staged.add(".gitignore");
+		}
+		// A repository created around files that already existed — a store an
+		// older build let an enclosing repository adopt — has them all untracked.
+		// Everything the store owns goes into the first commit, not only what
+		// this call wrote; otherwise the branch stays unborn and can never sync.
+		if (fresh) {
+			for (const name of [".gitignore", "store.md", "MEMORY.md"]) {
+				if (existsSync(join(storePath, name))) staged.add(name);
+			}
 		}
 
 		// --- store.md -------------------------------------------------------
@@ -151,15 +176,37 @@ export async function ensureStore(
 		if (staged.size > 0) {
 			const paths = [...staged];
 			await git(storePath, { kind: "add", paths });
-			await git(storePath, {
-				kind: "commit",
-				message: existed
-					? `store: register host ${options.host.name}`
-					: `store: initialise (host ${options.host.name})`,
-				paths,
-			});
+			await git(
+				storePath,
+				{
+					kind: "commit",
+					message:
+						existed && !fresh
+							? `store: register host ${options.host.name}`
+							: `store: initialise (host ${options.host.name})`,
+					paths,
+				},
+				commitOptions,
+			);
 		}
 
 		return { path: storePath, created: !existed, store, problems };
 	});
+}
+
+/**
+ * Put the store on `STORE_BRANCH`, renaming whatever branch it is on.
+ *
+ * Only for a repository Muninn owns. A detached HEAD is left alone: someone is
+ * looking at history, and sync will say so rather than guess.
+ */
+async function ensureBranch(storePath: string): Promise<void> {
+	let branch: string;
+	try {
+		branch = (await git(storePath, { kind: "current-branch" })).stdout.trim();
+	} catch {
+		return;
+	}
+	if (branch === "" || branch === STORE_BRANCH) return;
+	await git(storePath, { kind: "branch-rename", to: STORE_BRANCH });
 }

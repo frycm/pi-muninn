@@ -215,3 +215,64 @@ describe("a store under someone else's repository", () => {
 		}
 	});
 });
+
+describe("a store that an older build let an enclosing repository adopt", () => {
+	it("is reborn with everything it owns in its first commit, not an unborn branch", async () => {
+		// The files already exist, so "stage what this call created" stages
+		// nothing — and a repository with an unborn HEAD cannot sync, ever.
+		const outer = mkdtempSync(join(tmpdir(), "muninn-adopted-"));
+		try {
+			await execFileAsync("git", ["init", "--quiet"], { cwd: outer });
+			await execFileAsync("git", ["config", "user.email", "dev@example.com"], { cwd: outer });
+			await execFileAsync("git", ["config", "user.name", "Dev"], { cwd: outer });
+			const nested = join(outer, "agent", "muninn");
+			mkdirSync(nested, { recursive: true });
+			writeFileSync(
+				join(nested, "store.md"),
+				"# muninn store\n\nschema: 1\nstore: 0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b01\ncreated: 2026-08-01\n\n## Hosts\n\n",
+			);
+			writeFileSync(join(nested, "MEMORY.md"), "# Memory\n");
+			writeFileSync(join(nested, ".gitignore"), ".index/\n");
+			await execFileAsync("git", ["add", "-A"], { cwd: outer });
+			await execFileAsync("git", ["commit", "--quiet", "-m", "adopted"], { cwd: outer });
+
+			await ensureStore(nested, { host });
+
+			const { stdout: status } = await execFileAsync("git", ["status", "--porcelain"], { cwd: nested });
+			expect(status.trim()).toBe("");
+			const { stdout: tracked } = await execFileAsync("git", ["ls-tree", "--name-only", "HEAD"], { cwd: nested });
+			expect(tracked.trim().split("\n").sort()).toEqual([".gitignore", "MEMORY.md", "store.md"]);
+			const { stdout: branch } = await execFileAsync("git", ["symbolic-ref", "--short", "HEAD"], { cwd: nested });
+			expect(branch.trim()).toBe("main");
+		} finally {
+			rmSync(outer, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("the store branch", () => {
+	it("is main on a fresh store, whatever init.defaultBranch says", async () => {
+		await ensureStore(store, { host });
+		const { stdout } = await execFileAsync("git", ["symbolic-ref", "--short", "HEAD"], { cwd: store });
+		expect(stdout.trim()).toBe("main");
+	});
+
+	it("renames a store created on master by an older build", async () => {
+		// Two hosts on different branches would each first-push their own and
+		// never see each other's memory.
+		mkdirSync(store, { recursive: true });
+		await execFileAsync("git", ["init", "--quiet", "--initial-branch=master"], { cwd: store });
+		await ensureStore(store, { host });
+		const { stdout } = await execFileAsync("git", ["symbolic-ref", "--short", "HEAD"], { cwd: store });
+		expect(stdout.trim()).toBe("main");
+	});
+
+	it("commits under the muninn identity without the machine having one", async () => {
+		await ensureStore(store, { host });
+		const { stdout } = await execFileAsync("git", ["log", "-1", "--format=%an <%ae>"], {
+			cwd: store,
+			env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" },
+		});
+		expect(stdout.trim()).toBe(`muninn ${host.name} <muninn@${host.id}>`);
+	});
+});

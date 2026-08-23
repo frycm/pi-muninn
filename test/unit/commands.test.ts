@@ -109,13 +109,20 @@ async function seed(storePath: string, entry: Partial<NewJournalEntry> & { claim
 
 describe("parseFlags", () => {
 	it("takes leading flags and leaves the text alone", () => {
-		const { flags, rest } = parseFlags("--global remember the --force flag");
+		const { flags, rest } = parseFlags("--global remember the --force flag", { flags: ["global"] });
 		expect([...flags]).toEqual(["global"]);
 		expect(rest).toBe("remember the --force flag");
 	});
 
+	it("leaves an unknown leading flag in the text rather than eating it", () => {
+		// `--no-verify is required for the hook` is a note *about* a flag.
+		const { flags, rest } = parseFlags("--no-verify is required for the pre-commit hook", { flags: ["global"] });
+		expect([...flags]).toEqual([]);
+		expect(rest).toBe("--no-verify is required for the pre-commit hook");
+	});
+
 	it("reads a valued flag", () => {
-		const { values, rest } = parseFlags("--limit 3 vitest watch", ["limit"]);
+		const { values, rest } = parseFlags("--limit 3 vitest watch", { valued: ["limit"] });
 		expect(values.get("limit")).toBe("3");
 		expect(rest).toBe("vitest watch");
 	});
@@ -193,10 +200,10 @@ describe("/muninn note", () => {
 	});
 
 	it("says so when there is nowhere to write", async () => {
+		// The rule is `resolveWriteScope`'s, shared with memory_note; it throws,
+		// and the command handler in the extension turns that into an error line.
 		const session = sessionContext({ captureTarget: null, scopes: [] });
-		const output = await runMuninnCommand("note Nowhere.", runtimeFor(session));
-		expect(output.level).toBe("error");
-		expect(output.text).toContain("nowhere to write");
+		await expect(runMuninnCommand("note Nowhere.", runtimeFor(session))).rejects.toThrow(/nowhere to write/);
 	});
 });
 
@@ -296,7 +303,7 @@ describe("parseFlags — text is left verbatim", () => {
 	it("keeps the line structure a note depends on", () => {
 		// `/muninn note` reads line starts to tell a claim from its context, so a
 		// parser that rejoined words would silently merge three bullets into one.
-		const { rest } = parseFlags("--global Context.\n- one\n- two");
+		const { rest } = parseFlags("--global Context.\n- one\n- two", { flags: ["global"] });
 		expect(rest).toBe("Context.\n- one\n- two");
 	});
 

@@ -98,7 +98,9 @@ export function memoryNoteTool(runtime: ToolRuntime) {
 					{
 						type: "text" as const,
 						text: [
-							`Remembered in the ${scope} store as ${written.id}${entry.redacted ? " (secrets redacted)" : ""}.`,
+							// `written.entry` is the scrubbed one; the tool's own `entry` never
+							// learns that a secret was replaced on the way in.
+							`Remembered in the ${scope} store as ${written.id}${written.entry.redacted ? " (secrets redacted)" : ""}.`,
 							...(claims.length > 0 ? ["", "Claims:", ...claims] : []),
 						].join("\n"),
 					},

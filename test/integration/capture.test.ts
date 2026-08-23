@@ -227,10 +227,13 @@ describe("the index, through a real pi session", () => {
 		expect(existsSync(join(store, ".index", "manifest.json"))).toBe(true);
 		expect(existsSync(join(store, ".index", "tier0.json"))).toBe(true);
 
-		// Opened from disk, with no rebuilding: what the session indexed while it
-		// ran is what a later reader finds.
+		// Opened from disk: what the session indexed while it ran is what a later
+		// reader finds. The one daily file the session appended to is re-read
+		// on open — by design, so that entries another session added to the
+		// same file meanwhile are picked up — but nothing is rebuilt.
 		const { index, result } = StoreIndex.open(store);
-		expect(result.kind).toBe("none");
+		expect(result.kind).not.toBe("full");
+		expect(result.changed.every((path) => path.startsWith("journal/"))).toBe(true);
 		expect(index.search("vitest watch")[0]?.body).toContain("watch mode hangs");
 	}, 60_000);
 

@@ -12,6 +12,7 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { expandTilde } from "./store/paths.ts";
 
 /** pi's config directory name, as `piConfig.configDir` in its package.json. */
 export const CONFIG_DIR = ".pi";
@@ -23,10 +24,4 @@ export function resolveAgentDir(env: NodeJS.ProcessEnv = process.env, home: stri
 	const configured = env[AGENT_DIR_ENV];
 	if (configured && configured.trim() !== "") return expandTilde(configured.trim(), home);
 	return join(home, CONFIG_DIR, "agent");
-}
-
-function expandTilde(path: string, home: string): string {
-	if (path === "~") return home;
-	if (path.startsWith("~/")) return join(home, path.slice(2));
-	return path;
 }

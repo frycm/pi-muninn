@@ -641,6 +641,64 @@ allow-list that was never built because the value looked like it came from us, a
 written as "prove it is different" where only "prove it is the same" is safe. Comments
 asserting a boundary is enforced are not enforcement, and three of these had one.
 
+### The final review
+
+A last review over the whole diff — five finders, every candidate independently verified —
+found sixteen correctness issues and twelve cleanups, none refuted. All are fixed. The
+correctness ones, by what they would have cost:
+
+- **A `## ` line inside prose split its own entry on re-read.** A note quoting a markdown
+  heading is ordinary; the next read tore the entry in two and the claim ids already handed
+  out stopped resolving. Prose lines that would read back as a heading or a bullet are now
+  indented one space on the way out and un-indented on the way in; the format doc says so.
+- **Work after a compaction was never journaled.** pi compacts on `agent_end` and may then
+  *continue* the run; the pre-compaction write marked the whole run as journaled and the
+  continuation — the part a long run most likely learned something in — was discarded. The
+  buffer is now *taken* at compaction, so the continuation is its own entry.
+- **`/new`, `/fork` and `/resume` aborted an in-flight outcome and said nothing.** All four
+  session changes arrive as `session_shutdown`; the outcome of the task just finished is now
+  waited for (15 s cap) and aborted only when the cap runs out, and an abort is reported.
+- **The nesting fix from the first review round left an adopted store unborn.** A store an
+  older build let a dotfiles repository adopt got `git init` but nothing staged; it could
+  never sync. A fresh repository now commits everything the store owns.
+- **Old stores on `master`, new on `main`, one remote, two branches, no error.** The branch
+  is pinned with a symbolic-ref on the unborn HEAD — works on any git, where
+  `--initial-branch` needs ≥ 2.28 — and a store found on another branch is renamed on open.
+- **A queued outcome append gave up after 5 s while a sync held the lock**, and the entry was
+  gone. Background writes now wait up to 60 s; `/muninn sync` runs on the append queue so it
+  serialises with this session's own writes.
+- **Only the capture target was ever committed**, so `--global` notes and promoted entries
+  waited for a sync that might never come. Pending entries are counted per store and every
+  store with changes is committed.
+- **`sync()` threw out of the lock** on a detached HEAD or a refused remote URL — a stack
+  trace from cron, "capture failed" at shutdown. Every failure inside the transaction is now a
+  result, and a bad `sync.remote` is a settings warning before sync ever runs.
+- **A `#` in a project path broke session pointers**: pi only rewrites `/`, `\` and `:` in a
+  session directory name. Split on the last `#`.
+- **Echo detection was blind after a resume**: the ids survived in pi's session file but the
+  texts did not. They are rehydrated from the index on open.
+- Also: the store boundary used `/` and would have refused every nested file on Windows;
+  `parseFlags` ate any leading `--word` from a note; a vanished store directory was diagnosed
+  as "git is not installed"; `chunkRules` had no fence tracking; `memory_note` could never say
+  "(secrets redacted)"; and a comment claimed a note was in git before the model moved on —
+  now it is, un-debounced and awaited.
+
+The cleanups: one fence tracker, one trailer parser, one `expandTilde`, `note()` using the
+same `resolveWriteScope` as `memory_note`, `stop()` used everywhere sync stops, the dead
+`readStoreId` gone, `extractText` replaced by `messageText`. And the waste: git identity now
+travels in the environment of the commands that create commits instead of being written to
+config on every open (three subprocesses off the session-start path, and the two stores open
+in parallel); the manifest records mtime and size so an unchanged file costs a `stat` rather
+than a read and a SHA-256; `save()` no longer re-reads the store at shutdown; the index
+refreshes after a sync only when something was rebased; search ranks raw results before
+building snippets for the survivors; context token sets are built once per session; and an
+in-repo store's sync returns before its first subprocess.
+
+The pattern from the first review held: every boundary that failed was a check one
+abstraction short — and two of the fixes from that round (the nesting and the branch pin)
+each opened a gap of their own, which is the argument for reviewing fixes as hard as the code
+they fix.
+
 ## Test strategy
 
 | Layer | Runs | Covers |

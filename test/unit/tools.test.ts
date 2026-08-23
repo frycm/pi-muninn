@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -442,6 +442,32 @@ describe("memory_read", () => {
 		expect(text).toContain("why does CI hang?");
 		expect(text).toContain("→ assistant");
 		expect(text).toContain("the runner has no TTY");
+	});
+
+	it("follows a session pointer whose path contains a hash", async () => {
+		// pi embeds the project directory in the session file's name and only
+		// rewrites `/`, `\\` and `:` — so a project called `proj#1` puts a `#`
+		// in the path, and splitting on the first one truncates it.
+		const dir = join(project, "--Users-me-proj#1--");
+		mkdirSync(dir, { recursive: true });
+		const sessionFile = join(dir, "2026-08-22_abc.jsonl");
+		await seed(project, { claims: ["Learned in proj#1."], session: `${sessionFile}#b2` });
+		writeFileSync(
+			sessionFile,
+			`${JSON.stringify({ type: "message", id: "b2", timestamp: "t", message: { role: "assistant", content: "found it" } })}\n`,
+		);
+
+		const tool = memoryReadTool(runtimeFor(sessionContext()));
+		const text = textOf(await run(tool, { id: `session:${sessionFile}#b2` }));
+		expect(text).toContain("found it");
+	});
+
+	it("tells the model when its note was redacted", async () => {
+		const tool = memoryNoteTool(runtimeFor(sessionContext()));
+		const text = textOf(
+			await run(tool, { text: "The token is sk-live-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef and it works." }),
+		);
+		expect(text).toContain("(secrets redacted)");
 	});
 
 	it("refuses a transcript no memory points at", async () => {

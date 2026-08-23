@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 
 export type ScopeName = "global" | "project" | "team";
 
@@ -91,5 +91,7 @@ export function expandTilde(path: string, home: string = homedir()): string {
 
 /** True when `target` is `root` itself or something inside it. Canonical paths only. */
 export function isInside(root: string, target: string): boolean {
-	return target === root || target.startsWith(root.endsWith("/") ? root : `${root}/`);
+	// The platform separator, not `/`: `realpathSync` answers with backslashes
+	// on Windows, and a test against `/` would refuse every nested file there.
+	return target === root || target.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
 }

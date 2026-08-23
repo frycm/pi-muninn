@@ -10,6 +10,7 @@
  * disambiguates for display.
  */
 import { isHostId, isStoreId } from "../ids.ts";
+import { parseIdLine } from "../journal/trailer.ts";
 
 /** Bumped when the on-disk layout changes in a way an older Muninn cannot read. */
 export const SCHEMA_VERSION = 1;
@@ -95,21 +96,9 @@ export function parseStoreMd(text: string): ParsedStoreMd {
 }
 
 function parseHostLine(line: string): HostRecord | undefined {
-	const parts = line.split("·").map((part) => part.trim());
-	const id = parts[0];
-	if (id === undefined || !isHostId(id)) return undefined;
-
-	let name = "";
-	let registered = "";
-	for (const part of parts.slice(1)) {
-		const colon = part.indexOf(":");
-		if (colon < 0) continue;
-		const key = part.slice(0, colon).trim();
-		const value = part.slice(colon + 1).trim();
-		if (key === "name") name = value;
-		else if (key === "registered") registered = value;
-	}
-	return { id, name, registered };
+	const { id, fields } = parseIdLine(line);
+	if (!isHostId(id)) return undefined;
+	return { id, name: fields.get("name") ?? "", registered: fields.get("registered") ?? "" };
 }
 
 /**

@@ -215,12 +215,8 @@ export interface SkipReason {
  * performed. Journaling those is how a memory store fills with chit-chat
  * nobody trusts.
  */
-export function shouldWriteOutcome(
-	buffer: RunBuffer,
-	options: { outcomesEnabled: boolean; alreadyJournaled: boolean },
-): SkipReason | undefined {
+export function shouldWriteOutcome(buffer: RunBuffer, options: { outcomesEnabled: boolean }): SkipReason | undefined {
 	if (!options.outcomesEnabled) return { skip: true, reason: "capture.outcomes is off" };
-	if (options.alreadyJournaled) return { skip: true, reason: "this run was already journaled before compaction" };
 	if (buffer.messages.length === 0) return { skip: true, reason: "nothing happened in this run" };
 	if (buffer.toolCallCount === 0 && buffer.turnCount < 2) {
 		return { skip: true, reason: "no tool calls and a single turn — a question, not a task" };

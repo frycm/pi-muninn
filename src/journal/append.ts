@@ -28,6 +28,8 @@ export interface AppendOptions {
 	hostId: string;
 	/** Overrides the clock. Tests use it; callers should not. */
 	now?: Date;
+	/** How long to wait for the store lock. Default: the lock's own 5 s budget. */
+	lockTimeoutMs?: number;
 }
 
 export interface AppendResult {
@@ -68,7 +70,8 @@ export async function appendEntry(entry: NewJournalEntry, options: AppendOptions
 	const block = formatEntry(full);
 	const path = dailyFilePath(options.storePath, options.hostId, now);
 
-	await withStoreLock(options.storePath, "append", { host: options.hostId }, () => {
+	const lockOptions = { host: options.hostId, ...(options.lockTimeoutMs ? { timeoutMs: options.lockTimeoutMs } : {}) };
+	await withStoreLock(options.storePath, "append", lockOptions, () => {
 		const dir = journalDir(options.storePath, options.hostId);
 		// Both checks must happen before the write: afterwards the file always
 		// exists and the test would never fire.

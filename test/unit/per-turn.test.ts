@@ -4,6 +4,7 @@ import {
 	alreadyInContext,
 	buildRecallMessage,
 	contextFileLines,
+	prepareContext,
 	RECALL_KINDS,
 	RECALL_PREAMBLE,
 } from "../../src/recall/per-turn.ts";
@@ -105,7 +106,7 @@ describe("buildRecallMessage", () => {
 			],
 			limit: 8,
 			tokenBudget: 1500,
-			contextLines: ["Run pnpm test --run; watch mode hangs CI in this repository."],
+			context: prepareContext(["Run pnpm test --run; watch mode hangs CI in this repository."]),
 		});
 
 		expect(message?.ids).toEqual([`${ENTRY}.2`]);
@@ -117,7 +118,7 @@ describe("buildRecallMessage", () => {
 			hits: [hit({ id: `${ENTRY}.1`, body: "The CI runner has no TTY, which is why watch mode never exits." })],
 			limit: 8,
 			tokenBudget: 1500,
-			contextLines: ["This project uses CI."],
+			context: prepareContext(["This project uses CI."]),
 		});
 		expect(message?.ids).toEqual([`${ENTRY}.1`]);
 	});

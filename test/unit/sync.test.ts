@@ -10,6 +10,7 @@ import { appendEntry } from "../../src/journal/append.ts";
 import { readStoreJournal } from "../../src/journal/read.ts";
 import type { HostIdentity } from "../../src/store/host.ts";
 import { ensureStore } from "../../src/store/init.ts";
+import { withStoreLock } from "../../src/store/lock.ts";
 import { mergeStoreMd, parseStoreMd, type StoreMd } from "../../src/store/store-md.ts";
 import { describeSync, sync } from "../../src/sync/sync.ts";
 
@@ -368,5 +369,63 @@ describe("mergeStoreMd", () => {
 		const merged = mergeStoreMd(base, theirs);
 		expect(merged.store).toBe(base.store);
 		expect(merged.created).toBe("2026-07-01");
+	});
+});
+
+describe("sync never throws", () => {
+	it("reports a detached HEAD as a stopped sync, not a rejection", async () => {
+		await seedOne();
+		const sha = (await git(one, ["rev-parse", "HEAD"])).trim();
+		await git(one, ["checkout", "--quiet", sha]);
+
+		const result = await sync({ storePath: one, hostId: hostOne.id, hostName: hostOne.name, remote });
+		expect(result.problem).toContain("detached HEAD");
+		expect(result.pushed).toBe(false);
+	});
+
+	it("reports a remote it refuses to use, rather than throwing out of the lock", async () => {
+		await ensureStore(one, { host: hostOne });
+		await note(one, hostOne, "Never pushed to a command.");
+		const result = await sync({ storePath: one, hostId: hostOne.id, hostName: hostOne.name, remote: "ext::sh -c id" });
+		expect(result.committed).toBe(true);
+		expect(result.problem).toContain("refusing to use");
+		expect(result.pushed).toBe(false);
+	});
+
+	it("reports a store another process holds the lock on", async () => {
+		await ensureStore(one, { host: hostOne });
+		await withStoreLock(one, "dream", { host: hostTwo.id }, async () => {
+			const result = await sync({ storePath: one, hostId: hostOne.id, hostName: hostOne.name, remote });
+			expect(result.problem).toContain("busy");
+			expect(result.stoppedAt).toBe("commit");
+		});
+	});
+
+	it("attributes its commits and its rebase to the store's identity", async () => {
+		await seedOne();
+		await git(root, ["clone", "--quiet", remote, two]);
+		await ensureStore(two, { host: hostTwo });
+		await note(two, hostTwo, "From laptop two.");
+		await sync({
+			storePath: two,
+			hostId: hostTwo.id,
+			hostName: hostTwo.name,
+			remote,
+			identity: { name: "muninn laptop-two", email: `muninn@${hostTwo.id}` },
+		});
+
+		await note(one, hostOne, "And from one, to be rebased.");
+		resetCommitDebounce();
+		const back = await sync({
+			storePath: one,
+			hostId: hostOne.id,
+			hostName: hostOne.name,
+			remote,
+			identity: { name: "muninn laptop-one", email: `muninn@${hostOne.id}` },
+		});
+		expect(back.rebased).toBe(true);
+
+		const log = await git(one, ["log", "-1", "--format=%an|%cn"]);
+		expect(log.trim()).toBe("muninn laptop-one|muninn laptop-one");
 	});
 });

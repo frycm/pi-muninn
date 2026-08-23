@@ -1,11 +1,22 @@
+import { execFile } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { toArgv } from "../../src/git.ts";
+import { GitError, git, toArgv } from "../../src/git.ts";
+
+const execFileAsync = promisify(execFile);
 
 describe("toArgv — the allow-list is the promise", () => {
 	it("maps each command to a fixed argv", () => {
-		// The branch is pinned so two machines with different git defaults do not
-		// create stores on different branches.
-		expect(toArgv({ kind: "init" })).toEqual(["init", "--quiet", "--initial-branch=main"]);
+		expect(toArgv({ kind: "init" })).toEqual(["init", "--quiet"]);
+		// The branch is pinned by a symbolic-ref on the unborn HEAD — works on any
+		// git, where `--initial-branch` needs ≥ 2.28 — so two machines with
+		// different defaults never create stores on different branches.
+		expect(toArgv({ kind: "set-head", branch: "main" })).toEqual(["symbolic-ref", "HEAD", "refs/heads/main"]);
+		expect(toArgv({ kind: "current-branch" })).toEqual(["symbolic-ref", "--short", "HEAD"]);
+		expect(toArgv({ kind: "branch-rename", to: "main" })).toEqual(["branch", "-M", "main"]);
 		expect(toArgv({ kind: "config", key: "user.name", value: "muninn mbp" })).toEqual([
 			"config",
 			"user.name",
@@ -66,5 +77,41 @@ describe("toArgv — the allow-list is the promise", () => {
 		const nasty = 'journal: $(rm -rf /) && echo "; drop table"';
 		const argv = toArgv({ kind: "commit", message: nasty, paths: ["journal/"] });
 		expect(argv).toContain(nasty);
+	});
+});
+
+describe("git — identity travels in the environment", () => {
+	it("sets author and committer for the commands that create commits", async () => {
+		// Passed through the environment rather than written to the repository
+		// on every open: no subprocess has to run at session start to make sure
+		// a config value is still there, and an in-repo store simply passes none
+		// and keeps the project's own author.
+		const dir = mkdtempSync(join(tmpdir(), "muninn-git-identity-"));
+		try {
+			await git(dir, { kind: "init" });
+			await git(dir, { kind: "set-head", branch: "main" });
+			writeFileSync(join(dir, "MEMORY.md"), "# Memory\n");
+			await git(dir, { kind: "add", paths: ["MEMORY.md"] });
+			await git(
+				dir,
+				{ kind: "commit", message: "test", paths: ["MEMORY.md"] },
+				{ identity: { name: "muninn mbp", email: "muninn@host" } },
+			);
+			const { stdout } = await execFileAsync("git", ["log", "-1", "--format=%an <%ae> %cn"], { cwd: dir });
+			expect(stdout.trim()).toBe("muninn mbp <muninn@host> muninn mbp");
+			const { stdout: branch } = await execFileAsync("git", ["symbolic-ref", "--short", "HEAD"], { cwd: dir });
+			expect(branch.trim()).toBe("main");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("tells a missing working directory apart from a missing git", async () => {
+		// Node reports both as `spawn git ENOENT`; the remedies are opposite.
+		const failure = await git("/nonexistent/muninn-store", { kind: "rev-parse", target: "HEAD" }).catch(
+			(e: Error) => e,
+		);
+		expect(failure).toBeInstanceOf(GitError);
+		expect((failure as Error).message).toContain("working directory does not exist");
 	});
 });

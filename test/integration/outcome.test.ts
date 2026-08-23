@@ -202,12 +202,30 @@ describe("an unusable reply is dropped, not journaled", () => {
 	}, 60_000);
 });
 
-describe("compaction writes one entry, not two", () => {
-	beforeEach(async () => {
-		// The model's context window is 128k, so reserving nearly all of it leaves
-		// almost none available and pi compacts after the first exchange. That is
-		// the situation `session_before_compact` exists for: the outcome must be
-		// written before the context is summarised away.
+describe("compaction", () => {
+	// The model's context window is 128k, so reserving nearly all of it leaves
+	// almost none available and pi compacts after the first exchange. That is
+	// the situation `session_before_compact` exists for: the outcome must be
+	// written before the context is summarised away. 120k reported against a
+	// 128k window with 127.5k reserved leaves pi no room.
+	const COMPACT = { compaction: { enabled: true, reserveTokens: 127_500, keepRecentTokens: 1 } };
+
+	function compacted(): boolean {
+		return readdirSync(join(agentDir, "sessions"))
+			.flatMap((dir) =>
+				readdirSync(join(agentDir, "sessions", dir))
+					.filter((name) => name.endsWith(".jsonl"))
+					.map((name) => readFileSync(join(agentDir, "sessions", dir, name), "utf-8")),
+			)
+			.join("\n")
+			.includes('"type":"compaction"');
+	}
+
+	it("does not journal the same work twice", async () => {
+		// One tool call, then compaction, then a one-line answer. The
+		// pre-compaction entry covers the tool call; the tail after compaction
+		// is a single turn with no tools — a question, not a task — and is
+		// rightly not an entry of its own.
 		const script: MockScript = (request) => {
 			if (request.isOutcomeCall) return OUTCOME_REPLY;
 			const calledTool = request.messages.some((message) => message.role === "tool" || message.role === "toolResult");
@@ -215,29 +233,17 @@ describe("compaction writes one entry, not two", () => {
 				? "The README says watch mode is the problem."
 				: { toolCall: { name: "read", arguments: { path: "README.md" } } };
 		};
-		// 120k reported against a 128k window with 127.5k reserved leaves pi no
-		// room, so it compacts after the first exchange.
-		await setUp(script, { compaction: { enabled: true, reserveTokens: 127_500, keepRecentTokens: 1 } }, 120_000);
-	});
-
-	it("does not journal the same run twice", async () => {
-		// One run, compacted while it is still going. Without the guard the
-		// pre-compaction path and `agent_settled` would each write an entry for
-		// the same work.
+		await setUp(script, COMPACT, 120_000);
 		await pi("Why does CI hang?");
 
-		// Guard against a vacuous pass: if pi never compacted, this test proves
-		// nothing about the pre-compaction path.
-		const sessionText = readdirSync(join(agentDir, "sessions"))
-			.flatMap((dir) =>
-				readdirSync(join(agentDir, "sessions", dir))
-					.filter((name) => name.endsWith(".jsonl"))
-					.map((name) => readFileSync(join(agentDir, "sessions", dir, name), "utf-8")),
-			)
-			.join("\n");
-		expect(sessionText, "pi never compacted, so this test proves nothing").toContain('"type":"compaction"');
-
+		expect(compacted(), "pi never compacted, so this test proves nothing").toBe(true);
 		const outcomes = readStoreJournal(projectStore()).entries.filter((entry) => entry.source === "agent");
 		expect(outcomes).toHaveLength(1);
 	}, 90_000);
+
+	// Not covered here: a run that *continues* after compaction (pi does that on
+	// an overflow retry or with queued messages), whose continuation must be its
+	// own entry. The scripted provider cannot provoke either; the mechanism —
+	// `take()` at compaction unsealing the accumulator so later turns collect
+	// again — is pinned in test/unit/outcome.test.ts.
 });

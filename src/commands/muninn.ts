@@ -28,6 +28,7 @@ import { formatScopes } from "../status.ts";
 import type { CaptureTarget } from "../store/scopes.ts";
 import { describeSync, type SyncResult } from "../sync/sync.ts";
 import { renderHitLine } from "../tools/render.ts";
+import { resolveWriteScope } from "../tools/runtime.ts";
 
 export type CommandLevel = "info" | "warning" | "error";
 
@@ -79,24 +80,30 @@ export const USAGE = [
 /**
  * Pull leading `--flag` and `--flag value` out of an argument string.
  *
- * Only *leading* flags: everything from the first ordinary word on is the
- * text, verbatim — newlines included, because `/muninn note` uses line starts
+ * Only *leading* flags, and only the ones the subcommand knows: everything
+ * from the first ordinary word — or the first unknown `--word` — on is the
+ * text, verbatim. Newlines included, because `/muninn note` uses line starts
  * to tell a claim from its context, and a parser that rejoined the words would
- * quietly turn three bullets into one paragraph.
+ * quietly turn three bullets into one paragraph. And unknown flags are text,
+ * because `/muninn note --no-verify is required here` is a note about a flag,
+ * not a request for one, and eating the word would silently alter the memory.
  */
 export function parseFlags(
 	args: string,
-	valued: readonly string[] = [],
+	known: { flags?: readonly string[]; valued?: readonly string[] } = {},
 ): { flags: Set<string>; values: Map<string, string>; rest: string } {
 	const flags = new Set<string>();
 	const values = new Map<string, string>();
+	const valued = known.valued ?? [];
+	const boolean = known.flags ?? [];
 	let cursor = 0;
 
 	while (true) {
 		const flag = args.slice(cursor).match(/^\s*--([a-z][a-z0-9-]*)/i);
 		if (!flag) break;
-		cursor += (flag[0] as string).length;
 		const name = flag[1] as string;
+		if (!valued.includes(name) && !boolean.includes(name)) break;
+		cursor += (flag[0] as string).length;
 		if (!valued.includes(name)) {
 			flags.add(name);
 			continue;
@@ -159,17 +166,13 @@ async function reindex(runtime: CommandRuntime): Promise<CommandOutput> {
 }
 
 async function note(args: string, runtime: CommandRuntime): Promise<CommandOutput> {
-	const { flags, rest } = parseFlags(args);
+	const { flags, rest } = parseFlags(args, { flags: ["global"] });
 	if (rest === "") return { level: "warning", text: "muninn: /muninn note [--global] <text>" };
 
 	const session = await runtime.load({ createStores: true });
-	const target: CaptureTarget | undefined = flags.has("global")
-		? "global"
-		: (session.scopes.captureTarget ?? undefined);
-	if (!target) return { level: "error", text: "muninn: no memory store is active here, so there is nowhere to write" };
-	if (!session.scopes.active.some((active) => active.scope === target)) {
-		return { level: "error", text: `muninn: the ${target} scope is not active in this session (see /muninn scope)` };
-	}
+	// The same rule `memory_note` uses, so the two never disagree about where a
+	// write may go. It throws; the command handler turns that into an error line.
+	const target = resolveWriteScope(session, flags.has("global") ? "global" : undefined);
 
 	const body = bodyFromUserText(rest);
 	const state = runtime.state();
@@ -261,7 +264,7 @@ async function promote(args: string, runtime: CommandRuntime): Promise<CommandOu
  * than summarised away.
  */
 async function runSync(args: string, runtime: CommandRuntime): Promise<CommandOutput> {
-	const { flags } = parseFlags(args);
+	const { flags } = parseFlags(args, { flags: ["no-push"] });
 	await runtime.load({ createStores: true });
 	await runtime.settle();
 
@@ -280,7 +283,7 @@ async function runSync(args: string, runtime: CommandRuntime): Promise<CommandOu
 }
 
 async function search(args: string, runtime: CommandRuntime): Promise<CommandOutput> {
-	const { flags, values, rest } = parseFlags(args, ["limit"]);
+	const { flags, values, rest } = parseFlags(args, { flags: ["history"], valued: ["limit"] });
 	if (rest === "") return { level: "warning", text: "muninn: /muninn search [--history] [--limit n] <query>" };
 
 	await runtime.load({ createStores: true });

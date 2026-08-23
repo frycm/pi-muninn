@@ -196,12 +196,14 @@ export class Tier0Index {
 			},
 		});
 
-		const hits = results.map((result) => toHit(result, superseded, terms));
-		// minisearch orders by score; the tie-break is ours, and it is date
-		// descending — between two equally good answers, memory prefers the
-		// newer one.
-		hits.sort((a, b) => b.score - a.score || (b.date ?? "").localeCompare(a.date ?? "") || a.id.localeCompare(b.id));
-		return hits.slice(0, limit);
+		// Rank the raw results first and materialise only the survivors: with
+		// prefix and fuzzy matching a multi-sentence prompt matches a large slice
+		// of the corpus, and building a snippet for a thousand hits to keep ten
+		// would be most of the cost of every turn's recall. minisearch orders by
+		// score; the tie-break is ours, and it is date descending — between two
+		// equally good answers, memory prefers the newer one.
+		results.sort(byScoreThenDate);
+		return results.slice(0, limit).map((result) => toHit(result, superseded, terms));
 	}
 
 	private link(from: string, targets: readonly string[]): void {
@@ -214,6 +216,18 @@ export class Tier0Index {
 			set.add(from);
 		}
 	}
+}
+
+/** Best first, newest first among equals, then by id so the order is stable. */
+export function byScoreThenDate(
+	a: { score: number; date?: string | unknown; id: string | unknown },
+	b: { score: number; date?: string | unknown; id: string | unknown },
+): number {
+	return (
+		b.score - a.score ||
+		String(b.date ?? "").localeCompare(String(a.date ?? "")) ||
+		String(a.id).localeCompare(String(b.id))
+	);
 }
 
 function toHit(result: Record<string, unknown>, superseded: ReadonlySet<string>, query: string): Hit {

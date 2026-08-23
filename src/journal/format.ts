@@ -119,15 +119,42 @@ export function formatEntry(entry: JournalEntry): string {
 
 	const prose = entry.prose.trim();
 	if (prose !== "") {
-		lines.push("", prose);
+		lines.push("", guardProse(prose));
 	}
 	if (entry.claims.length > 0) {
 		lines.push("");
+		// A claim's continuation lines are indented, which also keeps a `## `
+		// inside a claim off column 0; prose gets the same protection below.
 		for (const claim of entry.claims) lines.push(`- ${claim.trim().replace(/\n/g, "\n  ")}`);
 	}
 
 	// Trailing blank line: the terminator described above.
 	return `${lines.join("\n")}\n\n`;
+}
+
+/**
+ * Lines of prose that would read back as something else.
+ *
+ * The reader splits a daily file on lines that begin with `## ` and takes
+ * lines that begin with `- ` as claims. Prose is what the user or the model
+ * wrote, and a note that quotes a markdown heading or a bullet list is
+ * ordinary — so those lines are indented by one space on the way out, which
+ * the reader strips on the way back in. Without this, a `## Deploy` line in a
+ * note would split its own entry in two on the next read, and the claim ids
+ * handed out at append time would stop resolving.
+ */
+const PROSE_GUARD = /^(#{1,6}\s|- )/;
+
+function guardProse(prose: string): string {
+	return prose
+		.split("\n")
+		.map((line) => (PROSE_GUARD.test(line) ? ` ${line}` : line))
+		.join("\n");
+}
+
+/** Undo `guardProse`: a single leading space before a heading or bullet was ours. */
+function unguardProse(line: string): string {
+	return line.startsWith(" ") && PROSE_GUARD.test(line.slice(1)) ? line.slice(1) : line;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,7 +227,7 @@ export function parseEntry(block: string): ParseEntryResult {
 			claims[claims.length - 1] = `${claims[claims.length - 1]} ${line.trim()}`;
 			continue;
 		}
-		proseLines.push(line);
+		proseLines.push(unguardProse(line));
 	}
 
 	const entry: JournalEntry = {

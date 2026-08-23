@@ -14,7 +14,7 @@ import {
 	getAgentDir,
 	VERSION as PI_VERSION,
 } from "@earendil-works/pi-coding-agent";
-import { MUNINN_MESSAGE_TYPE, RunAccumulator } from "./capture/accumulate.ts";
+import { MUNINN_MESSAGE_TYPE, messageText, RunAccumulator } from "./capture/accumulate.ts";
 import { decideCapture } from "./capture/capture.ts";
 import { commitJournal } from "./capture/commit.ts";
 import { channelForMode } from "./capture/cues.ts";
@@ -33,10 +33,17 @@ import {
 import { type CommandOutput, type CommandRuntime, runMuninnCommand } from "./commands/muninn.ts";
 import { SessionIndexes } from "./index/search.ts";
 import { type AppendResult, appendEntry } from "./journal/append.ts";
-import { buildRecallMessage, contextFileLines, RECALL_KINDS } from "./recall/per-turn.ts";
+import {
+	buildRecallMessage,
+	type ContextTokens,
+	contextFileLines,
+	prepareContext,
+	RECALL_KINDS,
+} from "./recall/per-turn.ts";
 import { appendSnapshot, readSnapshot, type Snapshot } from "./recall/snapshot.ts";
 import { buildSessionContext, journalStats, type SessionContext } from "./session.ts";
 import { formatStatus, formatStatusLine, formatWarning } from "./status.ts";
+import { storeIdentity } from "./store/init.ts";
 import type { CaptureTarget } from "./store/scopes.ts";
 import { describeSync, type SyncResult, sync } from "./sync/sync.ts";
 import { memoryNoteTool } from "./tools/memory-note.ts";
@@ -47,6 +54,17 @@ import { MUNINN_VERSION } from "./version.ts";
 
 /** How long a shutdown will wait for sync before giving up on the network. */
 const SHUTDOWN_SYNC_MS = 10_000;
+/** How long a session change will wait for an outcome entry already being written. */
+const OUTCOME_GRACE_MS = 15_000;
+/**
+ * Lock budget for a write nobody is waiting on.
+ *
+ * A queued capture or outcome append contends with syncs — this session's and
+ * other processes' — that hold the lock for the length of a fetch and a push.
+ * The default 5 s is the right budget for a tool call with a model waiting;
+ * a background write can afford to wait out a sync rather than lose the entry.
+ */
+const BACKGROUND_LOCK_TIMEOUT_MS = 60_000;
 
 function describeRuntime(): string {
 	const bunVersion = (globalThis as { Bun?: { version: string } }).Bun?.version;
@@ -64,10 +82,10 @@ export default function (pi: ExtensionAPI): void {
 	let previousAssistantText: string | undefined;
 	const queue = new AppendQueue();
 	const run = new RunAccumulator();
-	/** Set when the pre-compaction path already wrote this run's outcome entry. */
-	let runAlreadyJournaled = false;
-	/** Aborts an outcome call when the session goes away mid-flight. */
+	/** Aborts an outcome call when the process is going away mid-flight. */
 	let outcomeAbort: AbortController | undefined;
+	/** The outcome call in progress, so a session change can wait for it rather than drop it. */
+	let outcomeInFlight: Promise<void> | undefined;
 	/**
 	 * Runs that settled without pi's authoritative `agent_end` payload, and so
 	 * were assembled from `turn_end` alone. Reported by `/muninn`; if this stays
@@ -75,8 +93,16 @@ export default function (pi: ExtensionAPI): void {
 	 * gap worth proposing.
 	 */
 	let runsWithoutAgentEnd = 0;
-	/** Entries appended since the last commit, for the commit message. */
-	let uncommittedEntries = 0;
+	/**
+	 * Entries appended and not yet committed, per store.
+	 *
+	 * Per store, because a session writes to more than one: capture goes to
+	 * the capture target, but `/muninn note --global`, `promote` and a
+	 * `memory_note` with a scope all go elsewhere, and a commit of one store
+	 * must not zero the count of another.
+	 */
+	const pending = new Map<string, number>();
+	const pendingTotal = (): number => [...pending.values()].reduce((total, count) => total + count, 0);
 	/** One Tier 0 index per active scope, opened once and kept for the session. */
 	let indexes: SessionIndexes | undefined;
 	/**
@@ -85,8 +111,8 @@ export default function (pi: ExtensionAPI): void {
 	 * prompt cache and leave the model's context disagreeing with itself.
 	 */
 	let snapshot: Snapshot | undefined;
-	/** Lines pi already loaded into the prompt, so recall does not repeat them. */
-	let contextLines: string[] | undefined;
+	/** What pi already loaded into the prompt, tokenised once, so recall does not repeat it. */
+	let context: ContextTokens | undefined;
 	/** Texts of what was recalled this session, by id — the input to echo detection. */
 	const recalledTexts = new Map<string, string>();
 	/** What sync did this session, for the status report's "last sync" line. */
@@ -116,7 +142,7 @@ export default function (pi: ExtensionAPI): void {
 		const current = session;
 		if (!current || !setStatus) return;
 		try {
-			setStatus(formatStatusLine(current, { tier: "t0", uncommitted: uncommittedEntries }));
+			setStatus(formatStatusLine(current, { tier: "t0", uncommitted: pendingTotal() }));
 		} catch {
 			// A context captured before a fork or a reload is invalidated by pi.
 			// The next event replaces it; a stale footer is not worth an error.
@@ -141,7 +167,7 @@ export default function (pi: ExtensionAPI): void {
 		written: AppendResult,
 	): void => {
 		currentState.written.push(written.id);
-		uncommittedEntries++;
+		pending.set(storePath, (pending.get(storePath) ?? 0) + 1);
 		refreshStatus();
 		indexes?.addEntry(storePath, {
 			...written.entry,
@@ -168,6 +194,15 @@ export default function (pi: ExtensionAPI): void {
 			if (opened.problems.length > 0) {
 				process.stderr.write(`${["muninn: index problems", ...opened.problems.map((p) => `  ! ${p}`)].join("\n")}\n`);
 			}
+			// A resumed session already knows *which* memories it was shown — the
+			// ids are in pi's session file — but echo detection needs their text,
+			// which only the index has. Without this, a claim restating something
+			// recalled before the resume is journaled as fresh evidence.
+			for (const id of state?.recalled ?? []) {
+				if (recalledTexts.has(id)) continue;
+				const found = opened.indexes.find(id);
+				if (found) recalledTexts.set(id, found.chunk.body);
+			}
 		});
 	};
 
@@ -193,9 +228,11 @@ export default function (pi: ExtensionAPI): void {
 			// to be told whether it happened. A failure here fails the tool call.
 			const written = await appendEntry(entry, { storePath, hostId: current.host.id });
 			if (currentState) afterAppend(current, currentState, storePath, written);
-			// The entry is durable in git before the model moves on, so a crash
-			// mid-session cannot lose what it was asked to remember.
-			commitPending(false);
+			// Committed before the model moves on — un-debounced and awaited, so a
+			// crash mid-session cannot lose what it was explicitly asked to
+			// remember. A note is rare enough that the commit's cost is nothing.
+			commitPending(true);
+			await queue.flush();
 			return written;
 		},
 	};
@@ -222,7 +259,7 @@ export default function (pi: ExtensionAPI): void {
 			journal: journalStats(current),
 			captureFailures: queue.peekFailures().map((failure) => `${failure.label}: ${failure.message}`),
 			runsWithoutAgentEnd,
-			uncommitted: uncommittedEntries,
+			uncommitted: pendingTotal(),
 			sync: { remote: current.loaded.settings.sync.remote, ...(lastSync ? { last: lastSync } : {}) },
 			...(indexStats ? { index: indexStats } : {}),
 			recall: {
@@ -244,7 +281,17 @@ export default function (pi: ExtensionAPI): void {
 					await queue.flush();
 					return indexes?.size ?? 0;
 				},
-				sync: (options) => runSync(options),
+				// On the queue, so it serialises with the appends this session has
+				// in flight: a sync holding the store lock while a queued outcome
+				// entry times out waiting for it would lose that entry for good.
+				sync: async (options) => {
+					let outcomes: Awaited<ReturnType<typeof runSync>> = [];
+					queue.enqueue("sync", async () => {
+						outcomes = await runSync(options);
+					});
+					await queue.flush();
+					return outcomes;
+				},
 				statusReport,
 				channel: () => channelForMode(ctx.mode),
 				sessionPointer: () => sessionPointer(ctx.sessionManager),
@@ -255,7 +302,8 @@ export default function (pi: ExtensionAPI): void {
 				output = await runMuninnCommand(args, commandRuntime);
 			} catch (error) {
 				// A command that fails says why, in the place the user is looking.
-				output = { level: "error", text: `muninn: ${error instanceof Error ? error.message : String(error)}` };
+				const message = error instanceof Error ? error.message : String(error);
+				output = { level: "error", text: message.startsWith("muninn:") ? message : `muninn: ${message}` };
 			}
 
 			setStatus = (text) => ctx.ui.setStatus("muninn", text);
@@ -272,8 +320,9 @@ export default function (pi: ExtensionAPI): void {
 		session = undefined;
 		indexes = undefined;
 		snapshot = undefined;
-		contextLines = undefined;
+		context = undefined;
 		recalledTexts.clear();
+		pending.clear();
 		previousAssistantText = undefined;
 		const current = await load(ctx.cwd, ctx.isProjectTrusted(), true);
 		setStatus = (text) => ctx.ui.setStatus("muninn", text);
@@ -339,10 +388,10 @@ export default function (pi: ExtensionAPI): void {
 
 		// pi loads its context files once per session, so their lines are worth
 		// splitting once rather than on every turn.
-		contextLines ??= [
+		context ??= prepareContext([
 			...contextFileLines(event.systemPromptOptions.contextFiles),
 			...(snapshot ? snapshot.text.split("\n") : []),
-		];
+		]);
 
 		// Two things are on that queue and both must land before a query: the
 		// index open (queued at session start, so the first turn would otherwise
@@ -364,7 +413,7 @@ export default function (pi: ExtensionAPI): void {
 					}),
 					limit: current.loaded.settings.recall.factsPerTurn,
 					tokenBudget: current.loaded.settings.recall.tokenBudget,
-					contextLines,
+					context,
 					prompt: event.prompt,
 				})
 			: undefined;
@@ -409,7 +458,11 @@ export default function (pi: ExtensionAPI): void {
 		// under contention with another pi session it can wait seconds, and
 		// stalling the user's turn to record a note about it is the wrong trade.
 		queue.enqueue(`capture ${decision.kind}`, async () => {
-			const result = await appendEntry(decision.entry, { storePath, hostId: current.host.id });
+			const result = await appendEntry(decision.entry, {
+				storePath,
+				hostId: current.host.id,
+				lockTimeoutMs: BACKGROUND_LOCK_TIMEOUT_MS,
+			});
 			afterAppend(current, currentState, storePath, result);
 		});
 	});
@@ -437,10 +490,7 @@ export default function (pi: ExtensionAPI): void {
 		const storePath = captureTargetPath(current);
 		if (!storePath) return;
 
-		const skip = shouldWriteOutcome(buffer, {
-			outcomesEnabled: current.loaded.settings.capture.outcomes,
-			alreadyJournaled: runAlreadyJournaled,
-		});
+		const skip = shouldWriteOutcome(buffer, { outcomesEnabled: current.loaded.settings.capture.outcomes });
 		if (skip) return;
 
 		const model = ctx.model;
@@ -460,11 +510,11 @@ export default function (pi: ExtensionAPI): void {
 					{ systemPrompt: context.systemPrompt, messages: context.messages } as never,
 					{ signal: abort } as never,
 				)) as { content?: unknown };
-				return extractText(reply);
+				return messageText(reply as never);
 			},
 		};
 
-		const result = await runOutcome({
+		const call = runOutcome({
 			request:
 				recalledTexts.size > 0 ? { buffer, state: currentState, recalledTexts } : { buffer, state: currentState },
 			model: outcomeModel,
@@ -472,19 +522,29 @@ export default function (pi: ExtensionAPI): void {
 			session: sessionPointer(ctx.sessionManager),
 			signal,
 		});
+		outcomeInFlight = call.then(
+			() => undefined,
+			() => undefined,
+		);
+		const result = await call;
+		outcomeInFlight = undefined;
 
 		if (!result.ok) {
 			// Not written is not the same as broken: "nothing durable was learned"
-			// is a legitimate outcome the template invites.
-			if (!signal.aborted) {
-				process.stderr.write(`muninn: no outcome entry — ${result.problem}\n`);
-			}
+			// is a legitimate outcome the template invites. An abort is reported
+			// too — it is the one way a finished task's outcome can be lost.
+			process.stderr.write(`muninn: no outcome entry — ${signal.aborted ? "cut short by shutdown" : result.problem}\n`);
 			return;
 		}
 
-		runAlreadyJournaled = true;
 		queue.enqueue("outcome", async () => {
-			const written = await appendEntry(result.entry, { storePath, hostId: current.host.id });
+			// A long acquire budget: nobody is waiting on this write, and a sync
+			// in another process may hold the lock for the length of a push.
+			const written = await appendEntry(result.entry, {
+				storePath,
+				hostId: current.host.id,
+				lockTimeoutMs: BACKGROUND_LOCK_TIMEOUT_MS,
+			});
 			afterAppend(current, currentState, storePath, written);
 		});
 	};
@@ -497,23 +557,30 @@ export default function (pi: ExtensionAPI): void {
 	const commitPending = (force: boolean): void => {
 		const current = session;
 		if (!current) return;
-		const storePath = captureTargetPath(current);
-		if (!storePath) return;
 
-		queue.enqueue("commit", async () => {
-			if (uncommittedEntries === 0 && !force) return;
-			const result = await commitJournal({
-				storePath,
-				hostId: current.host.id,
-				hostName: current.host.name,
-				entries: uncommittedEntries,
-				force,
+		// Every store this session may have written to — not only the capture
+		// target. A promoted entry lives in the global store, and a commit of the
+		// project store must not leave it behind.
+		for (const scope of current.scopes.active) {
+			if (!scope.exists) continue;
+			const storePath = scope.path;
+			queue.enqueue("commit", async () => {
+				const entries = pending.get(storePath) ?? 0;
+				if (entries === 0 && !force) return;
+				const result = await commitJournal({
+					storePath,
+					hostId: current.host.id,
+					hostName: current.host.name,
+					entries,
+					force,
+					...(scope.inRepo ? {} : { identity: storeIdentity(current.host) }),
+				});
+				if (result.committed) {
+					pending.set(storePath, 0);
+					refreshStatus();
+				}
 			});
-			if (result.committed) {
-				uncommittedEntries = 0;
-				refreshStatus();
-			}
-		});
+		}
 	};
 
 	/**
@@ -542,20 +609,22 @@ export default function (pi: ExtensionAPI): void {
 				// never pushed by Muninn at all.
 				remote: scope.scope === "global" ? current.loaded.settings.sync.remote : null,
 				useExistingRemote: !scope.inRepo,
-				entries: uncommittedEntries,
+				entries: pending.get(scope.path) ?? 0,
+				...(scope.inRepo ? {} : { identity: storeIdentity(current.host) }),
 				...(options.noPush ? { noPush: true } : {}),
 				...(options.signal ? { signal: options.signal } : {}),
 			});
 			// Sync commits on its way out, so the footer's pending count is stale
 			// the moment it succeeds.
 			if (result.committed) {
-				uncommittedEntries = 0;
+				pending.set(scope.path, 0);
 				refreshStatus();
 			}
 			// A rebase can bring another host's entries into the store while this
 			// session holds its index open. Without this, `/muninn sync` followed
-			// by a search misses exactly the memory the sync just fetched.
-			if (result.rebased || result.fetched) indexes?.refresh(scope.path);
+			// by a search misses exactly the memory the sync just fetched. A fetch
+			// that rebased nothing changed no file and needs no refresh.
+			if (result.rebased) indexes?.refresh(scope.path);
 			outcomes.push({ scope: scope.scope, result });
 			lastSync = `${scope.scope}: ${describeSync(result)}`;
 		}
@@ -568,20 +637,34 @@ export default function (pi: ExtensionAPI): void {
 		if (!run.isEmpty && !run.hadAuthoritativeEnd) runsWithoutAgentEnd++;
 		const buffer = run.take();
 		await writeOutcome(ctx as never, buffer);
-		runAlreadyJournaled = false;
 		commitPending(false);
 	});
 
 	pi.on("session_before_compact", async (_event, ctx) => {
 		// Write the outcome *before* the summary is produced, so nothing
-		// compaction drops is lost to the journal. Returning nothing leaves pi's
-		// compaction exactly as it was.
-		await writeOutcome(ctx as never, run.peek());
+		// compaction drops is lost to the journal, and start the run afresh:
+		// what happens after the compaction is its own outcome, written at the
+		// next compaction or when the run settles. Taking rather than peeking is
+		// what keeps the post-compaction work from being silently discarded.
+		// Returning nothing leaves pi's compaction exactly as it was.
+		await writeOutcome(ctx as never, run.take());
 	});
 
-	pi.on("session_shutdown", async (_event, ctx) => {
-		// An outcome call still in flight is the session ending, not a failure.
+	pi.on("session_shutdown", async (event, ctx) => {
+		// An outcome call still in flight is the most valuable entry of the run
+		// that just finished. `/new`, `/fork`, `/resume` and `/reload` all arrive
+		// here too, and none of them is a reason to lose it — so it is waited
+		// for, with a cap, and aborted only when the cap runs out.
+		if (outcomeInFlight) {
+			const cap = new Promise<void>((resolve) => setTimeout(resolve, OUTCOME_GRACE_MS).unref?.());
+			await Promise.race([outcomeInFlight, cap]);
+		}
 		outcomeAbort?.abort();
+		if (event.reason !== "quit") {
+			// The process lives on: let the aborted call's report land before
+			// the queue is flushed.
+			await outcomeInFlight;
+		}
 		// Un-debounced: this is the last chance to make the session's entries
 		// durable in git before the process goes away.
 		commitPending(true);
@@ -637,17 +720,4 @@ export default function (pi: ExtensionAPI): void {
  */
 function recallMessage(content: string, ids: string[]): NonNullable<BeforeAgentStartEventResult["message"]> {
 	return { customType: MUNINN_MESSAGE_TYPE, content, display: true, details: { ids } };
-}
-
-/** Plain text of an assistant reply, whatever block shape it arrived in. */
-function extractText(reply: { content?: unknown }): string {
-	if (typeof reply.content === "string") return reply.content;
-	if (!Array.isArray(reply.content)) return "";
-	const parts: string[] = [];
-	for (const block of reply.content) {
-		if (typeof block !== "object" || block === null) continue;
-		const typed = block as { type?: unknown; text?: unknown };
-		if (typed.type === "text" && typeof typed.text === "string") parts.push(typed.text);
-	}
-	return parts.join("");
 }

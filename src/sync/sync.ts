@@ -25,8 +25,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
-import { GitError, GitMissingError, git, isGitRepository } from "../git.ts";
-import { withStoreLock } from "../store/lock.ts";
+import { GitError, type GitIdentity, GitMissingError, git, isGitRepository } from "../git.ts";
+import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import { formatStoreMd, mergeStoreMd, parseStoreMd, type StoreMd } from "../store/store-md.ts";
 
 /** The remote Muninn keeps pointed at `sync.remote`. */
@@ -57,6 +57,8 @@ export interface SyncOptions {
 	signal?: AbortSignal;
 	/** Skip the push — for a run that only wants the store up to date locally. */
 	noPush?: boolean;
+	/** The identity commits and the rebase run under. Absent for an in-repo store. */
+	identity?: GitIdentity;
 }
 
 export type SyncStep = "commit" | "fetch" | "rebase" | "push";
@@ -100,14 +102,26 @@ export async function sync(options: SyncOptions): Promise<SyncResult> {
 	} catch (error) {
 		// Without git there is nothing sync can do, and saying so is the whole
 		// remedy: install git, run it again.
-		const problem = error instanceof GitMissingError ? error.message : describe(error);
-		result.problem = problem;
-		result.stoppedAt = "commit";
-		result.notes.push(problem);
-		return result;
+		return stop(result, "commit", error instanceof GitMissingError ? error.message : describe(error));
 	}
 
-	return withStoreLock(options.storePath, "sync", { host: options.hostId }, async () => {
+	// Every failure inside the transaction becomes a result, never a throw: a
+	// detached HEAD, a malformed remote URL, an unborn branch — each is a
+	// message the operator can act on, and a rejection would reach them as a
+	// stack trace from cron or as "capture failed" at shutdown, which is the
+	// wrong diagnosis in the wrong place.
+	try {
+		return await withStoreLock(options.storePath, "sync", { host: options.hostId }, () => transaction(options, result));
+	} catch (error) {
+		if (error instanceof LockBusyError) {
+			return stop(result, "commit", `the store is busy (${error.message}); sync not started`);
+		}
+		return stop(result, result.stoppedAt ?? "commit", describe(error));
+	}
+}
+
+async function transaction(options: SyncOptions, result: SyncResult): Promise<SyncResult> {
+	{
 		// --- commit --------------------------------------------------------
 		const committed = await commitJournalLocked({
 			storePath: options.storePath,
@@ -115,6 +129,7 @@ export async function sync(options: SyncOptions): Promise<SyncResult> {
 			hostName: options.hostName,
 			entries: options.entries ?? 0,
 			force: true,
+			...(options.identity ? { identity: options.identity } : {}),
 		});
 		result.committed = committed.committed;
 		result.notes.push(committed.committed ? "committed pending journal entries" : `commit: ${committed.reason}`);
@@ -124,6 +139,9 @@ export async function sync(options: SyncOptions): Promise<SyncResult> {
 			result.stoppedAt = "fetch";
 			return result;
 		}
+		// Anything past here that throws is a stopped transaction, and the step
+		// it stopped at is the one it was about to run.
+		result.stoppedAt = "fetch";
 		const branch = await currentBranch(options.storePath);
 
 		// --- fetch ---------------------------------------------------------
@@ -159,14 +177,10 @@ export async function sync(options: SyncOptions): Promise<SyncResult> {
 			// rebasing one store's history onto another's and pushing the result:
 			// two unrelated memories, merged, on a remote neither of them owns.
 			const mismatch = await storeMismatch(options.storePath, remoteRef);
-			if (mismatch) {
-				result.stoppedAt = "rebase";
-				result.problem = mismatch;
-				result.notes.push(mismatch);
-				return result;
-			}
+			if (mismatch) return stop(result, "rebase", mismatch);
 			if (options.signal?.aborted) return stop(result, "rebase", "sync ran out of time before rebasing");
-			const rebased = await rebaseOnto(options.storePath, remoteRef, result);
+			result.stoppedAt = "rebase";
+			const rebased = await rebaseOnto(options.storePath, remoteRef, result, options.identity);
 			if (!rebased) return result;
 		} else {
 			result.notes.push(`${remoteRef} does not exist yet — this is the first push`);
@@ -174,10 +188,12 @@ export async function sync(options: SyncOptions): Promise<SyncResult> {
 
 		// --- push ----------------------------------------------------------
 		if (options.noPush) {
+			delete result.stoppedAt;
 			result.notes.push("push skipped");
 			return result;
 		}
 		if (options.signal?.aborted) return stop(result, "push", "sync ran out of time before pushing");
+		result.stoppedAt = "push";
 		try {
 			await git(
 				options.storePath,
@@ -185,6 +201,7 @@ export async function sync(options: SyncOptions): Promise<SyncResult> {
 				options.signal ? { signal: options.signal } : {},
 			);
 			result.pushed = true;
+			delete result.stoppedAt;
 			result.notes.push(`pushed to ${REMOTE_NAME}/${branch}`);
 		} catch (error) {
 			result.stoppedAt = "push";
@@ -195,7 +212,7 @@ export async function sync(options: SyncOptions): Promise<SyncResult> {
 		}
 
 		return result;
-	});
+	}
 }
 
 function stop(result: SyncResult, step: SyncStep, problem: string): SyncResult {
@@ -244,6 +261,11 @@ function describe(error: unknown): string {
  * store, which has no setting of its own, syncs at all.
  */
 async function resolveRemote(options: SyncOptions, result: SyncResult): Promise<string | undefined> {
+	if (!options.remote && options.useExistingRemote === false) {
+		result.notes.push("in-repo store — committed locally, never pushed by muninn");
+		return undefined;
+	}
+
 	let current: string | undefined;
 	try {
 		current = (await git(options.storePath, { kind: "remote-get-url", name: REMOTE_NAME })).stdout.trim() || undefined;
@@ -252,10 +274,6 @@ async function resolveRemote(options: SyncOptions, result: SyncResult): Promise<
 	}
 
 	if (!options.remote) {
-		if (options.useExistingRemote === false) {
-			result.notes.push("in-repo store — committed locally, never pushed by muninn");
-			return undefined;
-		}
 		if (!current) {
 			result.notes.push("no remote configured — committed locally only");
 			return undefined;
@@ -276,12 +294,15 @@ async function resolveRemote(options: SyncOptions, result: SyncResult): Promise<
 }
 
 async function currentBranch(storePath: string): Promise<string> {
-	const { stdout } = await git(storePath, { kind: "rev-parse", target: "--abbrev-ref" });
-	const branch = stdout.trim();
-	// A detached HEAD has no branch to push; `main` is a guess that would push
-	// the wrong thing, so it is refused rather than guessed at.
-	if (branch === "" || branch === "HEAD") throw new Error("muninn: the store is not on a branch");
-	return branch;
+	// `symbolic-ref` answers on an unborn branch too; it fails only when HEAD
+	// is detached, which is someone looking at history — refused, not guessed.
+	try {
+		const branch = (await git(storePath, { kind: "current-branch" })).stdout.trim();
+		if (branch !== "") return branch;
+	} catch {
+		// Fall through to the one message.
+	}
+	throw new Error("the store is not on a branch (detached HEAD); check out its branch and run sync again");
 }
 
 /**
@@ -339,26 +360,35 @@ async function refExists(storePath: string, ref: string): Promise<boolean> {
  * Rebase onto the remote head, resolving a `store.md` conflict if that is all
  * there is.
  */
-async function rebaseOnto(storePath: string, remoteRef: string, result: SyncResult): Promise<boolean> {
+async function rebaseOnto(
+	storePath: string,
+	remoteRef: string,
+	result: SyncResult,
+	identity?: GitIdentity,
+): Promise<boolean> {
+	const withIdentity = identity ? { identity } : {};
 	try {
-		await git(storePath, { kind: "rebase", onto: remoteRef });
+		// A rebase rewrites this host's commits, so the committer is set here
+		// as it is for a commit.
+		await git(storePath, { kind: "rebase", onto: remoteRef }, withIdentity);
 		result.rebased = true;
 		result.notes.push(`rebased onto ${remoteRef}`);
 		return true;
 	} catch (error) {
 		const conflicts = await conflictedPaths(storePath);
 		if (conflicts.length === 1 && conflicts[0] === "store.md") {
-			const merged = await mergeRegistry(storePath, result);
+			const merged = await mergeRegistry(storePath, result, identity);
 			if (merged) return true;
 		}
 
 		await abort(storePath);
-		result.stoppedAt = "rebase";
-		result.problem =
+		stop(
+			result,
+			"rebase",
 			conflicts.length > 0
 				? `rebase onto ${remoteRef} conflicts in ${conflicts.join(", ")}; the store is unchanged`
-				: `rebase onto ${remoteRef} failed: ${describe(error)}`;
-		result.notes.push(result.problem);
+				: `rebase onto ${remoteRef} failed: ${describe(error)}`,
+		);
 		return false;
 	}
 }
@@ -375,7 +405,8 @@ async function conflictedPaths(storePath: string): Promise<string[]> {
 	return paths;
 }
 
-async function mergeRegistry(storePath: string, result: SyncResult): Promise<boolean> {
+async function mergeRegistry(storePath: string, result: SyncResult, identity?: GitIdentity): Promise<boolean> {
+	const withIdentity = identity ? { identity } : {};
 	try {
 		const ours = parseStoreMd((await git(storePath, { kind: "show-stage", stage: 2, path: "store.md" })).stdout);
 		const theirs = parseStoreMd((await git(storePath, { kind: "show-stage", stage: 3, path: "store.md" })).stdout);
@@ -390,7 +421,7 @@ async function mergeRegistry(storePath: string, result: SyncResult): Promise<boo
 
 		writeFileSync(join(storePath, "store.md"), formatStoreMd(mergeStoreMd(ours.store, theirs.store)));
 		await git(storePath, { kind: "add", paths: ["store.md"] });
-		await git(storePath, { kind: "rebase-continue" });
+		await git(storePath, { kind: "rebase-continue" }, withIdentity);
 
 		result.rebased = true;
 		result.mergedRegistry = true;
@@ -408,15 +439,6 @@ async function abort(storePath: string): Promise<void> {
 	} catch {
 		// Nothing to abort, or git already cleaned up: either way the caller is
 		// about to report a conflict, and this must not replace that report.
-	}
-}
-
-/** Read a store's `store.md` — used by the CLI to name the store it is syncing. */
-export function readStoreId(storePath: string): string | undefined {
-	try {
-		return parseStoreMd(readFileSync(join(storePath, "store.md"), "utf-8")).store?.store;
-	} catch {
-		return undefined;
 	}
 }
 

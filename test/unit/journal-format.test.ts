@@ -8,6 +8,7 @@ import {
 	type JournalEntry,
 	parseEntry,
 } from "../../src/journal/format.ts";
+import { parseDailyFile } from "../../src/journal/read.ts";
 
 function entry(overrides: Partial<JournalEntry> = {}): JournalEntry {
 	return {
@@ -180,5 +181,36 @@ describe("time and date formatting", () => {
 		const date = new Date(2026, 7, 3, 9, 5);
 		expect(formatTime(date)).toBe("09:05");
 		expect(formatDate(date)).toBe("2026-08-03");
+	});
+});
+
+describe("prose that looks like structure", () => {
+	it("round-trips a heading and a bullet inside prose without breaking the entry", () => {
+		// A note that quotes a markdown heading is ordinary. Without the guard,
+		// `## Deploy` at column 0 splits the entry in two on the next read and
+		// the claim ids handed out at append time stop resolving.
+		const entry: JournalEntry = {
+			id: "j-01a02e19-f1c6-7142-bcb1-2806083bd725",
+			time: "14:32",
+			source: "user",
+			prose: "Notes from the runbook:\n## Deploy\n- not a claim, a quoted list item\nuse blue-green",
+			claims: ["Deploys go through staging first.", "Rollback is one command."],
+		};
+
+		const text = formatEntry(entry);
+		const file = parseDailyFile(text);
+		expect(file.problems).toEqual([]);
+		expect(file.entries).toHaveLength(1);
+		expect(file.entries[0]?.prose).toBe(entry.prose);
+		expect(file.entries[0]?.claims).toEqual(entry.claims);
+	});
+
+	it("only strips the one space it added", () => {
+		// A leading space before anything that is not a heading or bullet was
+		// the writer's, and prose is trimmed as a whole anyway.
+		const { entry } = parseEntry(
+			"## 14:32 · j-01a02e19-f1c6-7142-bcb1-2806083bd725\nsource: user\n\nfirst\n  second, indented\n\n",
+		);
+		expect(entry?.prose).toBe("first\n  second, indented");
 	});
 });

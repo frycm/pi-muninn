@@ -17,6 +17,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isClaimId } from "../ids.ts";
+import { parseIdLine } from "./trailer.ts";
 
 export interface Supersession {
 	/** The claim that is no longer current. */
@@ -48,26 +49,19 @@ export function parseSupersessions(text: string): Supersessions {
 		if (line === "" || line.startsWith("#")) continue;
 		if (!line.startsWith("- ")) continue;
 
-		const parts = line
-			.slice(2)
-			.split("·")
-			.map((part) => part.trim());
-		const claim = parts[0];
-		if (claim === undefined || !isClaimId(claim)) {
+		const { id: claim, fields } = parseIdLine(line.slice(2));
+		if (!isClaimId(claim)) {
 			result.problems.push(`unreadable supersession line: ${line}`);
 			continue;
 		}
 
 		const entry: Supersession = { claim };
-		for (const part of parts.slice(1)) {
-			const colon = part.indexOf(":");
-			if (colon < 0) continue;
-			const key = part.slice(0, colon).trim();
-			const value = part.slice(colon + 1).trim();
-			if (key === "valid_to") entry.validTo = value;
-			else if (key === "by") entry.by = value;
-			else if (key === "fact") entry.fact = value;
-		}
+		const validTo = fields.get("valid_to");
+		if (validTo !== undefined) entry.validTo = validTo;
+		const by = fields.get("by");
+		if (by !== undefined) entry.by = by;
+		const fact = fields.get("fact");
+		if (fact !== undefined) entry.fact = fact;
 
 		result.superseded.add(claim);
 		result.byClaim.set(claim, entry);

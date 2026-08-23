@@ -272,9 +272,14 @@ function validate(
 		case "string":
 			return typeof value === "string" ? { ok: true, value } : bad("invalid-type", `"${path}" must be a string`);
 		case "string-or-null":
-			return typeof value === "string" || value === null
-				? { ok: true, value }
-				: bad("invalid-type", `"${path}" must be a string or null`);
+			if (typeof value !== "string" && value !== null) return bad("invalid-type", `"${path}" must be a string or null`);
+			// A remote is handed to git. `ext::` runs a command and a leading `-`
+			// is a flag; neither is a place memory can be pushed to, and catching
+			// them here turns a stack trace at sync time into a settings warning.
+			if (typeof value === "string" && path.endsWith(".remote") && !isUsableRemote(value)) {
+				return bad("invalid-value", `"${path}" is not a git remote muninn will use: ${JSON.stringify(value)}`);
+			}
+			return { ok: true, value };
 		case "index-tier":
 			return value === "auto" || value === "0" || value === "1"
 				? { ok: true, value }
@@ -291,6 +296,12 @@ function validate(
 			return { ok: true, value: { provider: value.provider, model: value.model } };
 		}
 	}
+}
+
+/** The same rule `git.ts` enforces before handing a URL to git. */
+export function isUsableRemote(url: string): boolean {
+	const trimmed = url.trim();
+	return trimmed !== "" && !trimmed.startsWith("-") && !/^ext::/i.test(trimmed);
 }
 
 /** Width rank for the `lower-only` policy. Higher means wider. */

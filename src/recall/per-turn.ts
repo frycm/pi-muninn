@@ -49,12 +49,27 @@ export interface RecallRequest {
 	/** `recall.tokenBudget`. */
 	tokenBudget: number;
 	/**
-	 * Lines the model already has: pi's context files, and Muninn's own frozen
-	 * snapshot. A memory that restates one of them is dropped.
+	 * What the model already has, tokenised once per session by
+	 * `prepareContext`: pi's context files and Muninn's own frozen snapshot. A
+	 * memory that restates one of those lines is dropped.
 	 */
-	contextLines?: readonly string[];
+	context?: ContextTokens;
 	/** This turn's prompt. A memory that just restates it is not worth injecting. */
 	prompt?: string;
+}
+
+/** Token sets for lines already in the model's context. Build once, reuse every turn. */
+export type ContextTokens = readonly Set<string>[];
+
+/**
+ * Tokenise the lines the model already has.
+ *
+ * Done once when a session learns its context files, not on every turn: the
+ * lines do not change for the life of the session, and a 500-line `AGENTS.md`
+ * is five hundred regex splits that would otherwise repeat on every prompt.
+ */
+export function prepareContext(lines: readonly string[]): ContextTokens {
+	return tokenSets(lines);
 }
 
 export interface RecallMessage {
@@ -80,7 +95,7 @@ export interface RecallMessage {
 export function buildRecallMessage(request: RecallRequest): RecallMessage | undefined {
 	if (request.limit <= 0 || request.tokenBudget <= 0) return undefined;
 
-	const context = tokenSets([...(request.contextLines ?? []), ...(request.prompt ? [request.prompt] : [])]);
+	const context = [...(request.context ?? []), ...tokenSets(request.prompt ? [request.prompt] : [])];
 	const lines: string[] = [];
 	const ids: string[] = [];
 	const texts = new Map<string, string>();

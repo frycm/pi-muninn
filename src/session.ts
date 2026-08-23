@@ -55,20 +55,24 @@ export async function buildSessionContext(options: BuildSessionContextOptions): 
 	});
 
 	if (options.createStores) {
-		for (const scope of scopes.active) {
-			try {
-				const result = await ensureStore(scope.path, { host, inRepo: scope.inRepo });
-				scope.exists = true;
-				problems.push(...result.problems.map((problem) => `${scope.scope} store: ${problem}`));
-			} catch (error) {
-				// A store that cannot be opened means memory is not working for that
-				// scope. Report it and carry on with the scopes that do work rather
-				// than taking the session down.
-				problems.push(
-					`${scope.scope} store at ${scope.path}: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			}
-		}
+		// The stores are separate repositories with separate locks, and this is
+		// on the path to the first keystroke, so they open side by side.
+		await Promise.all(
+			scopes.active.map(async (scope) => {
+				try {
+					const result = await ensureStore(scope.path, { host, inRepo: scope.inRepo });
+					scope.exists = true;
+					problems.push(...result.problems.map((problem) => `${scope.scope} store: ${problem}`));
+				} catch (error) {
+					// A store that cannot be opened means memory is not working for
+					// that scope. Report it and carry on with the scopes that do work
+					// rather than taking the session down.
+					problems.push(
+						`${scope.scope} store at ${scope.path}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}),
+		);
 	}
 
 	return { host, loaded, scopes, problems };

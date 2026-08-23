@@ -11,7 +11,7 @@
  * an in-repo store cannot sweep up work the developer had staged for
  * themselves.
  */
-import { GitError, GitMissingError, git, hasChanges, isGitRepository } from "../git.ts";
+import { GitError, type GitIdentity, GitMissingError, git, hasChanges, isGitRepository } from "../git.ts";
 import { withStoreLock } from "../store/lock.ts";
 
 /** Journal paths, and the only paths this module will ever stage. */
@@ -35,6 +35,8 @@ export interface CommitOptions {
 	entries: number;
 	/** Skip the debounce. The shutdown path does; the per-run path does not. */
 	force?: boolean;
+	/** The identity to commit under. Absent for an in-repo store, which keeps the project's. */
+	identity?: GitIdentity;
 	/** Overrides the clock. Tests use it. */
 	now?: number;
 }
@@ -105,7 +107,11 @@ export async function commitJournalLocked(options: CommitOptions, at?: number): 
 
 	await git(options.storePath, { kind: "add", paths: JOURNAL_PATHS });
 	try {
-		await git(options.storePath, { kind: "commit", message: message(options), paths: JOURNAL_PATHS });
+		await git(
+			options.storePath,
+			{ kind: "commit", message: message(options), paths: JOURNAL_PATHS },
+			options.identity ? { identity: options.identity } : {},
+		);
 	} catch (error) {
 		// Another process may have committed the same entries between the
 		// change check and here. An empty commit is not a failure.

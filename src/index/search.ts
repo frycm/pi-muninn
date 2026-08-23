@@ -19,7 +19,7 @@ import { readSupersessions } from "../journal/supersessions.ts";
 import type { ActiveScope, CaptureTarget } from "../store/scopes.ts";
 import { type RefreshResult, StoreIndex } from "./build.ts";
 import type { ChunkKind } from "./chunk.ts";
-import type { Hit, StoredChunk } from "./tier0.ts";
+import { byScoreThenDate, type Hit, type StoredChunk } from "./tier0.ts";
 
 export interface SearchRequest {
 	query: string;
@@ -75,7 +75,7 @@ export function search(indexes: readonly ScopeIndex[], request: SearchRequest): 
 		}
 	}
 
-	hits.sort((a, b) => b.score - a.score || (b.date ?? "").localeCompare(a.date ?? "") || a.id.localeCompare(b.id));
+	hits.sort(byScoreThenDate);
 	return hits.slice(0, limit);
 }
 

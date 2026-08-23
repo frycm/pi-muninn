@@ -70,14 +70,32 @@ export function findEntry(indexes: SessionIndexes | undefined, entryId: string):
  */
 export function referencedSessionFiles(storePaths: readonly string[]): Set<string> {
 	const files = new Set<string>();
+	// Every entry of one session names the same file, so canonicalise each
+	// distinct string once rather than once per entry.
+	const seen = new Map<string, string | undefined>();
 	for (const storePath of storePaths) {
 		for (const entry of readStoreJournal(storePath).entries) {
 			if (!entry.session) continue;
-			const file = entry.session.split("#")[0];
+			const { file } = splitSessionPointer(entry.session);
 			if (!file) continue;
-			const canonical = canonicalPath(file);
+			if (!seen.has(file)) seen.set(file, canonicalPath(file));
+			const canonical = seen.get(file);
 			if (canonical) files.add(canonical);
 		}
 	}
 	return files;
+}
+
+/**
+ * `<file>#<entry id>` → its two halves.
+ *
+ * Split on the *last* `#`: the file half is a pi session path that embeds the
+ * project directory, and pi only rewrites `/`, `\` and `:` when it builds that
+ * name (`core/session-manager.ts`, `getDefaultSessionDirPath`), so a project
+ * called `proj#1` puts a `#` in the path. The entry id never contains one.
+ */
+export function splitSessionPointer(pointer: string): { file: string; entry?: string } {
+	const hash = pointer.lastIndexOf("#");
+	if (hash === -1) return { file: pointer };
+	return { file: pointer.slice(0, hash), entry: pointer.slice(hash + 1) };
 }

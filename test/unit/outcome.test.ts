@@ -203,36 +203,25 @@ describe("shouldWriteOutcome", () => {
 	});
 
 	it("writes for a real task", () => {
-		expect(shouldWriteOutcome(buffer(1, 2), { outcomesEnabled: true, alreadyJournaled: false })).toBeUndefined();
+		expect(shouldWriteOutcome(buffer(1, 2), { outcomesEnabled: true })).toBeUndefined();
 	});
 
 	it("skips a question answered in one turn with no tools", () => {
 		// Journaling these is how a memory store fills with chit-chat nobody trusts.
-		const skip = shouldWriteOutcome(buffer(0, 1), { outcomesEnabled: true, alreadyJournaled: false });
+		const skip = shouldWriteOutcome(buffer(0, 1), { outcomesEnabled: true });
 		expect(skip?.reason).toContain("a question, not a task");
 	});
 
 	it("writes for a single turn that used a tool", () => {
-		expect(shouldWriteOutcome(buffer(1, 1), { outcomesEnabled: true, alreadyJournaled: false })).toBeUndefined();
+		expect(shouldWriteOutcome(buffer(1, 1), { outcomesEnabled: true })).toBeUndefined();
 	});
 
 	it("skips when the setting is off", () => {
-		expect(shouldWriteOutcome(buffer(3, 3), { outcomesEnabled: false, alreadyJournaled: false })?.reason).toContain(
-			"off",
-		);
-	});
-
-	it("skips a run the pre-compaction path already journaled", () => {
-		// This is what keeps compaction from producing two entries for one run.
-		expect(shouldWriteOutcome(buffer(3, 3), { outcomesEnabled: true, alreadyJournaled: true })?.reason).toContain(
-			"already journaled",
-		);
+		expect(shouldWriteOutcome(buffer(3, 3), { outcomesEnabled: false })?.reason).toContain("off");
 	});
 
 	it("skips an empty run", () => {
-		expect(shouldWriteOutcome(buffer(0, 0, 0), { outcomesEnabled: true, alreadyJournaled: false })?.reason).toContain(
-			"nothing happened",
-		);
+		expect(shouldWriteOutcome(buffer(0, 0, 0), { outcomesEnabled: true })?.reason).toContain("nothing happened");
 	});
 });
 
@@ -417,5 +406,28 @@ describe("tool calls carry their arguments", () => {
 		run.onAgentEnd([{ role: "assistant", content: [{ type: "toolCall", id: "1", name: "ls" }] }]);
 		expect(run.peek().messages[0]?.toolCalls).toEqual(["ls"]);
 		expect(run.peek().toolCallCount).toBe(1);
+	});
+});
+
+describe("RunAccumulator — a run that continues after compaction", () => {
+	it("collects the continuation as a fresh run once the first part is taken", () => {
+		// pi compacts on agent_end and may then continue the run (overflow
+		// retry, queued messages) before agent_settled. Muninn takes the buffer
+		// at compaction, so the continuation is its own outcome rather than
+		// being sealed away behind pi's first agent_end and then discarded.
+		const run = new RunAccumulator();
+		run.onTurnEnd({ role: "assistant", content: [{ type: "toolCall", name: "read" }] }, []);
+		run.onAgentEnd([{ role: "assistant", content: [{ type: "toolCall", name: "read" }] }]);
+		expect(run.hadAuthoritativeEnd).toBe(true);
+
+		const first = run.take();
+		expect(first.toolCallCount).toBe(1);
+
+		// The continuation: new turns arrive, and accumulate again.
+		run.onTurnEnd({ role: "assistant", content: [{ type: "toolCall", name: "edit" }] }, []);
+		run.onTurnEnd({ role: "assistant", content: "Fixed after compaction." }, []);
+		const second = run.take();
+		expect(second.messages.map((message) => message.text)).toContain("Fixed after compaction.");
+		expect(second.toolCallCount).toBe(1);
 	});
 });

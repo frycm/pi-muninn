@@ -155,6 +155,22 @@ describe("/muninn note, search, promote", () => {
 		expect(global[0]?.promotedFrom).toMatch(new RegExp(`^project-[0-9a-f]{12}/${entry?.id}$`));
 	}, 90_000);
 
+	it("commits a write to the global store, not only the capture target", async () => {
+		// The capture target is the project store, and a commit of it used to
+		// leave a `--global` note or a promoted entry sitting uncommitted in the
+		// global store until a sync happened to run.
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ muninn: { sync: { remote, onShutdown: false } } }, null, "\t"),
+		);
+		await pi("/muninn note --global Committed where it was written.");
+
+		const { stdout } = await execFileAsync("git", ["status", "--porcelain"], { cwd: globalStore() });
+		expect(stdout.trim()).toBe("");
+		const { stdout: subject } = await execFileAsync("git", ["log", "-1", "--format=%s"], { cwd: globalStore() });
+		expect(subject).toMatch(/^journal:/);
+	}, 60_000);
+
 	it("writes to the global store with --global", async () => {
 		const before = readStoreJournal(globalStore()).entries.length;
 		await pi("/muninn note --global Always use pnpm, never npm.");

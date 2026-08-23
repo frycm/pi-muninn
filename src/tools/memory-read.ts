@@ -20,12 +20,12 @@
  * this machine".
  */
 import { readFileSync, statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, resolve, sep } from "node:path";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { messageText } from "../capture/accumulate.ts";
 import { isEntryId, parseClaimId } from "../ids.ts";
-import { findEntry, referencedSessionFiles } from "../journal/lookup.ts";
+import { findEntry, referencedSessionFiles, splitSessionPointer } from "../journal/lookup.ts";
 import { readSupersessions } from "../journal/supersessions.ts";
 import type { SessionContext } from "../session.ts";
 import { canonicalPath, isInside } from "../store/paths.ts";
@@ -164,7 +164,13 @@ function readPath(session: SessionContext, path: string, range?: { from: number;
 			tried.push(scope.path);
 			continue;
 		}
-		const relative = target === root ? "" : target.slice(root.length + 1);
+		const relative =
+			target === root
+				? ""
+				: target
+						.slice(root.length + 1)
+						.split(sep)
+						.join("/");
 		return renderFile(`${scope.scope}:${relative}`, readFileSync(target, "utf-8"), range);
 	}
 
@@ -201,7 +207,7 @@ interface SessionLine {
  * construction.
  */
 function readSession(pointer: string, session: SessionContext): string {
-	const [file, wanted] = pointer.split("#");
+	const { file, entry: wanted } = splitSessionPointer(pointer);
 	if (!file) throw new Error("muninn: a session pointer needs a file, as session:<file>#<entry id>");
 
 	const target = canonicalPath(file);

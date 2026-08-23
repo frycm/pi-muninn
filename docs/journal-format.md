@@ -98,6 +98,11 @@ It is returned by `memory_read`, because a claim without its situation is exactl
 this project refuses to trust — but it is never evidence on its own, and an ordinary
 (active-only) search does not match it.
 
+A prose line that would read back as structure — one beginning with `#` followed by a space,
+or with `- ` — is written with **one leading space**, and a reader strips exactly that space.
+Prose is what a person or a model wrote, and a note quoting a markdown heading is ordinary;
+without the guard it would split its own entry in two on the next read.
+
 ### Bullets are claims
 
 Every line starting with `- ` is one claim. Claims are the unit of everything downstream:
@@ -148,6 +153,7 @@ A reader must:
 3. Report and skip a block with an unreadable id or an unknown `source`.
 4. Report, but keep, an entry with an unknown `channel` or `phase`.
 5. Preserve unknown metadata fields when writing the entry back out.
+6. Strip one leading space from a prose line that begins ` #`…` ` or ` - ` — the writer's guard.
 
 No damaged file may cost more than the damaged entry. Losing a day's journal because its
 last entry is half-written would be a far worse failure than losing the half-written entry.

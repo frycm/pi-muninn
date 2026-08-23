@@ -18,6 +18,7 @@ import { claimsOf } from "./journal/format.ts";
 import { readStoreJournal } from "./journal/read.ts";
 import { loadSettings } from "./settings-io.ts";
 import { loadHostIdentity } from "./store/host.ts";
+import { storeIdentity } from "./store/init.ts";
 import { storeExistsAt } from "./store/paths.ts";
 import { type CaptureTarget, resolveScopes } from "./store/scopes.ts";
 import { describeSync, sync } from "./sync/sync.ts";
@@ -107,6 +108,7 @@ export async function runCli(argv: readonly string[], cwd: string = process.cwd(
 			remote: scope.scope === "global" ? loaded.settings.sync.remote : null,
 			useExistingRemote: !scope.inRepo,
 			...(noPush ? { noPush: true } : {}),
+			...(scope.inRepo ? {} : { identity: storeIdentity(host) }),
 		});
 		for (const note of result.notes) out.push(`  ${note}`);
 		out.push(`  ${describeSync(result)}`);
