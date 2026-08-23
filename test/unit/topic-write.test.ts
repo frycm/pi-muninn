@@ -100,17 +100,19 @@ describe("applying a fact list", () => {
 		);
 		expect(result.lossRatio).toBe(1);
 		expect(result.lossRatio).toBeGreaterThan(MAX_LOSS_RATIO);
-		expect(withinLossBound(2, 2)).toBe(false);
 	});
 
-	it("lets one fact be superseded however small the topic is", () => {
+	it("bounds net loss, not supersessions", () => {
 		// A pure ratio would forbid the correction the mechanism exists for: a
-		// topic with three facts could never have one replaced.
-		expect(withinLossBound(1, 1)).toBe(true);
-		expect(withinLossBound(3, 1)).toBe(true);
-		expect(withinLossBound(3, 2)).toBe(false);
-		expect(withinLossBound(20, 5)).toBe(true);
-		expect(withinLossBound(20, 6)).toBe(false);
+		// topic with three facts could never have one replaced. And counting
+		// supersessions rather than net loss would forbid merging two facts into
+		// one better one, which is consolidation working.
+		expect(withinLossBound(1, 1)).toBe(true); // replaced one with one
+		expect(withinLossBound(2, 1)).toBe(true); // merged two into one
+		expect(withinLossBound(1, 0)).toBe(true); // the floor: one fact may go
+		expect(withinLossBound(3, 1)).toBe(false); // three down to one is a wipe
+		expect(withinLossBound(20, 15)).toBe(true);
+		expect(withinLossBound(20, 14)).toBe(false);
 	});
 
 	it("reports a supersedes that names a fact the topic does not have", () => {

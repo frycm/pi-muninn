@@ -33,6 +33,40 @@ import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import type { ActiveScope } from "../store/scopes.ts";
 import { collectWorktrees, repositoryFor, worktreeRoot } from "./worktree.ts";
 
+/**
+ * A rebase that met a genuine derived-file conflict.
+ *
+ * Carried as its own error because the answer is specific and is not "try
+ * again": the named topics need a merge dream, which is the consolidate phase
+ * with two candidates.
+ */
+export class RebaseConflict extends Error {
+	readonly branch: string;
+	readonly paths: string[];
+	constructor(branch: string, paths: string[], detail: string) {
+		super(
+			`${branch} does not rebase onto main cleanly (${detail}); ` +
+				`${paths.length > 0 ? `${paths.join(", ")} ` : ""}must go through a merge dream, not a git merge`,
+		);
+		this.name = "RebaseConflict";
+		this.branch = branch;
+		this.paths = paths;
+	}
+}
+
+/** `UU topics/testing.md` -> `topics/testing.md`. */
+async function conflictedPaths(cwd: string): Promise<string[]> {
+	try {
+		const { stdout } = await git(cwd, { kind: "status-porcelain", paths: [] });
+		return stdout
+			.split("\n")
+			.filter((line) => line.trim() !== "" && (line[0] === "U" || line[1] === "U" || line.slice(0, 2) === "AA"))
+			.map((line) => line.slice(3).trim());
+	} catch {
+		return [];
+	}
+}
+
 /** The in-progress marker. Gitignored: it is machine-local by nature. */
 export const REMEMBER_MARKER = ".remember";
 
@@ -202,11 +236,17 @@ async function rebaseOnto(
 		await git(path, { kind: "rebase", onto: "main" }, identity ? { identity } : {});
 		result.notes.push(`rebased ${branch} onto main`);
 	} catch (error) {
+		// Which derived files disagreed, read before the abort throws it away.
+		const conflicts = await conflictedPaths(path);
 		await git(path, { kind: "rebase-abort" }).catch(() => undefined);
-		throw new Error(
-			`${branch} does not rebase onto main cleanly (${error instanceof GitError ? error.stderr.trim().split("\n")[0] : String(error)}); ` +
-				"two dreams touching the same topic need a merge dream, not a git merge",
-		);
+		const detail = (error instanceof GitError ? error.stderr.trim().split("\n")[0] : String(error)) ?? "";
+		// Not resolved by `git merge`, ever. Two dreams that rewrote the same
+		// topic replaced the same bullets with different wording, which merges
+		// cleanly line-by-line and produces nonsense. `merge.ts` is the answer,
+		// and the caller is told which topics need it.
+		const failure = new RebaseConflict(branch, conflicts, detail);
+		result.problems.push(failure.message);
+		throw failure;
 	} finally {
 		await git(repo, { kind: "worktree-remove", path, force: true }).catch(() => undefined);
 		await git(repo, { kind: "worktree-prune" }).catch(() => undefined);

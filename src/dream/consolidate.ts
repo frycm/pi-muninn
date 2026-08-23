@@ -135,7 +135,7 @@ export async function consolidate(job: ConsolidateJob, options: ConsolidateOptio
 			retries = attempt + 1;
 			continue;
 		}
-		return check(job, parsed.items, options, attempt);
+		return checkFactList(job, parsed.items, options, attempt);
 	}
 
 	return { ok: false, reason: `unparsable after one retry: ${problem}`, retries, refusals: [] };
@@ -277,7 +277,14 @@ export function allowedEvidence(job: ConsolidateJob): Set<string> {
 	return allowed;
 }
 
-function check(
+/**
+ * Check a fact list and apply it, or say why not.
+ *
+ * Exported because the merge dream runs the same guards over a different
+ * prompt. A merge that could cite ids a plain consolidation could not would be
+ * a hole in the allow-list shaped exactly like the hardest prompt in the system.
+ */
+export function checkFactList(
 	job: ConsolidateJob,
 	items: readonly FactItem[],
 	options: ConsolidateOptions,
@@ -319,10 +326,11 @@ function check(
 
 	const applied = applyFactList(job.file, kept, options);
 	const activeBefore = job.file.facts.length + job.file.external.length;
-	if (!withinLossBound(activeBefore, applied.superseded.length)) {
+	const activeAfter = applied.topic.facts.length + applied.topic.external.length;
+	if (!withinLossBound(activeBefore, activeAfter)) {
 		return {
 			ok: false,
-			reason: `would retire ${applied.superseded.length} of ${activeBefore} facts (${Math.round(applied.lossRatio * 100)}%), over the ${Math.round(MAX_LOSS_RATIO * 100)}% bound`,
+			reason: `would leave ${activeAfter} of ${activeBefore} facts, over the ${Math.round(MAX_LOSS_RATIO * 100)}% bound`,
 			retries: attempt,
 			refusals,
 		};

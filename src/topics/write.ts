@@ -71,18 +71,24 @@ export interface ApplyResult {
 export const MAX_LOSS_RATIO = 0.25;
 
 /**
- * Whether a job's supersessions are within the bound.
+ * Whether a job's *net* loss of active facts is within the bound.
  *
- * The design states the rule as a ratio, and a ratio alone is unusable at small
- * sizes: a topic with three facts could never have one superseded, which
- * forbids the correction the whole mechanism exists for — the design's own
- * worked example is one fact of one being replaced by a user correction. So the
- * bound is the ratio *or one fact*, whichever is larger. That keeps what the
- * rule is for — a single job may not rewrite a topic wholesale — while leaving
- * the ordinary case, one thing turning out to be wrong, possible.
+ * Two departures from the design's one-line statement, both found by tests.
+ *
+ * The rule is stated as a ratio, and a ratio alone is unusable at small sizes:
+ * a topic with three facts could never have one superseded, which forbids the
+ * correction the whole mechanism exists for. So the bound is the ratio *or one
+ * fact*, whichever is larger.
+ *
+ * And what it measures is net loss, not supersessions. Superseding two facts to
+ * write one better one in their place is consolidation working — it is what a
+ * merge dream does with every residue pair it settles — and counting the
+ * supersessions would forbid exactly that. What the guard is actually for is a
+ * job that misunderstood a topic and left it emptier than it found it, and that
+ * is `before - after`.
  */
-export function withinLossBound(activeBefore: number, retired: number): boolean {
-	return retired <= Math.max(1, Math.floor(MAX_LOSS_RATIO * activeBefore));
+export function withinLossBound(activeBefore: number, activeAfter: number): boolean {
+	return activeBefore - activeAfter <= Math.max(1, Math.floor(MAX_LOSS_RATIO * activeBefore));
 }
 
 /**

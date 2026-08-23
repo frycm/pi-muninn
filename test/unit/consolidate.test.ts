@@ -194,15 +194,17 @@ describe("a job that goes badly is refused by code, not by hope", () => {
 		expect(outcome.ok && outcome.refusals[0]?.rule).toBe("unsourced");
 	});
 
-	it("rejects the whole job when it would retire most of the topic", async () => {
+	it("rejects the whole job when it would leave the topic emptier than it found it", async () => {
 		const file = topicWithOneFact();
-		file.facts.push({
-			id: "f-testing-0198e9a6-2d3e-7f40-9152-63748596a7b9",
-			claim: "And another.",
-			validFrom: "2026-08-01",
-			source: "agent",
-			evidence: [],
-		});
+		for (let i = 0; i < 7; i++) {
+			file.facts.push({
+				id: `f-testing-0198e9a6-2d3e-7f40-9152-6374859${String(i).padStart(5, "0")}`,
+				claim: `And another, ${i}.`,
+				validFrom: "2026-08-01",
+				source: "agent",
+				evidence: [],
+			});
+		}
 		const outcome = await consolidate(job({ file }), {
 			...OPTIONS,
 			model: scripted(
@@ -210,14 +212,14 @@ describe("a job that goes badly is refused by code, not by hope", () => {
 					{
 						claim: "One fact to replace them all.",
 						evidence: [NEW_CLAIM],
-						supersedes: [EXISTING, "f-testing-0198e9a6-2d3e-7f40-9152-63748596a7b9"],
+						supersedes: [EXISTING, ...file.facts.slice(1, 6).map((fact) => fact.id)],
 					},
 				]),
 			),
 		});
 		expect(outcome.ok).toBe(false);
 		expect(outcome.ok === false && outcome.reason).toContain("over the 25% bound");
-		expect(outcome.ok === false && outcome.reason).toContain("2 of 2 facts");
+		expect(outcome.ok === false && outcome.reason).toContain("3 of 8 facts");
 	});
 
 	it("leaves a fact alone when the model only names its id", async () => {
