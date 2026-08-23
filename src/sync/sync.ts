@@ -25,6 +25,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
+import { DREAM_BRANCH_PREFIX } from "../dream/worktree.ts";
 import { GitError, type GitIdentity, GitMissingError, git, isGitRepository } from "../git.ts";
 import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import { formatStoreMd, mergeStoreMd, parseStoreMd, type StoreMd } from "../store/store-md.ts";
@@ -203,6 +204,13 @@ async function transaction(options: SyncOptions, result: SyncResult): Promise<Sy
 			result.pushed = true;
 			delete result.stoppedAt;
 			result.notes.push(`pushed to ${REMOTE_NAME}/${branch}`);
+			// Dream branches travel with the store, so `/muninn dreams` on the
+			// laptop lists the server's overnight dream and can remember it.
+			// Pushed after `main` and never allowed to fail the sync: a dream
+			// that did not travel is an inconvenience, an unsynced journal is a
+			// gap in memory.
+			const dreams = await pushDreamBranches(options, result);
+			if (dreams > 0) result.notes.push(`pushed ${dreams} dream branch(es)`);
 		} catch (error) {
 			result.stoppedAt = "push";
 			// A rejected push means another host pushed between our fetch and
@@ -213,6 +221,38 @@ async function transaction(options: SyncOptions, result: SyncResult): Promise<Sy
 
 		return result;
 	}
+}
+
+/**
+ * Push every local dream branch, best effort.
+ *
+ * Each on its own, because one branch another host already has must not stop
+ * the rest from travelling.
+ */
+async function pushDreamBranches(options: SyncOptions, result: SyncResult): Promise<number> {
+	let pushed = 0;
+	let branches: string[] = [];
+	try {
+		branches = (await git(options.storePath, { kind: "branch-list", prefix: DREAM_BRANCH_PREFIX })).stdout
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => line !== "");
+	} catch {
+		return 0;
+	}
+	for (const branch of branches) {
+		try {
+			await git(
+				options.storePath,
+				{ kind: "push-ref", remote: REMOTE_NAME, ref: branch },
+				options.signal ? { signal: options.signal } : {},
+			);
+			pushed++;
+		} catch (error) {
+			result.notes.push(`dream branch ${branch} was not pushed: ${describe(error)}`);
+		}
+	}
+	return pushed;
 }
 
 function stop(result: SyncResult, step: SyncStep, problem: string): SyncResult {

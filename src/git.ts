@@ -118,8 +118,12 @@ export type GitCommand =
 	| { kind: "rev-list-count"; range: string; paths: string[] }
 	| { kind: "diff-name-only"; range: string; paths: string[] }
 	| { kind: "merge-base"; a: string; b: string }
-	/** One line per commit: `<sha> <subject>`, for listing dreams. */
-	| { kind: "log-oneline"; ref: string; limit: number };
+	/** Push a branch that is not the one checked out — dream branches, on sync. */
+	| { kind: "push-ref"; remote: string; ref: string }
+	/** Check out a branch that already exists into its own worktree. */
+	| { kind: "worktree-add-existing"; path: string; branch: string }
+	/** Commits with their full message, for finding a dream's commit by its trailer. */
+	| { kind: "log-entries"; ref: string; limit: number };
 
 /**
  * git itself is not on the PATH.
@@ -378,12 +382,24 @@ export function toArgv(command: GitCommand): string[] {
 			assertName("ref", command.a);
 			assertName("ref", command.b);
 			return ["merge-base", command.a, command.b];
-		case "log-oneline":
+		case "push-ref":
+			assertName("remote", command.remote);
+			assertName("branch", command.ref);
+			// Still never `--force`. A dream branch is created once and never
+			// rewritten, so a rejected push means the remote already has it.
+			return ["push", "--quiet", command.remote, `refs/heads/${command.ref}:refs/heads/${command.ref}`];
+		case "worktree-add-existing":
+			assertWorktreePath(command.path);
+			assertName("branch", command.branch);
+			return ["worktree", "add", "--quiet", command.path, command.branch];
+		case "log-entries":
 			assertName("ref", command.ref);
 			if (!Number.isInteger(command.limit) || command.limit < 1) {
 				throw new Error(`git log needs a positive limit, not ${command.limit}`);
 			}
-			return ["log", `--max-count=${command.limit}`, "--format=%H %s", command.ref];
+			// Unit separators, not newlines: a commit body contains newlines, and
+			// a format a message can forge is a format that can be lied to.
+			return ["log", `--max-count=${command.limit}`, "--format=%H%x1f%s%x1f%b%x1e", command.ref];
 	}
 }
 

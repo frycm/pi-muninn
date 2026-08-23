@@ -8,6 +8,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { recoverRemember } from "../dream/remember.ts";
 import { type GitIdentity, git, gitToplevel } from "../git.ts";
 import { newStoreId } from "../ids.ts";
 import type { HostIdentity } from "./host.ts";
@@ -30,6 +31,7 @@ const GITIGNORE = [
 	".index/",
 	".lock",
 	".lock.json",
+	".remember",
 	"host.json",
 	"",
 ].join("\n");
@@ -182,6 +184,14 @@ export async function ensureStore(
 		// This host's journal directory. Git does not track empty directories, so
 		// nothing is staged for it; the first append is what puts it in history.
 		mkdirSync(join(storePath, "journal", options.host.id), { recursive: true });
+
+		// A remember that died left a marker, and the process that would have
+		// cleaned it up is by definition not running. Every store open is
+		// therefore the recovery point — before anything reads a derived file.
+		if (!fresh) {
+			const recovery = await recoverRemember(storePath);
+			if (recovery.message !== undefined) problems.push(`muninn: ${recovery.message}`);
+		}
 
 		if (staged.size > 0) {
 			const paths = [...staged];

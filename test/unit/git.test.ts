@@ -100,11 +100,18 @@ describe("toArgv — the allow-list is the promise", () => {
 		]);
 		expect(toArgv({ kind: "revert", sha: "abc123" })).toEqual(["revert", "--no-edit", "--no-gpg-sign", "abc123"]);
 		expect(toArgv({ kind: "merge-base", a: "main", b: "dream/mbp/x" })).toEqual(["merge-base", "main", "dream/mbp/x"]);
-		expect(toArgv({ kind: "log-oneline", ref: "main", limit: 5 })).toEqual([
+		expect(toArgv({ kind: "log-entries", ref: "main", limit: 5 })).toEqual([
 			"log",
 			"--max-count=5",
-			"--format=%H %s",
+			"--format=%H%x1f%s%x1f%b%x1e",
 			"main",
+		]);
+		expect(toArgv({ kind: "worktree-add-existing", path: "/tmp/wt", branch: "dream/mbp/x" })).toEqual([
+			"worktree",
+			"add",
+			"--quiet",
+			"/tmp/wt",
+			"dream/mbp/x",
 		]);
 	});
 
