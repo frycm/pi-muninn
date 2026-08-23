@@ -24,6 +24,7 @@ import { basename } from "node:path";
 import { isFactId } from "../ids.ts";
 import { claimsOf } from "../journal/format.ts";
 import type { JournalEntryWithContext } from "../journal/read.ts";
+import { tokenBudgetChars } from "../tokens.ts";
 
 export const CHUNK_KINDS = ["claim", "prose", "memory", "fact", "topic", "rule"] as const;
 export type ChunkKind = (typeof CHUNK_KINDS)[number];
@@ -59,15 +60,8 @@ export interface Chunk {
 	links: string[];
 }
 
-/**
- * ~700 tokens, in characters.
- *
- * Four characters per token is the usual English approximation. A real
- * tokeniser would be a dependency, a load-time cost and a second thing to keep
- * in step with whichever model reads the result — for a chunk *cap* the
- * approximation is not worth any of that.
- */
-const MAX_CHUNK_CHARS = 700 * 4;
+/** The README's ~700-token chunk cap, in characters. */
+const MAX_CHUNK_CHARS = tokenBudgetChars(700);
 
 const HEADING = /^(#{1,6})\s+(.*)$/;
 const FENCE = /^\s*(```+|~~~+)/;

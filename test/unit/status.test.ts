@@ -222,3 +222,33 @@ describe("formatStatus — the index", () => {
 		expect(status()).not.toContain("index ");
 	});
 });
+
+describe("formatStatus — recall", () => {
+	function withRecall(recall: { snapshotLines: number; snapshotTrimmed: number; recalled: number }): string {
+		return formatStatus({
+			muninnVersion: "0.1.0",
+			piVersion: "0.84.2",
+			runtime: "node v22.19.0",
+			session: session(),
+			recall,
+		});
+	}
+
+	it("reports the snapshot and what has been recalled this session", () => {
+		expect(withRecall({ snapshotLines: 42, snapshotTrimmed: 0, recalled: 3 })).toContain(
+			"snapshot 42 line(s) · 3 memories recalled",
+		);
+	});
+
+	it("says when the snapshot budget trimmed something", () => {
+		expect(withRecall({ snapshotLines: 120, snapshotTrimmed: 8, recalled: 0 })).toContain(
+			"snapshot 120 line(s), 8 trimmed",
+		);
+	});
+
+	it("says plainly when there is no snapshot at all", () => {
+		expect(withRecall({ snapshotLines: 0, snapshotTrimmed: 0, recalled: 1 })).toContain(
+			"no snapshot (MEMORY.md is empty) · 1 memory recalled",
+		);
+	});
+});

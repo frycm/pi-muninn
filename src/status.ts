@@ -22,6 +22,17 @@ export interface StatusInput {
 	runsWithoutAgentEnd?: number;
 	/** Per-scope index size. Absent while the index is still being opened. */
 	index?: ScopeIndexStats[];
+	/** What recall has actually put in front of the model this session. */
+	recall?: RecallStats;
+}
+
+export interface RecallStats {
+	/** Lines of the frozen `MEMORY.md` snapshot in the system prompt. */
+	snapshotLines: number;
+	/** Lines the snapshot budget left out. */
+	snapshotTrimmed: number;
+	/** Distinct memories injected per-turn so far. */
+	recalled: number;
 }
 
 export interface ScopeIndexStats {
@@ -104,6 +115,15 @@ export function formatStatus(input: StatusInput): string {
 	lines.push(
 		`recall    ${settings.recall.factsPerTurn} facts/turn · ${settings.recall.tokenBudget} tokens · tier ${settings.recall.indexTier}`,
 	);
+	if (input.recall) {
+		const snapshot =
+			input.recall.snapshotLines === 0
+				? "no snapshot (MEMORY.md is empty)"
+				: `snapshot ${input.recall.snapshotLines} line(s)${input.recall.snapshotTrimmed > 0 ? `, ${input.recall.snapshotTrimmed} trimmed` : ""}`;
+		lines.push(
+			`          ${snapshot} · ${input.recall.recalled} memor${input.recall.recalled === 1 ? "y" : "ies"} recalled`,
+		);
+	}
 
 	lines.push(`settings  ${describeSource(sources.global)}`);
 	lines.push(`          ${describeSource(sources.project)}`);

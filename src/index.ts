@@ -1,18 +1,21 @@
 /**
  * pi-muninn extension entry point.
  *
- * Phase 1 step 8: sessions leave a journal of what the user asked to be
- * remembered, what they corrected and how each task turned out, and every
- * store now carries a Tier 0 index of it. Recall — putting what the index
- * finds back in front of the model — arrives in step 9.
+ * Phase 1 step 9: sessions leave a journal of what the user asked to be
+ * remembered, what they corrected and how each task turned out; every store
+ * carries a Tier 0 index of it; and both halves of recall are wired up — the
+ * frozen `MEMORY.md` snapshot in the system prompt, and a bounded, prompt-
+ * driven injection each turn. The tools the model can drive itself arrive in
+ * step 10.
  */
 import {
+	type BeforeAgentStartEventResult,
 	CONFIG_DIR_NAME,
 	type ExtensionAPI,
 	getAgentDir,
 	VERSION as PI_VERSION,
 } from "@earendil-works/pi-coding-agent";
-import { RunAccumulator } from "./capture/accumulate.ts";
+import { MUNINN_MESSAGE_TYPE, RunAccumulator } from "./capture/accumulate.ts";
 import { decideCapture } from "./capture/capture.ts";
 import { commitJournal } from "./capture/commit.ts";
 import { channelForMode } from "./capture/cues.ts";
@@ -29,6 +32,8 @@ import {
 } from "./capture/session-state.ts";
 import { SessionIndexes } from "./index/search.ts";
 import { type AppendResult, appendEntry } from "./journal/append.ts";
+import { buildRecallMessage, contextFileLines, RECALL_KINDS } from "./recall/per-turn.ts";
+import { appendSnapshot, readSnapshot, type Snapshot } from "./recall/snapshot.ts";
 import { buildSessionContext, journalStats, type SessionContext } from "./session.ts";
 import { formatScopes, formatStatus, formatStatusLine, formatWarning } from "./status.ts";
 import { MUNINN_VERSION } from "./version.ts";
@@ -75,6 +80,16 @@ export default function (pi: ExtensionAPI): void {
 	let uncommittedEntries = 0;
 	/** One Tier 0 index per active scope, opened once and kept for the session. */
 	let indexes: SessionIndexes | undefined;
+	/**
+	 * The frozen `MEMORY.md` snapshot: read once, injected byte-identically on
+	 * every turn. Re-reading the file mid-session would break the provider's
+	 * prompt cache and leave the model's context disagreeing with itself.
+	 */
+	let snapshot: Snapshot | undefined;
+	/** Lines pi already loaded into the prompt, so recall does not repeat them. */
+	let contextLines: string[] | undefined;
+	/** Texts of what was recalled this session, by id — the input to echo detection. */
+	const recalledTexts = new Map<string, string>();
 
 	const load = async (cwd: string, projectTrusted: boolean, createStores: boolean): Promise<SessionContext> => {
 		session ??= await buildSessionContext({
@@ -120,8 +135,9 @@ export default function (pi: ExtensionAPI): void {
 	 *
 	 * On the queue, not awaited in the handler: a first build over a large
 	 * store is seconds of work, and no session should wait on it to accept the
-	 * user's first keystroke. The queue is serial, so any append that follows
-	 * finds the index already open.
+	 * user's first keystroke. The queue is serial, so any append that follows —
+	 * and recall, which drains the queue before it queries — finds the index
+	 * already open.
 	 */
 	const openIndexes = (current: SessionContext, force: boolean): void => {
 		queue.enqueue("index", async () => {
@@ -149,6 +165,11 @@ export default function (pi: ExtensionAPI): void {
 					chunks: scoped.index.size,
 					files: scoped.index.files,
 				}));
+				const recallStats = {
+					snapshotLines: snapshot?.lines ?? 0,
+					snapshotTrimmed: snapshot?.scopes.reduce((total, scope) => total + scope.dropped, 0) ?? 0,
+					recalled: state?.recalled.length ?? 0,
+				};
 				ctx.ui.notify(
 					formatStatus({
 						muninnVersion: MUNINN_VERSION,
@@ -159,6 +180,7 @@ export default function (pi: ExtensionAPI): void {
 						captureFailures: queue.peekFailures().map((failure) => `${failure.label}: ${failure.message}`),
 						runsWithoutAgentEnd,
 						...(indexStats ? { index: indexStats } : {}),
+						recall: recallStats,
 					}),
 					"info",
 				);
@@ -185,6 +207,9 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("session_start", async (event, ctx) => {
 		session = undefined;
 		indexes = undefined;
+		snapshot = undefined;
+		contextLines = undefined;
+		recalledTexts.clear();
 		previousAssistantText = undefined;
 		const current = await load(ctx.cwd, ctx.isProjectTrusted(), true);
 		ctx.ui.setStatus("muninn", formatStatusLine(current));
@@ -206,6 +231,8 @@ export default function (pi: ExtensionAPI): void {
 		);
 
 		openIndexes(current, false);
+		// Read once, here. Everything downstream uses this string, never the file.
+		snapshot = readSnapshot(current.scopes.active, current.loaded.settings.recall.snapshotLines);
 
 		// A misread setting or an unusable store means Muninn is not behaving the
 		// way the files say it should. That is exactly the class of failure this
@@ -228,6 +255,70 @@ export default function (pi: ExtensionAPI): void {
 	// is right.
 	pi.on("agent_end", (event) => {
 		run.onAgentEnd(event.messages);
+	});
+
+	/**
+	 * Recall, both halves, on the way into a turn.
+	 *
+	 * The snapshot is the same bytes every turn; the per-turn message is chosen
+	 * by this prompt and bounded by `recall.factsPerTurn` and
+	 * `recall.tokenBudget`. Either half may be absent — a store with nothing in
+	 * it injects nothing at all, rather than an empty "Memory" heading.
+	 */
+	pi.on("before_agent_start", async (event) => {
+		const current = session;
+		if (!current) return;
+
+		const result: BeforeAgentStartEventResult = {};
+		if (snapshot) result.systemPrompt = appendSnapshot(event.systemPrompt, snapshot);
+
+		// pi loads its context files once per session, so their lines are worth
+		// splitting once rather than on every turn.
+		contextLines ??= [
+			...contextFileLines(event.systemPromptOptions.contextFiles),
+			...(snapshot ? snapshot.text.split("\n") : []),
+		];
+
+		// Two things are on that queue and both must land before a query: the
+		// index open (queued at session start, so the first turn would otherwise
+		// recall from nothing) and any entry the previous turn appended. Recall
+		// missing what this very session just captured would be the kind of
+		// silent gap that makes memory untrustworthy. A queue failure is
+		// recorded rather than thrown, so this waits but never hangs on one.
+		await queue.flush();
+
+		const recall = indexes
+			? buildRecallMessage({
+					// Over-fetch: the "AGENTS.md wins" rule drops hits *after* the
+					// search, and asking for exactly `factsPerTurn` would let a
+					// couple of duplicates silently shrink the turn's memory.
+					hits: indexes.search({
+						query: event.prompt,
+						kind: RECALL_KINDS,
+						limit: current.loaded.settings.recall.factsPerTurn * 2,
+					}),
+					limit: current.loaded.settings.recall.factsPerTurn,
+					tokenBudget: current.loaded.settings.recall.tokenBudget,
+					contextLines,
+					prompt: event.prompt,
+				})
+			: undefined;
+
+		if (recall) {
+			result.message = recallMessage(recall.content, recall.ids);
+			for (const [id, text] of recall.texts) recalledTexts.set(id, text);
+			if (state) {
+				for (const id of recall.ids) {
+					if (!state.recalled.includes(id)) state.recalled.push(id);
+				}
+			}
+			// Recorded in pi's own session, so a resumed session still knows what
+			// it had been told — and so `recalled:` on a later entry is complete.
+			pi.appendEntry(STATE_CUSTOM_TYPE, { kind: "recalled", ids: recall.ids } satisfies StateDelta);
+		}
+
+		if (result.systemPrompt === undefined && result.message === undefined) return;
+		return result;
 	});
 
 	pi.on("input", (event, ctx) => {
@@ -309,7 +400,8 @@ export default function (pi: ExtensionAPI): void {
 		};
 
 		const result = await runOutcome({
-			request: { buffer, state: currentState },
+			request:
+				recalledTexts.size > 0 ? { buffer, state: currentState, recalledTexts } : { buffer, state: currentState },
 			model: outcomeModel,
 			channel: channelForMode(ctx.mode),
 			session: sessionPointer(ctx.sessionManager),
@@ -392,6 +484,17 @@ export default function (pi: ExtensionAPI): void {
 		process.stderr.write(`${["muninn: capture failed", ...report].join("\n")}\n`);
 		ctx.ui.notify(`muninn: ${failures.length} journal write(s) failed`, "error");
 	});
+}
+
+/**
+ * The custom message recalled memories ride in.
+ *
+ * `details.ids` is not decoration: the run accumulator reads it to fill
+ * `recalled:` on the entry this run produces, and strips the message itself
+ * from what the outcome model sees.
+ */
+function recallMessage(content: string, ids: string[]): NonNullable<BeforeAgentStartEventResult["message"]> {
+	return { customType: MUNINN_MESSAGE_TYPE, content, display: true, details: { ids } };
 }
 
 /** Plain text of an assistant reply, whatever block shape it arrived in. */

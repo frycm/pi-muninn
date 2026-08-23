@@ -373,7 +373,7 @@ Five details worth keeping:
   of work and no session should wait on it before accepting a keystroke. The append queue is
   serial, so any capture that follows finds the index already open.
 
-### 9. Recall (1 d)
+### 9. Recall (1 d) — **done**
 
 - `snapshot.ts`: at `session_start` read `MEMORY.md` from each active scope, merge global
   → project, trim to `recall.snapshotLines` per scope and total, cache the string for the
@@ -392,6 +392,31 @@ Five details worth keeping:
 **Done when:** an SDK test asserts the system prompt received by the fake provider is
 identical across three turns while `MEMORY.md` is edited on disk mid-session, and that the
 per-turn message is present, labelled, and within budget.
+**Met**, in `test/integration/recall.test.ts`. Not through the SDK: `createAgentSession`
+would need a `Model` from `@earendil-works/pi-ai/compat`, which is shrinkwrapped inside
+pi's own `node_modules` and unreachable from an extension package — the same wall the
+scripted provider hit. Print mode turned out to run *each positional message* as its own
+`session.prompt()` within one session (`modes/print-mode.js:107`), so `pi -p one two three`
+gives three turns in one process, which is all the test needed. `MEMORY.md` is rewritten
+from the provider script on the first request, which is the one hook guaranteed to fire
+between turns.
+
+Four details worth keeping:
+
+- **Recall drains the append queue before it queries.** Two things sit on that queue: the
+  index open, and any entry the previous turn appended. Without the drain, the first turn of
+  a session would recall from an index that is not open yet, and a claim captured one turn
+  ago could be missed by the next — the kind of silent gap that makes memory untrustworthy.
+- **A memory that restates the prompt is dropped**, by the same token-overlap rule that
+  gives `AGENTS.md` precedence. Without it the answer to "remember that X" is Muninn
+  solemnly reciting X back inside the turn that captured it: the capture path writes the
+  entry, the index takes it immediately, and the query for that same turn is the very
+  sentence it was written from.
+- **The search over-fetches.** The duplicate rules drop hits *after* the search, so asking
+  for exactly `factsPerTurn` would let two duplicates quietly shrink a turn's memory to six.
+- **One token estimator, in `src/tokens.ts`.** Chunk cap, recall budget and the outcome
+  transcript all cap themselves by the same four-characters-per-token approximation; it now
+  lives in one file so the three budgets cannot disagree about what a token is.
 
 ### 10. Tools (1 d)
 

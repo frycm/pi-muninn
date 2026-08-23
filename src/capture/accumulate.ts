@@ -14,6 +14,7 @@
  * recalled, restated, observed again next session, promoted on `use_count`.
  * That loop is designed out at the only point where it could start.
  */
+import { estimateTokens } from "../tokens.ts";
 
 /** The `customType` Muninn injects recalled memories under. */
 export const MUNINN_MESSAGE_TYPE = "muninn";
@@ -219,10 +220,9 @@ export class RunAccumulator {
 // Rendering a run for the outcome model
 // ---------------------------------------------------------------------------
 
-/** Rough token estimate. Four characters per token is close enough to budget by. */
-export function estimateTokens(text: string): number {
-	return Math.ceil(text.length / 4);
-}
+// The same approximation every budget in Muninn uses; re-exported here because
+// this is where the run transcript is trimmed to fit one.
+export { estimateTokens };
 
 const MAX_MESSAGE_CHARS = 4_000;
 
