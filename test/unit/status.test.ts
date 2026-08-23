@@ -73,8 +73,41 @@ describe("formatStatus", () => {
 		expect(status({ scopes: decision })).toContain("(not created yet)");
 	});
 
-	it("is honest that journalling is not implemented yet", () => {
-		expect(status()).toContain("not implemented yet");
+	it("is honest that automatic capture is not implemented yet", () => {
+		expect(status()).toContain("nothing is captured automatically yet");
+	});
+
+	it("shows journal counts when they were asked for", () => {
+		const report = formatStatus({
+			muninnVersion: "0.1.0",
+			piVersion: "0.84.2",
+			runtime: "node v22.19.0",
+			session: session(),
+			journal: [{ scope: "project", path: "/p", entries: 3, claims: 5, problems: [] }],
+		});
+		expect(report).toContain("journal   project: 3 entries, 5 claims");
+	});
+
+	it("surfaces a damaged journal file rather than quietly reading around it", () => {
+		const report = formatStatus({
+			muninnVersion: "0.1.0",
+			piVersion: "0.84.2",
+			runtime: "node v22.19.0",
+			session: session(),
+			journal: [{ scope: "project", path: "/p", entries: 1, claims: 1, problems: ["truncated: entry at end of file"] }],
+		});
+		expect(report).toContain("! truncated: entry at end of file");
+	});
+
+	it("uses singular wording for one entry", () => {
+		const report = formatStatus({
+			muninnVersion: "0.1.0",
+			piVersion: "0.84.2",
+			runtime: "node v22.19.0",
+			session: session(),
+			journal: [{ scope: "global", path: "/g", entries: 1, claims: 1, problems: [] }],
+		});
+		expect(report).toContain("1 entry, 1 claim");
 	});
 
 	it("shows which settings files were read", () => {

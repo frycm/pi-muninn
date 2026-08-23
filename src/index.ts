@@ -11,7 +11,7 @@ import {
 	getAgentDir,
 	VERSION as PI_VERSION,
 } from "@earendil-works/pi-coding-agent";
-import { buildSessionContext, type SessionContext } from "./session.ts";
+import { buildSessionContext, journalStats, type SessionContext } from "./session.ts";
 import { formatScopes, formatStatus, formatStatusLine, formatWarning } from "./status.ts";
 import { MUNINN_VERSION } from "./version.ts";
 
@@ -53,6 +53,7 @@ export default function (pi: ExtensionAPI): void {
 						piVersion: PI_VERSION,
 						runtime: describeRuntime(),
 						session: current,
+						journal: journalStats(current),
 					}),
 					"info",
 				);

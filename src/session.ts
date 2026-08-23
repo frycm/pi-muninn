@@ -7,6 +7,8 @@
  */
 import { existsSync } from "node:fs";
 import { gitToplevel } from "./git.ts";
+import { claimsOf } from "./journal/format.ts";
+import { readStoreJournal } from "./journal/read.ts";
 import { type LoadedSettingsWithSources, loadSettings } from "./settings-io.ts";
 import { type HostIdentity, loadHostIdentity } from "./store/host.ts";
 import { ensureStore } from "./store/init.ts";
@@ -70,4 +72,32 @@ export async function buildSessionContext(options: BuildSessionContextOptions): 
 	}
 
 	return { host, loaded, scopes, problems };
+}
+
+export interface ScopeJournalStats {
+	scope: string;
+	path: string;
+	entries: number;
+	claims: number;
+	problems: string[];
+}
+
+/**
+ * Entry and claim counts per active scope.
+ *
+ * Computed on demand for `/muninn` only, never at session start: counting means
+ * parsing every daily file, and a session must not pay for a number nobody
+ * asked to see.
+ */
+export function journalStats(session: SessionContext): ScopeJournalStats[] {
+	return session.scopes.active.map((scope) => {
+		const read = readStoreJournal(scope.path);
+		return {
+			scope: scope.scope,
+			path: scope.path,
+			entries: read.entries.length,
+			claims: read.entries.reduce((total, entry) => total + claimsOf(entry).length, 0),
+			problems: read.problems.map((problem) => `${problem.kind}: ${problem.message}`),
+		};
+	});
 }

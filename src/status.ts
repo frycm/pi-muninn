@@ -5,7 +5,7 @@
  * without a pi session.
  */
 
-import type { SessionContext } from "./session.ts";
+import type { ScopeJournalStats, SessionContext } from "./session.ts";
 import type { SettingsWarning } from "./settings.ts";
 import type { SettingsSource } from "./settings-io.ts";
 
@@ -14,6 +14,8 @@ export interface StatusInput {
 	piVersion: string;
 	runtime: string;
 	session: SessionContext;
+	/** Per-scope journal counts. Computed on demand, so absent means "not asked for". */
+	journal?: ScopeJournalStats[];
 }
 
 function describeSource(source: SettingsSource): string {
@@ -38,11 +40,13 @@ export function formatStatus(input: StatusInput): string {
 	if (scopes.active.length === 0) {
 		lines.push("stores    none active — nothing is captured or recalled");
 	} else {
-		for (const scope of scopes.active) {
+		scopes.active.forEach((scope, index) => {
+			// The arrow marks the capture target: the one scope this session writes to.
 			const marker = scope.scope === scopes.captureTarget ? "→" : " ";
 			const state = scope.exists ? "" : " (not created yet)";
-			lines.push(`stores  ${marker} ${scope.scope}: ${scope.path}${state}`);
-		}
+			const label = index === 0 ? "stores" : "      ";
+			lines.push(`${label}  ${marker} ${scope.scope}: ${scope.path}${state}`);
+		});
 	}
 
 	const captureKinds = [
@@ -51,7 +55,21 @@ export function formatStatus(input: StatusInput): string {
 		settings.capture.toolFacts ? "tool facts" : null,
 	].filter((kind): kind is string => kind !== null);
 	lines.push(`capture   ${captureKinds.length > 0 ? captureKinds.join(", ") : "nothing (all kinds disabled)"}`);
-	lines.push("journal   not implemented yet — capture lands in steps 3-6 of Phase 1");
+	lines.push("          nothing is captured automatically yet — that lands in steps 5-6 of Phase 1");
+
+	if (input.journal) {
+		if (input.journal.length === 0) {
+			lines.push("journal   no active scope");
+		} else {
+			input.journal.forEach((stats, index) => {
+				const label = index === 0 ? "journal  " : "         ";
+				lines.push(
+					`${label} ${stats.scope}: ${stats.entries} ${stats.entries === 1 ? "entry" : "entries"}, ${stats.claims} ${stats.claims === 1 ? "claim" : "claims"}`,
+				);
+				for (const problem of stats.problems) lines.push(`          ! ${problem}`);
+			});
+		}
+	}
 
 	lines.push(
 		`recall    ${settings.recall.factsPerTurn} facts/turn · ${settings.recall.tokenBudget} tokens · tier ${settings.recall.indexTier}`,
