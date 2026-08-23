@@ -1,9 +1,10 @@
 /**
  * pi-muninn extension entry point.
  *
- * Phase 1 step 6: sessions now leave a journal of what the user asked to be
- * remembered, what they corrected, and how each task turned out. Recall — the
- * other half — arrives in step 9.
+ * Phase 1 step 8: sessions leave a journal of what the user asked to be
+ * remembered, what they corrected and how each task turned out, and every
+ * store now carries a Tier 0 index of it. Recall — putting what the index
+ * finds back in front of the model — arrives in step 9.
  */
 import {
 	CONFIG_DIR_NAME,
@@ -26,7 +27,8 @@ import {
 	type StateDelta,
 	taskFromSessionFile,
 } from "./capture/session-state.ts";
-import { appendEntry } from "./journal/append.ts";
+import { SessionIndexes } from "./index/search.ts";
+import { type AppendResult, appendEntry } from "./journal/append.ts";
 import { buildSessionContext, journalStats, type SessionContext } from "./session.ts";
 import { formatScopes, formatStatus, formatStatusLine, formatWarning } from "./status.ts";
 import { MUNINN_VERSION } from "./version.ts";
@@ -71,6 +73,8 @@ export default function (pi: ExtensionAPI): void {
 	let runsWithoutAgentEnd = 0;
 	/** Entries appended since the last commit, for the commit message. */
 	let uncommittedEntries = 0;
+	/** One Tier 0 index per active scope, opened once and kept for the session. */
+	let indexes: SessionIndexes | undefined;
 
 	const load = async (cwd: string, projectTrusted: boolean, createStores: boolean): Promise<SessionContext> => {
 		session ??= await buildSessionContext({
@@ -86,8 +90,51 @@ export default function (pi: ExtensionAPI): void {
 	const captureTargetPath = (current: SessionContext): string | undefined =>
 		current.scopes.active.find((scope) => scope.scope === current.scopes.captureTarget)?.path;
 
+	/**
+	 * Everything that follows an append: remember the id, count it for the
+	 * commit message, and put it in the index.
+	 *
+	 * Indexing here rather than at the next session start is what makes a
+	 * correction findable in the turn after it was made — the entry is chunked
+	 * from what was just written, so nothing is re-read and nothing waits.
+	 */
+	const afterAppend = (
+		current: SessionContext,
+		currentState: MuninnSessionState,
+		storePath: string,
+		written: AppendResult,
+	): void => {
+		currentState.written.push(written.id);
+		uncommittedEntries++;
+		indexes?.addEntry(storePath, {
+			...written.entry,
+			date: written.date,
+			host: current.host.id,
+			path: written.path,
+		});
+		pi.appendEntry(STATE_CUSTOM_TYPE, { kind: "written", ids: [written.id] } satisfies StateDelta);
+	};
+
+	/**
+	 * Open (and rebuild what is stale in) every active scope's index.
+	 *
+	 * On the queue, not awaited in the handler: a first build over a large
+	 * store is seconds of work, and no session should wait on it to accept the
+	 * user's first keystroke. The queue is serial, so any append that follows
+	 * finds the index already open.
+	 */
+	const openIndexes = (current: SessionContext, force: boolean): void => {
+		queue.enqueue("index", async () => {
+			const opened = SessionIndexes.open(current.scopes.active, force ? { force: true } : {});
+			indexes = opened.indexes;
+			if (opened.problems.length > 0) {
+				process.stderr.write(`${["muninn: index problems", ...opened.problems.map((p) => `  ! ${p}`)].join("\n")}\n`);
+			}
+		});
+	};
+
 	pi.registerCommand("muninn", {
-		description: "Muninn status, scopes and settings",
+		description: "Muninn status, scopes, settings and index",
 		handler: async (args, ctx) => {
 			const sub = args.trim() || "status";
 			// `scope` explains the situation and must not change it, so it never
@@ -97,6 +144,11 @@ export default function (pi: ExtensionAPI): void {
 			if (sub === "status") {
 				// Counts would otherwise miss an entry still in the queue.
 				await queue.flush();
+				const indexStats = indexes?.scopes.map((scoped) => ({
+					scope: scoped.scope,
+					chunks: scoped.index.size,
+					files: scoped.index.files,
+				}));
 				ctx.ui.notify(
 					formatStatus({
 						muninnVersion: MUNINN_VERSION,
@@ -106,9 +158,18 @@ export default function (pi: ExtensionAPI): void {
 						journal: journalStats(current),
 						captureFailures: queue.peekFailures().map((failure) => `${failure.label}: ${failure.message}`),
 						runsWithoutAgentEnd,
+						...(indexStats ? { index: indexStats } : {}),
 					}),
 					"info",
 				);
+				return;
+			}
+			if (sub === "reindex") {
+				// Unconditional: the point of asking is to distrust what is on disk.
+				openIndexes(current, true);
+				await queue.flush();
+				const total = indexes?.size ?? 0;
+				ctx.ui.notify(`muninn: index rebuilt — ${total} ${total === 1 ? "chunk" : "chunks"}`, "info");
 				return;
 			}
 			if (sub === "scope") {
@@ -117,12 +178,13 @@ export default function (pi: ExtensionAPI): void {
 			}
 			// Every other subcommand named in the design lands in a later step; say
 			// so rather than failing as if it were a typo.
-			ctx.ui.notify(`"/muninn ${sub}" is not implemented yet (try: status, scope)`, "warning");
+			ctx.ui.notify(`"/muninn ${sub}" is not implemented yet (try: status, scope, reindex)`, "warning");
 		},
 	});
 
 	pi.on("session_start", async (event, ctx) => {
 		session = undefined;
+		indexes = undefined;
 		previousAssistantText = undefined;
 		const current = await load(ctx.cwd, ctx.isProjectTrusted(), true);
 		ctx.ui.setStatus("muninn", formatStatusLine(current));
@@ -142,6 +204,8 @@ export default function (pi: ExtensionAPI): void {
 				? { kind: "start", task: state.task, continues: state.continues }
 				: { kind: "start", task: state.task }) satisfies StateDelta,
 		);
+
+		openIndexes(current, false);
 
 		// A misread setting or an unusable store means Muninn is not behaving the
 		// way the files say it should. That is exactly the class of failure this
@@ -190,9 +254,7 @@ export default function (pi: ExtensionAPI): void {
 		// stalling the user's turn to record a note about it is the wrong trade.
 		queue.enqueue(`capture ${decision.kind}`, async () => {
 			const result = await appendEntry(decision.entry, { storePath, hostId: current.host.id });
-			currentState.written.push(result.id);
-			uncommittedEntries++;
-			pi.appendEntry(STATE_CUSTOM_TYPE, { kind: "written", ids: [result.id] } satisfies StateDelta);
+			afterAppend(current, currentState, storePath, result);
 		});
 	});
 
@@ -266,9 +328,7 @@ export default function (pi: ExtensionAPI): void {
 		runAlreadyJournaled = true;
 		queue.enqueue("outcome", async () => {
 			const written = await appendEntry(result.entry, { storePath, hostId: current.host.id });
-			currentState.written.push(written.id);
-			uncommittedEntries++;
-			pi.appendEntry(STATE_CUSTOM_TYPE, { kind: "written", ids: [written.id] } satisfies StateDelta);
+			afterAppend(current, currentState, storePath, written);
 		});
 	};
 
@@ -319,6 +379,10 @@ export default function (pi: ExtensionAPI): void {
 		// Un-debounced: this is the last chance to make the session's entries
 		// durable in git before the process goes away.
 		commitPending(true);
+		// After the commit, so the index reflects every entry this session wrote.
+		queue.enqueue("index save", async () => {
+			for (const problem of indexes?.save() ?? []) process.stderr.write(`muninn: ${problem}\n`);
+		});
 		// Closes the window where a queued entry could be lost to process exit.
 		await queue.flush();
 		const failures = queue.takeFailures();

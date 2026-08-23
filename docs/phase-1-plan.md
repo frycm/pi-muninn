@@ -316,7 +316,7 @@ Two details worth keeping:
   commit message can understate what the commit contains — it is a description, not a
   number anything depends on.
 
-### 8. Tier 0 index (1.5 d)
+### 8. Tier 0 index (1.5 d) — **done**
 
 - `chunk.ts`: heading-path chunks over `MEMORY.md`, `journal/**/*.md` (each claim is its
   own chunk with the entry header and `cue` as breadcrumb; prose is a context chunk that
@@ -340,6 +340,38 @@ Two details worth keeping:
 `HOME2`/project B `memory_search("vitest watch")` returns it as the top hit with the right
 id and date. Index rebuild of a 10 k-entry synthetic journal completes under 3 s on a
 laptop; incremental append under 50 ms.
+**Met**, in `test/integration/acceptance.test.ts` and `test/unit/index-perf.test.ts` — with
+one substitution: `muninn sync` (step 12) and `memory_search` (step 10) do not exist yet, so
+the transport is plain `git push` / `git clone` in the harness and the query goes through
+`search()`, the function the tool will call. Step 12's "done when" is this same test with
+`muninn sync` in place of the git calls. On a laptop the 10 k-entry build takes ~400 ms for
+30 k chunks and an incremental append is sub-millisecond; the thresholds asserted are the
+plan's, not the measurement, so CI under load does not go red for being slow.
+
+Five details worth keeping:
+
+- **The manifest records what was read off disk, never what was added in memory.** An
+  entry is chunked into the live index the moment it is appended, so it is findable in the
+  next turn — but the daily file's recorded hash stays stale until a refresh reads it back.
+  That is what makes the next open pick up whatever *another* session appended to the same
+  file meanwhile. Chunk ids are claim ids, so the re-read replaces those chunks rather than
+  duplicating them.
+- **Every index failure has the same answer: rebuild.** Absent, truncated, corrupt,
+  written by another version — the index is derived and gitignored, so there is never a
+  reason to try to repair one. The version stamp covers both the index format and the store
+  schema, and a mismatch deletes and rebuilds; the README calls this the one migration that
+  is free.
+- **Scores are merged across scopes but not pooled.** Each store is its own BM25 corpus, so
+  a project store's term statistics do not shift when an unrelated global store grows. The
+  cost is that cross-scope scores are only roughly comparable; the alternative — one corpus
+  — would make results depend on what else happens to be indexed.
+- **`scope` is attached at query time, not stored in the index.** The plan lists it among
+  the stored fields, but a store is keyed by path and does not know which scope a session is
+  treating it as. Storing the label would bake one session's view into a derived file that
+  another session reads.
+- **Opening the index is queued, not awaited.** A first build over a large store is seconds
+  of work and no session should wait on it before accepting a keystroke. The append queue is
+  serial, so any capture that follows finds the index already open.
 
 ### 9. Recall (1 d)
 

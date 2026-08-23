@@ -20,6 +20,14 @@ export interface StatusInput {
 	captureFailures?: string[];
 	/** Runs assembled without pi's authoritative `agent_end` payload. */
 	runsWithoutAgentEnd?: number;
+	/** Per-scope index size. Absent while the index is still being opened. */
+	index?: ScopeIndexStats[];
+}
+
+export interface ScopeIndexStats {
+	scope: string;
+	chunks: number;
+	files: number;
 }
 
 function describeSource(source: SettingsSource): string {
@@ -76,6 +84,19 @@ export function formatStatus(input: StatusInput): string {
 					`${label} ${stats.scope}: ${stats.entries} ${stats.entries === 1 ? "entry" : "entries"}, ${stats.claims} ${stats.claims === 1 ? "claim" : "claims"}`,
 				);
 				for (const problem of stats.problems) lines.push(`          ! ${problem}`);
+			});
+		}
+	}
+
+	if (input.index) {
+		if (input.index.length === 0) {
+			lines.push("index     no store to index yet");
+		} else {
+			input.index.forEach((stats, position) => {
+				const label = position === 0 ? "index    " : "         ";
+				lines.push(
+					`${label} ${stats.scope}: ${stats.chunks} ${stats.chunks === 1 ? "chunk" : "chunks"} from ${stats.files} ${stats.files === 1 ? "file" : "files"}`,
+				);
 			});
 		}
 	}

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { StoreIndex } from "../../src/index/build.ts";
 import { readStoreJournal } from "../../src/journal/read.ts";
 import { type MockProvider, startMockProvider } from "../fixtures/mock-provider.ts";
 
@@ -215,5 +216,27 @@ describe("journal commits", () => {
 
 		const { stdout: after } = await execFileAsync("git", ["rev-list", "--count", "HEAD"], { cwd: store });
 		expect(Number.parseInt(after.trim(), 10)).toBe(Number.parseInt(before.trim(), 10) + 1);
+	}, 60_000);
+});
+
+describe("the index, through a real pi session", () => {
+	it("is written to the store and finds what the session journaled", async () => {
+		await pi("Remember that vitest watch mode hangs the CI job.");
+
+		const store = projectStore();
+		expect(existsSync(join(store, ".index", "manifest.json"))).toBe(true);
+		expect(existsSync(join(store, ".index", "tier0.json"))).toBe(true);
+
+		// Opened from disk, with no rebuilding: what the session indexed while it
+		// ran is what a later reader finds.
+		const { index, result } = StoreIndex.open(store);
+		expect(result.kind).toBe("none");
+		expect(index.search("vitest watch")[0]?.body).toContain("watch mode hangs");
+	}, 60_000);
+
+	it("is never committed — it is derived and disposable", async () => {
+		const store = projectStore();
+		const { stdout } = await execFileAsync("git", ["ls-files", "--", ".index"], { cwd: store });
+		expect(stdout.trim()).toBe("");
 	}, 60_000);
 });

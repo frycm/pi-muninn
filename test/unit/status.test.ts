@@ -199,3 +199,26 @@ describe("formatStatusLine", () => {
 		);
 	});
 });
+
+describe("formatStatus — the index", () => {
+	it("reports chunk and file counts per scope", () => {
+		const text = formatStatus({
+			muninnVersion: "0.1.0",
+			piVersion: "0.84.2",
+			runtime: "node v22.19.0",
+			session: session(),
+			index: [
+				{ scope: "global", chunks: 412, files: 9 },
+				{ scope: "project", chunks: 1, files: 1 },
+			],
+		});
+		expect(text).toContain("index     global: 412 chunks from 9 files");
+		expect(text).toContain("project: 1 chunk from 1 file");
+	});
+
+	it("says nothing about the index while it is still opening", () => {
+		// Absent means "not asked for yet", not "empty" — the index opens on the
+		// queue, so a status printed in the first moments of a session has none.
+		expect(status()).not.toContain("index ");
+	});
+});

@@ -35,6 +35,16 @@ export interface AppendResult {
 	/** Addresses of the claims just written, in order. */
 	claimIds: string[];
 	path: string;
+	/** `YYYY-MM-DD` of the daily file it went into. */
+	date: string;
+	/**
+	 * The entry as written — scrubbed, with its id and time.
+	 *
+	 * Returned so the index can chunk what was just appended without parsing
+	 * the file back: the writer already knows the bytes, and re-reading them
+	 * would be both slower and a chance to disagree with itself.
+	 */
+	entry: JournalEntry;
 }
 
 export function journalDir(storePath: string, hostId: string): string {
@@ -73,7 +83,7 @@ export async function appendEntry(entry: NewJournalEntry, options: AppendOptions
 		if (!fileExisted) fsyncDirectory(dir);
 	});
 
-	return { id, claimIds: claimsOf(full).map((claim) => claim.id), path };
+	return { id, claimIds: claimsOf(full).map((claim) => claim.id), path, date: formatDate(now), entry: full };
 }
 
 /**

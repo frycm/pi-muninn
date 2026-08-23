@@ -1,7 +1,7 @@
 {
 	"name": "pi-muninn",
 	"version": "0.1.0",
-	"description": "Journal, dream, remember \u2014 offline long-term memory for pi",
+	"description": "Journal, dream, remember — offline long-term memory for pi",
 	"type": "module",
 	"license": "MIT",
 	"main": "./src/index.ts",
@@ -32,6 +32,7 @@
 		"vitest": "2.1.8"
 	},
 	"dependencies": {
+		"minisearch": "7.2.0",
 		"proper-lockfile": "4.1.2"
 	}
 }
