@@ -9,12 +9,12 @@
  * supports several independent facts, and superseding one of them must not
  * hide the others.
  *
- * Nothing writes this file in Phase 1 — dreams do, in Phase 2. It is read from
- * the start because recall must be active-only from the first query, and
- * because a store synced from a machine running a later Muninn may already
- * have one.
+ * Dreams write it; nothing else does. It is append-only, which is what makes it
+ * the one derived file a cross-host merge can resolve by union without asking
+ * anybody: two hosts that superseded different claims both end up with both
+ * rows, in either order, and the reader only ever asks "is this id in here".
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isClaimId } from "../ids.ts";
 import { parseIdLine } from "./trailer.ts";
@@ -86,4 +86,42 @@ export function formatSupersession(entry: Supersession): string {
 	if (entry.by) parts.push(`by: ${entry.by}`);
 	if (entry.fact) parts.push(`fact: ${entry.fact}`);
 	return `- ${parts.join(" · ")}`;
+}
+
+const HEADER = [
+	"<!-- Written by muninn dreams: which journal claims are no longer current. Append-only. -->",
+	"",
+	"# Superseded claims",
+	"",
+].join("\n");
+
+/** Where a store keeps its supersessions. */
+export function supersessionsPath(storePath: string): string {
+	return join(storePath, "supersessions.md");
+}
+
+/**
+ * Append rows for claims that are not already listed.
+ *
+ * Deduplicated against what is on disk, because a claim can be cited by two
+ * facts and a dream that retires both would otherwise write it twice — and
+ * because a re-run after a failure must be able to do the same work again
+ * without leaving a trail of duplicates. Returns the rows actually written.
+ */
+export function appendSupersessions(storePath: string, entries: readonly Supersession[]): Supersession[] {
+	const path = supersessionsPath(storePath);
+	const existing = existsSync(path) ? readFileSync(path, "utf-8") : "";
+	const known = parseSupersessions(existing).superseded;
+
+	const fresh: Supersession[] = [];
+	for (const entry of entries) {
+		if (!isClaimId(entry.claim) || known.has(entry.claim)) continue;
+		known.add(entry.claim);
+		fresh.push(entry);
+	}
+	if (fresh.length === 0) return [];
+
+	const base = existing === "" ? HEADER : existing.endsWith("\n") ? existing : `${existing}\n`;
+	writeFileSync(path, `${base}${fresh.map(formatSupersession).join("\n")}\n`);
+	return fresh;
 }

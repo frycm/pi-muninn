@@ -21,11 +21,11 @@
  * later Muninn indexes correctly rather than as anonymous prose.
  */
 import { basename } from "node:path";
-import { isFactId } from "../ids.ts";
 import { claimsOf } from "../journal/format.ts";
 import type { JournalEntryWithContext } from "../journal/read.ts";
 import { parseTrailer } from "../journal/trailer.ts";
 import { tokenBudgetChars } from "../tokens.ts";
+import { type FactSection, parseFactLine } from "../topics/format.ts";
 
 export const CHUNK_KINDS = ["claim", "prose", "memory", "fact", "topic", "rule"] as const;
 export type ChunkKind = (typeof CHUNK_KINDS)[number];
@@ -342,7 +342,7 @@ export function chunkTopic(path: string, text: string): Chunk[] {
 	const factLines = new Set<number>();
 	const facts: Chunk[] = [];
 
-	let superseded = false;
+	let section: FactSection = "facts";
 	let fence: string | undefined;
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i] as string;
@@ -353,11 +353,12 @@ export function chunkTopic(path: string, text: string): Chunk[] {
 
 		const heading = line.match(HEADING);
 		if (heading) {
-			superseded = /superseded/i.test(heading[2] as string);
+			const label = (heading[2] as string).toLowerCase();
+			section = /superseded/.test(label) ? "superseded" : /external/.test(label) ? "external" : "facts";
 			continue;
 		}
 
-		const fact = parseFactLine(line, path, superseded);
+		const fact = factChunk(line, path, section);
 		if (fact) {
 			facts.push(fact);
 			factLines.add(i);
@@ -370,42 +371,38 @@ export function chunkTopic(path: string, text: string): Chunk[] {
 	return [...facts, ...prose];
 }
 
-function parseFactLine(line: string, path: string, superseded: boolean): Chunk | undefined {
-	if (!line.trimStart().startsWith("- ")) return undefined;
-	const marker = line.indexOf(" id: ");
-	if (marker < 0) return undefined;
+/**
+ * One fact bullet, as a chunk.
+ *
+ * The grammar itself lives in `topics/format.ts` and is called here rather than
+ * repeated: the index and the dream must agree about what a fact is, and two
+ * copies of a parser agree only until one of them is edited.
+ */
+function factChunk(line: string, path: string, section: FactSection): Chunk | undefined {
+	const fact = parseFactLine(line);
+	if (fact === undefined) return undefined;
 
-	const trailer = parseTrailer(line.slice(marker));
-	const id = trailer.get("id");
-	if (id === undefined || !isFactId(id)) return undefined;
-
-	// The claim itself: the bullet, minus the trailer, minus bold and strike
-	// markers — `~~…~~` marks a superseded fact, which the trailer already says.
-	const body = line
-		.slice(line.indexOf("- ") + 2, marker)
-		.replace(/\*\*/g, "")
-		.replace(/~~/g, "")
-		.trim();
-
+	const trailerAt = line.indexOf(" id: ");
 	const chunk: Chunk = {
-		id,
+		id: fact.id,
 		kind: "fact",
 		path,
 		title: basename(path, ".md"),
-		headingPath: superseded ? "Superseded" : "Facts",
-		body,
-		tags: ["fact", trailer.get("source"), trailer.get("phase")].filter(Boolean).join(" "),
-		links: [...new Set([...extractLinks(line.slice(marker)), ...extractLinks(body)])].filter((link) => link !== id),
+		headingPath: section === "superseded" ? "Superseded" : section === "external" ? "External" : "Facts",
+		body: fact.claim,
+		tags: ["fact", fact.source, fact.phase].filter(Boolean).join(" "),
+		links: [
+			...new Set([...extractLinks(trailerAt < 0 ? "" : line.slice(trailerAt)), ...extractLinks(fact.claim)]),
+		].filter((link) => link !== fact.id),
 	};
-	const cue = trailer.get("cue");
-	if (cue !== undefined) chunk.cue = cue;
-	const source = trailer.get("source");
-	if (source !== undefined) chunk.source = source;
-	const phase = trailer.get("phase");
-	if (phase !== undefined) chunk.phase = phase;
-	const date = trailer.get("valid_from");
-	if (date !== undefined) chunk.date = date;
-	if (superseded || trailer.has("valid_to")) chunk.superseded = true;
+	if (fact.cue !== undefined) chunk.cue = fact.cue;
+	chunk.source = fact.source;
+	if (fact.phase !== undefined) chunk.phase = fact.phase;
+	if (fact.validFrom !== "") chunk.date = fact.validFrom;
+	// Quarantined facts are indexed but never evidence on their own: an
+	// `external` fact is searchable and is not auto-injected, which is the
+	// trust table's rule expressed where retrieval can see it.
+	if (section === "superseded" || fact.validTo !== undefined) chunk.superseded = true;
 	return trim(chunk);
 }
 
