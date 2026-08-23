@@ -22,12 +22,13 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
 import { DERIVED_PATHS, GitError, type GitIdentity, git } from "../git.ts";
-import { readStoreJournal } from "../journal/read.ts";
+import { type JournalEntryWithContext, readStoreJournal } from "../journal/read.ts";
 import type { MuninnSettings } from "../settings.ts";
 import type { HostIdentity } from "../store/host.ts";
 import { storeIdentity } from "../store/init.ts";
 import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import type { ActiveScope } from "../store/scopes.ts";
+import { gather } from "./gather.ts";
 import type { DreamModel } from "./model.ts";
 import { type Orientation, orient } from "./orient.ts";
 import { type DreamReport, emptyReport, formatReport, reportPath, reportTotals } from "./report.ts";
@@ -162,9 +163,24 @@ async function runLocked(options: DreamOptions, context: LockedContext): Promise
 		report.journalThrough = journalThrough(worktree.storePath);
 
 		progress?.("gather");
-		// Gather, consolidate and lint arrive in the steps that follow; the
-		// transaction around them is what this step exists to make true.
+		const inRange = entriesInRange(worktree.storePath, orientation);
+		const gathered = gather({
+			orientation,
+			entries: inRange,
+			holdOut: options.settings.dream.evalSessions,
+			now,
+		});
+		report.heldOut = gathered.heldOut;
 		report.gathered.push(...describeRange(orientation, report));
+		report.gathered.push(`${inRange.length} entry/entries in range, ${gathered.jobs.length} topic(s) affected`);
+		report.gathered.push(...gathered.notes);
+		for (const quarantined of gathered.quarantined) {
+			report.lint.push({
+				blocking: false,
+				rule: "poisoning-budget",
+				message: `${quarantined.topic}: ${quarantined.reason}`,
+			});
+		}
 
 		progress?.("commit");
 		report.model = options.model?.id ?? "none";
@@ -213,6 +229,24 @@ async function commitDream(storePath: string, report: DreamReport, identity: Git
 			: []),
 	].join("\n");
 	await git(storePath, { kind: "commit", message, paths: [...paths] }, identity ? { identity } : {});
+}
+
+/**
+ * The entries a dream may learn from.
+ *
+ * The range is "since the last complete dream", expressed per host as an id
+ * comparison rather than as a git diff over daily files. A daily file grows
+ * across dreams — the same file is touched again tomorrow — so "which files
+ * changed" answers a coarser question than "which entries are new", and the
+ * coarser answer would re-consolidate everything written earlier the same day.
+ * Ids are UUIDv7, so `>` is chronological, per host, without a clock.
+ */
+function entriesInRange(storePath: string, orientation: Orientation): JournalEntryWithContext[] {
+	const through = orientation.previousJournalThrough;
+	return readStoreJournal(storePath).entries.filter((entry) => {
+		const last = through[entry.host];
+		return last === undefined || entry.id > last;
+	});
 }
 
 /** The last entry id per host in the store, which is where the next dream starts. */
