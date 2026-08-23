@@ -75,8 +75,8 @@ neither.
 
 ## Using it today
 
-Phase 1 — journal and recall — is built and tested. Nothing below this section's list is
-implemented yet.
+Phases 1 and 2 — journal and recall, and dreaming — are built and tested. Nothing below
+this section's list is implemented yet.
 
 ### Install
 
@@ -106,6 +106,9 @@ Node `>=22.19.0` or Bun; no native dependencies, nothing to compile. Two runtime
   own prompt already says.
 - **Commit.** The journal is committed to the store's git history when a run settles and at
   shutdown — one commit per batch, touching only `journal/`.
+- **Dreaming is not automatic.** A dream runs when you run it (`/muninn dream`, `muninn
+  dream`), writes to a branch, and is applied only when you say so. Auto-trigger and
+  auto-remember arrive with the evaluation that makes them safe.
 
 ### What the model can do
 
@@ -161,15 +164,29 @@ force-pushed. A second machine joins by cloning the remote into its store path.
 Under `muninn` in `~/.pi/agent/settings.json`, and — **tighten-only** — in a project's
 `.pi/settings.json`. A project may lower a budget, disable a capture kind or turn a scope
 off; it may never widen anything, and it may never name a remote or an endpoint. See
-[Commands and settings](#commands-and-settings) for the full block; the Phase 1 keys are
-`scopes`, `sync`, `capture` and `recall`.
+[Commands and settings](#commands-and-settings) for the full block. Every `dream.*` field
+is **global-only**: which model reads the whole store is not a decision a cloned
+repository gets to make.
+
+`dream.auto`, `dream.autoRemember`, `dream.evalSessions` and `dream.canaries` are read but
+not yet acted on — they belong to the evaluation phase. `dream.evalSessions` *is* used, for
+how many recent task groups a dream withholds, so that the evaluation can be added without
+changing what consolidation sees.
 
 ### Not built yet
 
-Dreaming and everything downstream of it: `topics/`, `rules.md`, consolidated facts,
-supersession *writing* (the reader is in, so recall is active-only from day one), the
-held-out evaluation, Tier 1 retrieval, team scope, erasure and skills. `MEMORY.md` is yours
-to write by hand until a dream writes it for you.
+The **held-out evaluation** and everything that depends on it: automatic dreams
+(`dream.auto`), automatic remember (`dream.autoRemember`), the canary set and the
+provenance gate on `rules.md`. Until those exist, dreams are manual and remembered by
+hand — which is why they are.
+
+**`rules.md` is yours to write.** A dream reads it, lints it (the cap, rules nothing has
+used, a project rule contradicting a global one) and reports; it does not write rules. A
+rule is *followed*, not merely recalled, and every control that would make an auto-derived
+rule safe is part of the evaluation phase.
+
+Also absent: Tier 1 retrieval, team scope, dreamed skills, and `muninn serve-cron` (which
+exists to run the automatic dream).
 
 ---
 
@@ -1167,10 +1184,12 @@ one host produce a well-formed daily file. **All three met**, in
 `test/integration/acceptance.test.ts`, `test/integration/capture.test.ts` and
 `test/unit/journal-append.test.ts` respectively.
 
-### Phase 2 — Dreaming, manual
+### Phase 2 — Dreaming, manual — **done**
 
 *Outcome: a dream produces a reviewable branch from the journal, with a local model.*
-Step-by-step plan in [docs/phase-2-plan.md](docs/phase-2-plan.md).
+Built and tested; see [Dreaming](#dreaming) for what that means in practice, and
+[docs/phase-2-plan.md](docs/phase-2-plan.md) for the step-by-step record — each step's
+"done when", how it was met, and what it turned up.
 
 Orient / gather / consolidate / lint / commit; topic file format with fact ids;
 supersession into `supersessions.md` and active-only recall; echo exclusion; the
@@ -1181,7 +1200,21 @@ per-scope budgets; dream reports; `/muninn dreams` remember / forget; `/muninn e
 frontier model. Done when: the fixture store dreamed by a 9B model yields zero unsourced
 facts, every superseded fact retains its audit row and its evidence is absent from default
 `memory_search`, a dream remembered while capture committed ten entries lands without
-conflict, and the diff is readable in `git log -p`.
+conflict, and the diff is readable in `git log -p`. **Three of the four are met**, in
+`test/unit/qualify.test.ts` (scored against scripted dreamers, since CI has no local
+model), `test/unit/topic-write.test.ts`, `test/unit/remember.test.ts` and
+`test/unit/dream-end-to-end.test.ts` respectively. The fourth — a *9B model* on the
+fixture — needs the model on hand; the fixture, the scorer and the harness ship, and
+[docs/qualify-results.md](docs/qualify-results.md) carries the empty table rather than
+figures nobody measured.
+
+Two things the phase changed about the design, both because a test showed the cost.
+**Rules are not written by dreams**: every control that makes an auto-derived rule safe
+belongs to Phase 3, and a rule is followed rather than merely recalled. And **a dream holds
+the store lock for its setup only** — the design's own promise that capture keeps writing
+throughout is incompatible with holding it for the minutes a dream takes, and a queued
+append that times out waiting is an entry lost. Two dreams on one host are excluded by a
+separate `.dreaming` marker instead.
 
 ### Phase 3 — Evaluate, auto-dream, promotion gate
 

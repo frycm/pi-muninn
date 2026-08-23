@@ -106,7 +106,7 @@ more useful than before — and so that the riskiest part (a small model consoli
 is reached with every deterministic phase already in place around it, which is what makes
 its output measurable. Estimates are working days for one person.
 
-### 1. Git verbs and dream worktrees (1 d)
+### 1. Git verbs and dream worktrees (1 d) — **done**
 
 - `git.ts`: add `GitCommand` variants, each with an argv shape test:
   `worktree-add { path, branch, startPoint }`, `worktree-remove { path, force }`,
@@ -132,7 +132,7 @@ its branch, fast-forwards `main` to it, and asserts the main worktree's file mat
 only `.pi/muninn/`; `toArgv` is snapshot-tested for every new variant; any argv not in the
 union still throws at the call site.
 
-### 2. Topic format, fact ids, supersession writer (1 d)
+### 2. Topic format, fact ids, supersession writer (1 d) — **done**
 
 - `topics/format.ts`: the README's topic grammar as a normative parser/serializer —
   front matter (`topic`, `updated`), `# Title`, free prose, `## Facts`, `## Superseded`.
@@ -162,7 +162,7 @@ supersedes one of three facts and asserts the superseded row keeps its id, gains
 `search()` without `history` no longer returns those claims while `memory_read` by id still
 does, labelled `superseded` — that is the second README acceptance criterion, in a unit test.
 
-### 3. The dream skeleton — lock, input head, orient, report, commit (1.5 d)
+### 3. The dream skeleton — lock, input head, orient, report, commit (1.5 d) — **done**
 
 A dream that consolidates nothing but does everything else, end to end: this is the step
 that makes the transaction testable before a model is in the loop.
@@ -204,7 +204,7 @@ with a message naming the holder. A dream killed mid-phase (`SIGKILL` the child)
 worktree and a lock that the next dream removes after the lock goes stale (`staleMs`
 override).
 
-### 4. Gather (1.5 d)
+### 4. Gather (1.5 d) — **done**
 
 - `dream/gather.ts`, deterministic, over the range `previous_input_head..input_head`:
   1. **Range.** `diff-name-only` on `journal/` gives the daily files; parse them
@@ -246,7 +246,7 @@ recurrence, the superseded claim is absent, the five most recent completed tasks
 out and listed, the `external` topic is deferred to review. The test asserts the job inputs
 by id, so the fixture doubles as the first half of the qualification fixture (step 11).
 
-### 5. Consolidate (2 d)
+### 5. Consolidate (2 d) — **done**
 
 - `dream/consolidate.ts`: for each affected topic, **one bounded job**: system prompt
   (fixed), user prompt = current topic file (facts with ids; ≤ 40 facts, else the 40 most
@@ -278,7 +278,7 @@ written and the report records one retry; with `hostile.ts` (cites a held-out cl
 a fabricated id; supersedes 60 % of a topic; emits a claim containing an AWS key) every
 violation is refused by code and named in the report, and the topic file is unchanged.
 
-### 6. Lint (1 d)
+### 6. Lint (1 d) — **done**
 
 - `dream/lint.ts`, deterministic, over the worktree after consolidation. **Blocking** (the
   dream fails, the branch is kept with the report for inspection, nothing is remembered):
@@ -299,7 +299,7 @@ violation is refused by code and named in the report, and the topic file is unch
 over a store whose hand-edited topic cites a fake id fails with the id in the report and
 leaves `main` untouched.
 
-### 7. `MEMORY.md` regeneration and the commit phase (1 d)
+### 7. `MEMORY.md` regeneration and the commit phase (1 d) — **done**
 
 - `dream/memory-md.ts`: one line per active topic (`- **<topic title>** — <first fact
   claim, trimmed> · topics/<slug>.md`) and per rule; per-scope reserved budgets
@@ -322,7 +322,7 @@ lines into a 120-line reservation and asserts which ten were dropped and why; a 
 preamble survives; `git log -p` of the dream commit in the integration test is snapshot-
 tested.
 
-### 8. Remember, forget, recovery, `/muninn dreams` (1.5 d)
+### 8. Remember, forget, recovery, `/muninn dreams` (1.5 d) — **done**
 
 - `dream/remember.ts`: the README's apply transaction under the `remember` lock: write
   `.remember` `{ branch, mainSha, at }` → `commitJournalLocked` (worktree clean) → rebase
@@ -354,7 +354,7 @@ followed by the dream commit; `MEMORY.md` on disk is the dream's; `git status` i
 Forget reverts it and a subsequent dream re-derives the same facts with new ids. The
 recovery test passes for every interruption point.
 
-### 9. Merge — fact-level 3-way, residue, merge dream (2 d)
+### 9. Merge — fact-level 3-way, residue, merge dream (2 d) — **done**
 
 - `dream/merge.ts`, three layers, cheapest first, invoked from step 8 when the rebase
   conflicts on a derived path:
@@ -382,7 +382,7 @@ each laptop dream and remember a different rewrite of the same topic, sync, and 
 merge dream whose report names both parents, no fact lost, and both laptops on the same
 `main`. The merge cases are also in the qualification fixture.
 
-### 10. Erase (1 d)
+### 10. Erase (1 d) — **done**
 
 - `dream/erase.ts`, under the `erase` lock for the whole duration, after two confirmations
   (`/muninn erase <id>` asks in the TUI; the CLI needs `--yes --yes`): the entry body in
@@ -410,7 +410,7 @@ present, the citing fact is superseded with `reason: erased`, `memory_search` an
 `memory_read` do not return it, and the second laptop's next sync reports the rewrite and
 the re-clone command.
 
-### 11. Headless CLI, `--qualify`, reference results (2 d)
+### 11. Headless CLI, `--qualify`, reference results (2 d) — **done**
 
 - <a id="headless-dreams-and-the-model"></a>**Headless dreams and the model.** `muninn
   dream` needs a model without a pi session. The SDK's `createAgentSession` is the wrong
@@ -452,7 +452,7 @@ expected table; the first README acceptance criterion (zero unsourced facts from
 model) is recorded in `docs/qualify-results.md` with the exact command, and the table has
 the four rows.
 
-### 12. Commands, status, docs, hardening (1.5 d)
+### 12. Commands, status, docs, hardening (1.5 d) — **done**
 
 - `/muninn dream [--scope s]` foreground with progress; `/muninn dreams`; `/muninn
   topics|rules` (list; `open` in `$EDITOR` where `ctx.hasUI`); `/muninn erase`. `/muninn`
@@ -467,7 +467,57 @@ the four rows.
   topics, settings `dream.*`), mark Phase 2 **done** with the same three-pointer pattern as
   Phase 1; `docs/topic-format.md` normative; `docs/qualify-results.md`.
 
-**Total: ~17 working days.**
+**Total: ~17 working days. All twelve steps are done**, and three of the four acceptance
+criteria at the top of this document are met outright: a superseded fact keeps its audit
+row while its evidence leaves default `memory_search`
+(`test/unit/topic-write.test.ts`), a dream remembered while capture committed ten entries
+lands without conflict (`test/unit/remember.test.ts`), and the diff reads as one list of
+facts in `git log -p` (`test/unit/dream-end-to-end.test.ts`). The fourth — *a 9B model*
+yielding zero unsourced facts on the fixture — ships as the fixture, the scorer and the
+harness, scored in CI against scripted dreamers; the model rows in
+[qualify-results.md](qualify-results.md) need the models on hand.
+
+726 tests. Bun is exercised by CI (`.github/workflows/ci.yml`) and was not run locally —
+Bun is not installed on the machine this was built on, and nothing added in this phase is
+native.
+
+## What the steps turned up
+
+Each of these came from a test failing for a reason that was not the test's fault. They
+are the argument for writing the "done when" first.
+
+- **Worktrees needed canonical paths.** `rev-parse --show-toplevel` answers with the path
+  the filesystem would open, so on macOS `relative()` against a store's own `/var/…` path
+  produced a sparse-checkout pattern made of `..`. The same lexical-versus-canonical gap
+  the Phase 1 review closed for the store boundary, met again at a different door (step 1).
+- **`updated:` must move only when a fact does.** Stamping it on every dream meant an idle
+  dream dirtied every topic it looked at, which would have made `git log -p` — the whole
+  point of a reviewable branch — unreadable (step 2).
+- **Recurrence has to count contexts, not just tasks.** Counting distinct tasks alone lets
+  a fact corroborate itself by a second route: recall injects a memory into two sessions,
+  both restate it, and two "independent" observations appear where there was one cause
+  (step 4).
+- **The loss guard had to be rewritten twice.** As a pure ratio it forbade the correction
+  the mechanism exists for — a topic with three facts could never have one superseded. As
+  a count of supersessions it forbade merging two facts into one better one, which is what
+  a merge dream does with every residue pair. It measures net loss (steps 5 and 9).
+- **`echo:` names a memory, which may be a claim id.** Echo resolution looked only at
+  topic facts, so every echo of a *journal* memory walked into consolidation untouched.
+  Found by the qualification fixture, which is exactly what it is for (step 11).
+- **Selecting decisions by `phase` promoted filler.** Every "finished the investigation"
+  outcome entry of an ops task became a fact. Phase is where work happened, not what was
+  learned (step 11).
+- **`refs/heads/dream/*` matches nothing.** git's ref globbing will not let a single star
+  cross a `/`, and a dream branch is two levels down. Branch listing silently found
+  nothing, which broke `/muninn dreams` and sync's dream-branch push both (step 11).
+- **The fixture's own journal was half-invisible.** The generator omitted each daily
+  file's terminating blank line, so every file's last entry parsed as a truncated tail —
+  the reader working exactly as designed, and a reminder that the format's strictness is
+  load-bearing (step 11).
+- **A dream must not hold the store lock.** Holding it for the whole run blocks every
+  append on the machine for minutes, and a queued append that times out is an entry lost
+  for good. The lock now covers the setup — commit the pending journal, read `HEAD`, cut
+  the worktree — and a separate `.dreaming` marker excludes other dreams (step 12).
 
 ## Decisions made by this plan
 

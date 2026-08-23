@@ -1,24 +1,32 @@
 /**
  * A dream: read the journal, write the derived layers on a branch, report.
  *
- * The whole job runs under the store's `dream` lock and inside a worktree, and
- * the working store is never touched until *remember*. What makes the two safe
- * to overlap is one recorded fact: `input_head`, the commit the worktree was
- * cut from. Everything the dream consolidated is at or before it, sessions keep
- * appending past it, and the next dream picks those entries up.
+ * The job runs inside a worktree and the working store is never touched until
+ * *remember*. What makes the two safe to overlap is one recorded fact:
+ * `input_head`, the commit the worktree was cut from. Everything the dream
+ * consolidated is at or before it, sessions keep appending past it, and the
+ * next dream picks those entries up.
  *
- * The sequence is deliberately boring:
+ * The sequence:
  *
- *   lock → commit this host's pending journal → record input_head → worktree →
- *   orient → gather → consolidate → lint → MEMORY.md → report → commit → unlock
+ *   [lock] commit this host's pending journal → record input_head → worktree [unlock]
+ *   → orient → gather → consolidate → lint → MEMORY.md → report → commit on the branch
  *
- * Committing the pending journal happens *inside* the lock, through
- * `commitJournalLocked`: the lock is not reentrant, and the alternative — commit
- * first, then lock — leaves a window in which another session's append lands
- * between the commit and the `rev-parse`, so `input_head` would name a commit
- * that is not what the worktree contains.
+ * **The store lock is held for the setup only.** A dream is minutes of work,
+ * and the design's promise is that capture keeps writing throughout — so
+ * holding `.lock` for the whole run would block every append on this machine
+ * for the duration, and a queued append that times out waiting is an entry lost
+ * for good. What the lock is genuinely needed for is one atomic moment: commit
+ * the pending journal and read `HEAD`, with nothing landing in between, or
+ * `input_head` would name a commit that is not what the worktree contains.
+ * Everything after that happens in a checkout nothing else can see.
+ *
+ * Two dreams on one host are excluded by a separate marker, `.dreaming`, which
+ * outlives the lock and goes stale after two hours. It has to be separate: a
+ * lock that excludes other dreams *and* excludes capture is one that cannot do
+ * the first job without doing the second.
  */
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
 import { jaccard } from "../capture/outcome.ts";
@@ -39,7 +47,14 @@ import { buildMemory } from "./memory-md.ts";
 import type { DreamModel } from "./model.ts";
 import { type Orientation, orient, readTopics } from "./orient.ts";
 import { type DreamReport, emptyReport, formatReport, reportPath, reportTotals } from "./report.ts";
-import { collectWorktrees, createWorktree, dreamBranch, dreamStamp, repositoryFor } from "./worktree.ts";
+import {
+	collectWorktrees,
+	createWorktree,
+	type DreamWorktree,
+	dreamBranch,
+	dreamStamp,
+	repositoryFor,
+} from "./worktree.ts";
 
 export interface DreamOptions {
 	scope: ActiveScope;
@@ -93,19 +108,76 @@ export async function dream(options: DreamOptions): Promise<DreamResult> {
 	};
 
 	const identity = scope.inRepo ? undefined : storeIdentity(host);
+	const context: LockedContext = { stamp, branch, report, problems, identity };
 
+	let prepared: Prepared;
 	try {
-		return await withStoreLock(
+		prepared = await withStoreLock(
 			scope.path,
 			"dream",
 			{ host: host.id, ...(options.staleMs !== undefined ? { staleMs: options.staleMs } : {}) },
-			async () => runLocked(options, { stamp, branch, report, problems, identity }),
+			async () => prepare(options, context),
 		);
 	} catch (error) {
 		if (error instanceof LockBusyError) return fail(error.message);
 		if (error instanceof GitError) return fail(error.message);
 		return fail(error instanceof Error ? error.message : String(error));
 	}
+
+	if (!prepared.ok) return { ok: false, stamp, branch, report, problems };
+
+	try {
+		// Unlocked from here: everything is written into the worktree, which
+		// nothing else on this machine can see, and capture is free to append.
+		return await runPhases(options, context, prepared);
+	} finally {
+		clearDreamMarker(scope.path);
+	}
+}
+
+/**
+ * The marker that excludes another dream on this host.
+ *
+ * Separate from the store lock because it has to outlive it: the lock is
+ * released after setup so capture can keep writing, and something still has to
+ * say "a dream is running here". Stale after two hours, matching what the lock
+ * would have used, so a dream killed with `SIGKILL` does not wedge the store.
+ */
+const DREAM_MARKER = ".dreaming";
+const DREAM_STALE_MS = 7_200_000;
+
+interface DreamMarker {
+	pid: number;
+	host: string;
+	stamp: string;
+	at: string;
+}
+
+export function dreamMarkerPath(storePath: string): string {
+	return join(storePath, DREAM_MARKER);
+}
+
+export function readDreamMarker(storePath: string): DreamMarker | undefined {
+	try {
+		const parsed = JSON.parse(readFileSync(dreamMarkerPath(storePath), "utf-8")) as Partial<DreamMarker>;
+		if (typeof parsed.pid !== "number" || typeof parsed.at !== "string") return undefined;
+		return parsed as DreamMarker;
+	} catch {
+		return undefined;
+	}
+}
+
+function clearDreamMarker(storePath: string): void {
+	rmSync(dreamMarkerPath(storePath), { force: true });
+}
+
+/** Whether another dream is running here, and not merely one that died. */
+function dreamInProgress(storePath: string, now: Date, staleMs: number): DreamMarker | undefined {
+	const marker = readDreamMarker(storePath);
+	if (marker === undefined) return undefined;
+	const age = now.getTime() - Date.parse(marker.at);
+	if (Number.isNaN(age) || age > staleMs) return undefined;
+	return marker;
 }
 
 interface LockedContext {
@@ -116,14 +188,35 @@ interface LockedContext {
 	identity: GitIdentity | undefined;
 }
 
-async function runLocked(options: DreamOptions, context: LockedContext): Promise<DreamResult> {
-	const { scope, host, now, progress } = options;
-	const { stamp, branch, report, problems, identity } = context;
+interface Prepared {
+	ok: boolean;
+	worktree?: DreamWorktree;
+	orientation?: Orientation;
+}
+
+/**
+ * The part that needs the store lock: commit, read `HEAD`, cut the worktree.
+ *
+ * Milliseconds of work, which is all capture ever has to wait for.
+ */
+async function prepare(options: DreamOptions, context: LockedContext): Promise<Prepared> {
+	const { scope, host, now } = options;
+	const { branch, report, problems, identity } = context;
 	const repo = await repositoryFor(scope);
 
-	// A dream that died leaves a worktree and a lock. The lock is held right
-	// now, so no other dream on this host is alive, which makes this the one
-	// moment at which every dream worktree registered here is provably garbage.
+	const running = dreamInProgress(scope.path, now, options.staleMs ?? DREAM_STALE_MS);
+	if (running !== undefined) {
+		problems.push(
+			`muninn: a dream is already running here (pid ${running.pid} on host ${running.host}, started ${running.at})`,
+		);
+		report.status = "failed";
+		return { ok: false };
+	}
+
+	// A dream that died leaves a worktree behind. The lock is held and no
+	// unexpired marker exists, so no other dream on this host is alive — which
+	// makes this the one moment at which every dream worktree registered here is
+	// provably garbage.
 	const collected = await collectWorktrees(repo);
 	if (collected.length > 0) report.notes.push(`removed ${collected.length} abandoned worktree(s)`);
 
@@ -152,7 +245,7 @@ async function runLocked(options: DreamOptions, context: LockedContext): Promise
 				: String(error),
 		);
 		report.status = "failed";
-		return { ok: false, stamp, branch, report, problems };
+		return { ok: false };
 	}
 	report.inputHead = inputHead;
 
@@ -163,6 +256,20 @@ async function runLocked(options: DreamOptions, context: LockedContext): Promise
 		branch,
 		startPoint: inputHead,
 	});
+
+	writeFileSync(
+		dreamMarkerPath(scope.path),
+		`${JSON.stringify({ pid: process.pid, host: host.id, stamp: context.stamp, at: now.toISOString() }, null, "\t")}\n`,
+	);
+
+	return { ok: true, worktree };
+}
+
+/** Everything after the lock is released: reading, consolidating, committing the branch. */
+async function runPhases(options: DreamOptions, context: LockedContext, prepared: Prepared): Promise<DreamResult> {
+	const { scope, now, progress } = options;
+	const { stamp, branch, report, problems, identity } = context;
+	const worktree = prepared.worktree as DreamWorktree;
 
 	try {
 		progress?.("orient");

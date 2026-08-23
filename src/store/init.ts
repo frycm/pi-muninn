@@ -32,6 +32,7 @@ const GITIGNORE = [
 	".lock",
 	".lock.json",
 	".remember",
+	".dreaming",
 	"host.json",
 	"",
 ].join("\n");

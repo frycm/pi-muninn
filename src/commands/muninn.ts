@@ -19,6 +19,8 @@
 import type { Channel } from "../capture/cues.ts";
 import { bodyFromUserText } from "../capture/cues.ts";
 import type { MuninnSessionState } from "../capture/session-state.ts";
+import type { DreamListing } from "../dream/dreams.ts";
+import { type DreamReport, reportTotals } from "../dream/report.ts";
 import { isEntryId, parseClaimId } from "../ids.ts";
 import type { SessionIndexes } from "../index/search.ts";
 import type { AppendResult, NewJournalEntry } from "../journal/append.ts";
@@ -61,6 +63,32 @@ export interface CommandRuntime {
 	channel(): Channel;
 	/** `<session file>#<leaf entry id>`, when there is one. */
 	sessionPointer(): string | undefined;
+	/**
+	 * Run a dream in this session, reporting progress as it goes.
+	 *
+	 * Assembled by the extension entry, which is the only place a session's
+	 * model and agent directory are both at hand.
+	 */
+	dream(options: { scope?: CaptureTarget; progress: (phase: string) => void }): Promise<DreamOutcome>;
+	dreams(scope: CaptureTarget): Promise<DreamListing[]>;
+	remember(scope: CaptureTarget, stamp: string): Promise<{ ok: boolean; problems: string[]; notes: string[] }>;
+	forget(scope: CaptureTarget, stamp: string): Promise<{ ok: boolean; problems: string[]; notes: string[] }>;
+	erase(
+		scope: CaptureTarget,
+		entryId: string,
+		options: { noRewrite: boolean },
+	): Promise<{ ok: boolean; problems: string[]; notes: string[] }>;
+	eraseImpact(scope: CaptureTarget, entryId: string): { claims: string[]; facts: string[] };
+	/** `topics/` and `rules.md` as they stand, for browsing. */
+	derived(scope: CaptureTarget): { topics: Array<{ slug: string; facts: number; title: string }>; rules: string[] };
+}
+
+export interface DreamOutcome {
+	ok: boolean;
+	stamp: string;
+	branch: string;
+	report: DreamReport;
+	problems: string[];
 }
 
 const SEARCH_LIMIT = 10;
@@ -75,6 +103,11 @@ export const USAGE = [
 	"  /muninn scope                    which scopes are active here, and why",
 	"  /muninn reindex                  rebuild the index from the files",
 	"  /muninn sync [--no-push]         commit, fetch, rebase, push",
+	"  /muninn dream [--scope s]        consolidate the journal onto a branch",
+	"  /muninn dreams                   list dreams; remember or forget one",
+	"  /muninn dreams remember|forget <stamp>",
+	"  /muninn topics | rules           what has been derived so far",
+	"  /muninn erase <id> --yes --yes   privacy erasure (confirms twice)",
 ].join("\n");
 
 /**
@@ -137,6 +170,16 @@ export async function runMuninnCommand(args: string, runtime: CommandRuntime): P
 			return search(rest, runtime);
 		case "sync":
 			return runSync(rest, runtime);
+		case "dream":
+			return runDreamCommand(rest, runtime);
+		case "dreams":
+			return runDreamsCommand(rest, runtime);
+		case "topics":
+			return browse("topics", runtime);
+		case "rules":
+			return browse("rules", runtime);
+		case "erase":
+			return runEraseCommand(rest, runtime);
 		case "help":
 		case "--help":
 			return { level: "info", text: USAGE };
@@ -308,4 +351,180 @@ async function search(args: string, runtime: CommandRuntime): Promise<CommandOut
 	const lines = hits.map((hit) => `  ${renderHitLine(hit)}${hit.superseded ? " · superseded" : ""}`);
 	const header = `${hits.length} ${hits.length === 1 ? "memory" : "memories"} for "${rest}"${history ? " (including superseded)" : ""}:`;
 	return { level: "info", text: [header, ...lines].join("\n") };
+}
+
+// ---------------------------------------------------------------------------
+// Dreaming
+// ---------------------------------------------------------------------------
+
+/**
+ * `/muninn dream` — run one now, in the foreground, with progress.
+ *
+ * Foreground because a dream started from a keystroke is something the person
+ * is waiting for, and because the alternative — a background job whose failure
+ * arrives later out of context — is exactly the shape of failure this design
+ * spends so much effort avoiding elsewhere.
+ */
+async function runDreamCommand(args: string, runtime: CommandRuntime): Promise<CommandOutput> {
+	const { values } = parseFlags(args, { valued: ["scope"] });
+	const wanted = values.get("scope");
+	if (wanted !== undefined && wanted !== "global" && wanted !== "project") {
+		return { level: "warning", text: 'muninn: --scope takes "global" or "project"' };
+	}
+
+	// Anything this session appended has to be on disk before the dream commits
+	// the journal, or it lands in the next dream's range instead of this one's.
+	await runtime.settle();
+
+	const lines: string[] = [];
+	const outcome = await runtime.dream({
+		...(wanted ? { scope: wanted } : {}),
+		progress: (phase) => lines.push(`  ${phase}…`),
+	});
+
+	const totals = reportTotals(outcome.report);
+	lines.push(...outcome.report.gathered.map((line) => `  ${line}`));
+	for (const change of outcome.report.consolidated) {
+		lines.push(`  ${change.topic}: +${change.added} fact(s), ${change.superseded} superseded`);
+	}
+	const blocking = outcome.report.lint.filter((finding) => finding.blocking);
+	for (const finding of blocking) lines.push(`  ! ${finding.rule}: ${finding.message}`);
+	for (const skip of outcome.report.skipped) lines.push(`  ! skipped ${skip.topic}: ${skip.reason}`);
+	for (const problem of outcome.problems) lines.push(`  ! ${problem}`);
+
+	if (!outcome.ok) {
+		return { level: "error", text: ["muninn: the dream did not finish", ...lines].join("\n") };
+	}
+	if (blocking.length > 0) {
+		return {
+			level: "warning",
+			text: [
+				`muninn: ${outcome.branch} failed lint (${blocking.length} blocking)`,
+				...lines,
+				"  the branch is kept so you can see what it did; it will not be offered for remember",
+			].join("\n"),
+		};
+	}
+	return {
+		level: "info",
+		text: [
+			`muninn: ${outcome.branch} — ${totals.added} fact(s), ${totals.superseded} superseded, ${totals.topics} topic(s)`,
+			...lines,
+			`  review with /muninn dreams, apply with /muninn dreams remember ${outcome.stamp}`,
+		].join("\n"),
+	};
+}
+
+/** `/muninn dreams [remember|forget <stamp>]`. */
+async function runDreamsCommand(args: string, runtime: CommandRuntime): Promise<CommandOutput> {
+	const session = await runtime.load({ createStores: false });
+	const target = session.scopes.captureTarget;
+	if (target === null) return { level: "warning", text: "muninn: no scope is active here" };
+
+	const [action, stamp] = args.split(/\s+/).filter((part) => part !== "");
+
+	if (action === undefined) {
+		const listed = await runtime.dreams(target);
+		if (listed.length === 0) {
+			return { level: "info", text: "muninn: no dreams yet — /muninn dream runs one" };
+		}
+		const lines = listed.map((entry) => {
+			const state = entry.forgotten ? "forgotten" : entry.remembered ? "remembered" : "pending";
+			const totals = entry.report ? reportTotals(entry.report) : undefined;
+			const shape = totals ? `${totals.added} fact(s), ${totals.superseded} superseded` : "no report";
+			const blocking = entry.report?.lint.filter((finding) => finding.blocking).length ?? 0;
+			return `  ${entry.stamp}  ${state.padEnd(11)} ${shape}${blocking > 0 ? ` · ${blocking} blocking` : ""}`;
+		});
+		return { level: "info", text: [`muninn: ${listed.length} dream(s)`, ...lines].join("\n") };
+	}
+
+	if (action !== "remember" && action !== "forget") {
+		return { level: "warning", text: `muninn: /muninn dreams takes "remember" or "forget", not "${action}"` };
+	}
+	if (stamp === undefined) {
+		return { level: "warning", text: `muninn: ${action} needs a dream stamp; /muninn dreams lists them` };
+	}
+
+	const result = action === "remember" ? await runtime.remember(target, stamp) : await runtime.forget(target, stamp);
+	const lines = [...result.notes.map((note) => `  ${note}`), ...result.problems.map((problem) => `  ! ${problem}`)];
+	if (!result.ok) return { level: "error", text: [`muninn: could not ${action} ${stamp}`, ...lines].join("\n") };
+	return {
+		level: "info",
+		text: [
+			`muninn: ${action === "remember" ? "remembered" : "forgot"} ${stamp}`,
+			...lines,
+			// The snapshot is frozen for the life of a session by design, so
+			// saying "done" without this would look like nothing happened.
+			"  this session keeps the memory it started with; the next one reads the new MEMORY.md",
+		].join("\n"),
+	};
+}
+
+/** `/muninn topics` and `/muninn rules` — what has been derived so far. */
+async function browse(what: "topics" | "rules", runtime: CommandRuntime): Promise<CommandOutput> {
+	const session = await runtime.load({ createStores: false });
+	const target = session.scopes.captureTarget;
+	if (target === null) return { level: "warning", text: "muninn: no scope is active here" };
+
+	const derived = runtime.derived(target);
+	if (what === "topics") {
+		if (derived.topics.length === 0) {
+			return { level: "info", text: "muninn: no topics yet — they are written by /muninn dream" };
+		}
+		const lines = derived.topics.map((topic) => `  ${topic.slug.padEnd(24)} ${topic.facts} fact(s)  ${topic.title}`);
+		return { level: "info", text: [`muninn: ${derived.topics.length} topic(s)`, ...lines].join("\n") };
+	}
+
+	if (derived.rules.length === 0) {
+		// Said plainly, because "no rules" could otherwise be read as "dreams
+		// have not got round to it" rather than "this is yours to write".
+		return {
+			level: "info",
+			text: "muninn: no rules — rules.md is written by hand; dreams read and lint it but do not write it",
+		};
+	}
+	return {
+		level: "info",
+		text: [`muninn: ${derived.rules.length} rule(s)`, ...derived.rules.map((rule) => `  ${rule}`)].join("\n"),
+	};
+}
+
+/**
+ * `/muninn erase <id> --yes --yes`.
+ *
+ * The impact is printed on the first call and the second `--yes` is what
+ * proceeds, so a person confirms something specific rather than a general
+ * intention.
+ */
+async function runEraseCommand(args: string, runtime: CommandRuntime): Promise<CommandOutput> {
+	const session = await runtime.load({ createStores: false });
+	const target = session.scopes.captureTarget;
+	if (target === null) return { level: "warning", text: "muninn: no scope is active here" };
+
+	const words = args.split(/\s+/).filter((part) => part !== "");
+	const entryId = words.find((word) => isEntryId(word));
+	if (entryId === undefined) {
+		return { level: "warning", text: "muninn: /muninn erase needs a journal entry id (j-…)" };
+	}
+	const confirmations = words.filter((word) => word === "--yes").length;
+	const impact = runtime.eraseImpact(target, entryId);
+	const summary = `${entryId}: ${impact.claims.length} claim(s), ${impact.facts.length} fact(s) rest on them`;
+
+	if (confirmations < 2) {
+		return {
+			level: "warning",
+			text: [
+				`muninn: ${summary}`,
+				"  erasure rewrites git history and cannot be undone.",
+				`  to go ahead: /muninn erase ${entryId} --yes --yes`,
+			].join("\n"),
+		};
+	}
+
+	const result = await runtime.erase(target, entryId, { noRewrite: words.includes("--no-rewrite") });
+	const lines = [...result.notes.map((note) => `  ${note}`), ...result.problems.map((problem) => `  ! ${problem}`)];
+	return {
+		level: result.ok ? "info" : "error",
+		text: [result.ok ? `muninn: erased ${entryId}` : `muninn: could not erase ${entryId}`, ...lines].join("\n"),
+	};
 }

@@ -126,6 +126,7 @@ export async function createWorktree(options: CreateWorktreeOptions): Promise<Dr
 	const root = join(worktreeRoot(agentDir), storeId, branch.replace(/\//g, "-"));
 
 	await discard(repo, root);
+	await discardEmptyBranch(repo, branch, startPoint);
 
 	const inRepo = scope.inRepo && toplevel !== undefined;
 	await git(repo, { kind: "worktree-add", path: root, branch, startPoint, ...(inRepo ? { noCheckout: true } : {}) });
@@ -152,6 +153,39 @@ export async function createWorktree(options: CreateWorktreeOptions): Promise<Dr
 			await discard(repo, root);
 		},
 	};
+}
+
+/**
+ * Delete a leftover branch, but only when deleting it loses nothing.
+ *
+ * A dream that died after `worktree add` and before its commit leaves a branch
+ * with no work on it, and the next dream in the same minute cannot create that
+ * branch again. Deleting it is free — but "free" is not "sits on the same
+ * commit": the store's `main` will usually have moved on since, because the
+ * dream commits the pending journal before cutting its worktree. The question
+ * is whether the branch carries anything the new start point does not, so the
+ * test is ancestry, not equality.
+ *
+ * A branch that *is* ahead is a dream that committed. It is left alone, and
+ * `worktree add` then fails loudly — the right outcome for "you already have a
+ * dream by this name".
+ */
+async function discardEmptyBranch(repo: string, branch: string, startPoint: string): Promise<void> {
+	let at: string;
+	try {
+		at = (await git(repo, { kind: "verify-ref", ref: branch })).stdout.trim();
+	} catch {
+		return;
+	}
+	if (at === "") return;
+
+	try {
+		const base = (await git(repo, { kind: "merge-base", a: branch, b: startPoint })).stdout.trim();
+		if (base !== at) return;
+	} catch {
+		return;
+	}
+	await git(repo, { kind: "branch-delete", name: branch, force: true }).catch(() => undefined);
 }
 
 /**

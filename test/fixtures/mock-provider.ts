@@ -13,6 +13,10 @@ export interface MockRequest {
 	messages: Array<{ role: string; content: unknown }>;
 	/** True when this is Muninn asking for an outcome entry rather than pi running the task. */
 	isOutcomeCall: boolean;
+	/** True when this is a dream's consolidate job. */
+	isConsolidateCall: boolean;
+	/** True when this is a merge dream. */
+	isMergeCall: boolean;
 	raw: string;
 }
 
@@ -29,8 +33,17 @@ export interface MockProvider {
 	close(): Promise<void>;
 }
 
-/** Recognises Muninn's outcome prompt, so a script can answer it differently. */
+/**
+ * Markers that tell Muninn's own model calls apart from pi's turns.
+ *
+ * A scripted provider sees every request pi makes, and Muninn makes three kinds
+ * of its own. Matching on a sentence of the system prompt is the one signal
+ * that travels with the request, so each prompt carries a marker constant and
+ * the script keys on it.
+ */
 const OUTCOME_MARKER = "journal entry recording the outcome";
+const CONSOLIDATE_MARKER = "You are consolidating one topic of a memory store";
+const MERGE_MARKER = "You are merging two versions of one topic";
 
 export interface MockOptions {
 	/** Fixed port, for driving pi from a shell. Default: an ephemeral one. */
@@ -76,10 +89,12 @@ export async function startMockProvider(
 				parsed = {
 					messages: json.messages ?? [],
 					isOutcomeCall: body.includes(OUTCOME_MARKER),
+					isConsolidateCall: body.includes(CONSOLIDATE_MARKER),
+					isMergeCall: body.includes(MERGE_MARKER),
 					raw: body,
 				};
 			} catch {
-				parsed = { messages: [], isOutcomeCall: false, raw: body };
+				parsed = { messages: [], isOutcomeCall: false, isConsolidateCall: false, isMergeCall: false, raw: body };
 			}
 			requests.push(parsed);
 
