@@ -468,7 +468,7 @@ heading`, with claim ordinals surviving the elision), and both are unit-tested. 
 `renderResult` into a TUI component would need `@earendil-works/pi-tui` and a terminal to
 test it in; the compact line is ready for whichever surface asks for it.
 
-### 11. Commands and status (0.5 d)
+### 11. Commands and status (0.5 d) — **done**
 
 - `/muninn` (status: scopes, capture target, entries since last commit, index tier and
   chunk count, last sync), `/muninn note [--global] <text>`, `/muninn promote <id>`
@@ -478,6 +478,38 @@ test it in; the compact line is ready for whichever surface asks for it.
   t0 · 3 new` and warnings (`lock`, `redacted`, `sync failed`).
 
 **Done when:** every subcommand has an integration test; unknown subcommands print usage.
+**Met**, in `test/integration/commands.test.ts` — status, scope, note (and `--global`),
+search (and its empty answer), promote, reindex, sync and an unknown subcommand, each
+driven through a real pi process, plus `test/unit/commands.test.ts` for the dispatch and
+the argument grammar. `/muninn sync` is a known command with a known answer until step 12
+fills it in, which is the difference between "not built yet" and a typo.
+
+Four details worth keeping:
+
+- **Print mode runs extension commands.** `session.prompt()` executes a `/command` before
+  it ever reaches the model (`core/agent-session.js:799`), so `pi -p "/muninn search …"`
+  works and the integration tests need no TUI. But `ctx.ui.notify` is a no-op where there
+  is no UI (`core/extensions/runner.ts:92`), so a command's answer would vanish in
+  `--print` and json mode. Output therefore also goes to stderr when `ctx.hasUI` is false —
+  the same stream, and the same reasoning, as the problem reports.
+- **Flags lead; the text is verbatim.** `/muninn note` reads line starts to tell a claim
+  from its context, so the argument parser takes only *leading* `--flags` and keeps
+  everything after them exactly as typed, newlines included. A parser that split on
+  whitespace would silently merge three bullets into one paragraph — which the first test
+  caught.
+- **`promote` copies, and says where from.** The project journal is append-only, so the
+  original stays where it was observed and the copy carries
+  `promoted_from: <project slug>/<id>`. The slug is `projectStoreSlug(toplevel)`, now
+  recorded on the active scope, so it is the same for an in-repo and a separate store and
+  it survives the checkout being deleted — which a path would not.
+- **The footer is redrawn from the append queue.** `⟡ muninn · project · t0 · 3 new · 1⚠`
+  changes as entries are written and again when a commit clears them, so the writer is
+  captured from the last event that carried a context rather than passed in. A context
+  invalidated by a fork or a reload is caught and ignored: a stale footer is not worth an
+  error.
+
+Deferred to step 12 with sync itself: the "last sync" line in the status report, and the
+`sync failed` footer warning.
 
 ### 12. Sync and CLI (1 d)
 

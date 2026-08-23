@@ -11,7 +11,7 @@
  * effects.
  */
 import type { MuninnSettings } from "../settings.ts";
-import { globalStorePath, inRepoProjectStorePath, separateProjectStorePath } from "./paths.ts";
+import { globalStorePath, inRepoProjectStorePath, projectStoreSlug, separateProjectStorePath } from "./paths.ts";
 
 export type CaptureTarget = "global" | "project";
 
@@ -22,6 +22,16 @@ export interface ActiveScope {
 	exists: boolean;
 	/** True when the store lives inside a repository Muninn does not own. */
 	inRepo: boolean;
+	/**
+	 * A stable name for the project this store belongs to, for the project
+	 * scope only.
+	 *
+	 * It is what `promoted_from` records when an entry is copied into the global
+	 * journal: the global store must be able to say which project a memory came
+	 * from long after that checkout is gone, and a path would not survive the
+	 * machine it was written on.
+	 */
+	slug?: string;
 }
 
 export interface ScopeDecision {
@@ -72,7 +82,9 @@ export function resolveScopes(input: ResolveScopesInput): ScopeDecision {
 			? inRepoProjectStorePath(toplevel, configDirName)
 			: separateProjectStorePath(agentDir, toplevel);
 		const exists = storeExists(path);
-		active.push({ scope: "project", path, exists, inRepo });
+		// The slug is keyed by the toplevel, not by the store layout, so an
+		// in-repo store and a separate one for the same checkout promote alike.
+		active.push({ scope: "project", path, exists, inRepo, slug: projectStoreSlug(toplevel) });
 		reasons.push(
 			inRepo
 				? `project: active, in-repo store at ${path}`

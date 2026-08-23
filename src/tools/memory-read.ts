@@ -17,12 +17,12 @@
  * actually point at. A path that escapes both is refused rather than resolved.
  */
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { isAbsolute, resolve, sep } from "node:path";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { messageText } from "../capture/accumulate.ts";
 import { isEntryId, parseClaimId } from "../ids.ts";
-import { readDailyFile } from "../journal/read.ts";
+import { findEntry } from "../journal/lookup.ts";
 import { readSupersessions } from "../journal/supersessions.ts";
 import type { SessionContext } from "../session.ts";
 import { renderEntry, renderFile, TOOL_OUTPUT_CHARS, trailer, truncate } from "./render.ts";
@@ -110,26 +110,14 @@ function readById(runtime: ToolRuntime, id: string): string {
 }
 
 function readEntry(indexes: NonNullable<ReturnType<ToolRuntime["indexes"]>>, entryId: string, claim?: string): string {
-	// Any chunk of the entry will do: they all record the daily file it is in,
-	// which is what turns a read into one file parse rather than a store scan.
-	const found = indexes.find(`${entryId}.1`) ?? indexes.find(`${entryId}#prose`);
-	if (!found) throw new Error(`muninn: no journal entry with the id ${entryId} is in the index`);
-
-	const path = join(found.scope.storePath, found.chunk.path);
-	const file = readDailyFile(path);
-	const entry = file.entries.find((candidate) => candidate.id === entryId);
-	if (!entry) {
-		throw new Error(`muninn: ${entryId} is indexed in ${found.chunk.path} but is not in that file any more`);
-	}
-
-	const context = {
-		scope: found.scope.scope,
-		path: found.chunk.path,
-		superseded: readSupersessions(found.scope.storePath).superseded,
-		...(found.chunk.date ? { date: found.chunk.date } : {}),
+	const found = findEntry(indexes, entryId);
+	return renderEntry(found.entry, {
+		scope: found.scope,
+		path: found.path,
+		superseded: readSupersessions(found.storePath).superseded,
+		...(found.date ? { date: found.date } : {}),
 		...(claim ? { claim } : {}),
-	};
-	return renderEntry(entry, context);
+	});
 }
 
 // ---------------------------------------------------------------------------

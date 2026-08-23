@@ -20,6 +20,8 @@ export interface StatusInput {
 	captureFailures?: string[];
 	/** Runs assembled without pi's authoritative `agent_end` payload. */
 	runsWithoutAgentEnd?: number;
+	/** Entries written but not yet committed to the store's git history. */
+	uncommitted?: number;
 	/** Per-scope index size. Absent while the index is still being opened. */
 	index?: ScopeIndexStats[];
 	/** What recall has actually put in front of the model this session. */
@@ -78,6 +80,11 @@ export function formatStatus(input: StatusInput): string {
 		settings.capture.toolFacts ? "tool facts" : null,
 	].filter((kind): kind is string => kind !== null);
 	lines.push(`capture   ${captureKinds.length > 0 ? captureKinds.join(", ") : "nothing (all kinds disabled)"}`);
+	if (input.uncommitted) {
+		lines.push(
+			`          ${input.uncommitted} ${input.uncommitted === 1 ? "entry" : "entries"} written, not yet committed`,
+		);
+	}
 	for (const failure of input.captureFailures ?? []) lines.push(`          ! ${failure}`);
 	if (input.runsWithoutAgentEnd) {
 		// Worth surfacing: those runs were assembled from turn_end alone, which is
@@ -154,10 +161,25 @@ export function formatScopes(session: SessionContext): string {
 	return ["scopes here:", ...lines].join("\n");
 }
 
-/** The compact footer entry set through `ctx.ui.setStatus`. */
-export function formatStatusLine(session: SessionContext): string {
+export interface StatusLineExtras {
+	/** Retrieval tier actually in use. Phase 1 is always Tier 0. */
+	tier?: string;
+	/** Entries written this session and not yet committed. */
+	uncommitted?: number;
+}
+
+/**
+ * The compact footer entry set through `ctx.ui.setStatus`.
+ *
+ * Four fields at most, because a footer that needs reading is a footer nobody
+ * reads: where capture is going, which tier answers queries, how much is
+ * waiting to be committed, and whether anything is wrong.
+ */
+export function formatStatusLine(session: SessionContext, extras: StatusLineExtras = {}): string {
 	const parts = ["⟡ muninn"];
 	parts.push(session.scopes.captureTarget ?? "no store");
+	if (extras.tier) parts.push(extras.tier);
+	if (extras.uncommitted) parts.push(`${extras.uncommitted} new`);
 	const trouble = session.loaded.warnings.length + session.problems.length;
 	if (trouble > 0) parts.push(`${trouble}⚠`);
 	return parts.join(" · ");

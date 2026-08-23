@@ -30,12 +30,13 @@ import {
 	sessionPointer,
 	taskFromSessionFile,
 } from "./capture/session-state.ts";
+import { type CommandOutput, type CommandRuntime, runMuninnCommand } from "./commands/muninn.ts";
 import { SessionIndexes } from "./index/search.ts";
 import { type AppendResult, appendEntry } from "./journal/append.ts";
 import { buildRecallMessage, contextFileLines, RECALL_KINDS } from "./recall/per-turn.ts";
 import { appendSnapshot, readSnapshot, type Snapshot } from "./recall/snapshot.ts";
 import { buildSessionContext, journalStats, type SessionContext } from "./session.ts";
-import { formatScopes, formatStatus, formatStatusLine, formatWarning } from "./status.ts";
+import { formatStatus, formatStatusLine, formatWarning } from "./status.ts";
 import { memoryNoteTool } from "./tools/memory-note.ts";
 import { memoryReadTool } from "./tools/memory-read.ts";
 import { memorySearchTool } from "./tools/memory-search.ts";
@@ -83,6 +84,14 @@ export default function (pi: ExtensionAPI): void {
 	let contextLines: string[] | undefined;
 	/** Texts of what was recalled this session, by id — the input to echo detection. */
 	const recalledTexts = new Map<string, string>();
+	/**
+	 * The footer writer, captured from the last event that carried a context.
+	 *
+	 * Kept rather than passed because the footer's most useful number — entries
+	 * written and not yet committed — changes on the append queue, where there
+	 * is no pi context to hand.
+	 */
+	let setStatus: ((text: string) => void) | undefined;
 
 	const load = async (cwd: string, projectTrusted: boolean, createStores: boolean): Promise<SessionContext> => {
 		session ??= await buildSessionContext({
@@ -93,6 +102,18 @@ export default function (pi: ExtensionAPI): void {
 			createStores,
 		});
 		return session;
+	};
+
+	/** Redraw the footer: capture target, tier, uncommitted entries, warnings. */
+	const refreshStatus = (): void => {
+		const current = session;
+		if (!current || !setStatus) return;
+		try {
+			setStatus(formatStatusLine(current, { tier: "t0", uncommitted: uncommittedEntries }));
+		} catch {
+			// A context captured before a fork or a reload is invalidated by pi.
+			// The next event replaces it; a stale footer is not worth an error.
+		}
 	};
 
 	const captureTargetPath = (current: SessionContext): string | undefined =>
@@ -114,6 +135,7 @@ export default function (pi: ExtensionAPI): void {
 	): void => {
 		currentState.written.push(written.id);
 		uncommittedEntries++;
+		refreshStatus();
 		indexes?.addEntry(storePath, {
 			...written.entry,
 			date: written.date,
@@ -175,58 +197,65 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerTool(memoryReadTool(toolRuntime));
 	pi.registerTool(memoryNoteTool(toolRuntime));
 
-	pi.registerCommand("muninn", {
-		description: "Muninn status, scopes, settings and index",
-		handler: async (args, ctx) => {
-			const sub = args.trim() || "status";
-			// `scope` explains the situation and must not change it, so it never
-			// creates a store.
-			const current = await load(ctx.cwd, ctx.isProjectTrusted(), sub !== "scope");
+	/**
+	 * The `/muninn` report, assembled from what only this file knows: versions,
+	 * counters, and the objects the session is holding open.
+	 */
+	const statusReport = (current: SessionContext): string => {
+		const indexStats = indexes?.scopes.map((scoped) => ({
+			scope: scoped.scope,
+			chunks: scoped.index.size,
+			files: scoped.index.files,
+		}));
+		return formatStatus({
+			muninnVersion: MUNINN_VERSION,
+			piVersion: PI_VERSION,
+			runtime: describeRuntime(),
+			session: current,
+			journal: journalStats(current),
+			captureFailures: queue.peekFailures().map((failure) => `${failure.label}: ${failure.message}`),
+			runsWithoutAgentEnd,
+			uncommitted: uncommittedEntries,
+			...(indexStats ? { index: indexStats } : {}),
+			recall: {
+				snapshotLines: snapshot?.lines ?? 0,
+				snapshotTrimmed: snapshot?.scopes.reduce((total, scope) => total + scope.dropped, 0) ?? 0,
+				recalled: state?.recalled.length ?? 0,
+			},
+		});
+	};
 
-			if (sub === "status") {
-				// Counts would otherwise miss an entry still in the queue.
-				await queue.flush();
-				const indexStats = indexes?.scopes.map((scoped) => ({
-					scope: scoped.scope,
-					chunks: scoped.index.size,
-					files: scoped.index.files,
-				}));
-				const recallStats = {
-					snapshotLines: snapshot?.lines ?? 0,
-					snapshotTrimmed: snapshot?.scopes.reduce((total, scope) => total + scope.dropped, 0) ?? 0,
-					recalled: state?.recalled.length ?? 0,
-				};
-				ctx.ui.notify(
-					formatStatus({
-						muninnVersion: MUNINN_VERSION,
-						piVersion: PI_VERSION,
-						runtime: describeRuntime(),
-						session: current,
-						journal: journalStats(current),
-						captureFailures: queue.peekFailures().map((failure) => `${failure.label}: ${failure.message}`),
-						runsWithoutAgentEnd,
-						...(indexStats ? { index: indexStats } : {}),
-						recall: recallStats,
-					}),
-					"info",
-				);
-				return;
+	pi.registerCommand("muninn", {
+		description: "Muninn: status, notes, promotion, search, scopes and the index",
+		handler: async (args, ctx) => {
+			const commandRuntime: CommandRuntime = {
+				...toolRuntime,
+				load: ({ createStores }) => load(ctx.cwd, ctx.isProjectTrusted(), createStores),
+				async reindex() {
+					openIndexes(await load(ctx.cwd, ctx.isProjectTrusted(), true), true);
+					await queue.flush();
+					return indexes?.size ?? 0;
+				},
+				statusReport,
+				channel: () => channelForMode(ctx.mode),
+				sessionPointer: () => sessionPointer(ctx.sessionManager),
+			};
+
+			let output: CommandOutput;
+			try {
+				output = await runMuninnCommand(args, commandRuntime);
+			} catch (error) {
+				// A command that fails says why, in the place the user is looking.
+				output = { level: "error", text: `muninn: ${error instanceof Error ? error.message : String(error)}` };
 			}
-			if (sub === "reindex") {
-				// Unconditional: the point of asking is to distrust what is on disk.
-				openIndexes(current, true);
-				await queue.flush();
-				const total = indexes?.size ?? 0;
-				ctx.ui.notify(`muninn: index rebuilt — ${total} ${total === 1 ? "chunk" : "chunks"}`, "info");
-				return;
-			}
-			if (sub === "scope") {
-				ctx.ui.notify(formatScopes(current), "info");
-				return;
-			}
-			// Every other subcommand named in the design lands in a later step; say
-			// so rather than failing as if it were a typo.
-			ctx.ui.notify(`"/muninn ${sub}" is not implemented yet (try: status, scope, reindex)`, "warning");
+
+			setStatus = (text) => ctx.ui.setStatus("muninn", text);
+			ctx.ui.notify(output.text, output.level);
+			// `notify` is a no-op where there is no UI to notify (`--print`, json
+			// mode: `core/extensions/runner.ts:92`), and a command that answers
+			// nowhere is worse than one that answers in the wrong stream.
+			if (!ctx.hasUI) process.stderr.write(`${output.text}\n`);
+			refreshStatus();
 		},
 	});
 
@@ -238,7 +267,8 @@ export default function (pi: ExtensionAPI): void {
 		recalledTexts.clear();
 		previousAssistantText = undefined;
 		const current = await load(ctx.cwd, ctx.isProjectTrusted(), true);
-		ctx.ui.setStatus("muninn", formatStatusLine(current));
+		setStatus = (text) => ctx.ui.setStatus("muninn", text);
+		refreshStatus();
 
 		const task = ctx.sessionManager.getSessionId();
 		state = rebuildState(ctx.sessionManager.getBranch(), task);
@@ -470,7 +500,10 @@ export default function (pi: ExtensionAPI): void {
 				entries: uncommittedEntries,
 				force,
 			});
-			if (result.committed) uncommittedEntries = 0;
+			if (result.committed) {
+				uncommittedEntries = 0;
+				refreshStatus();
+			}
 		});
 	};
 

@@ -252,3 +252,35 @@ describe("formatStatus — recall", () => {
 		);
 	});
 });
+
+describe("formatStatusLine — tier and pending entries", () => {
+	it("shows the tier and how much is waiting to be committed", () => {
+		expect(formatStatusLine(session(), { tier: "t0", uncommitted: 3 })).toBe("⟡ muninn · project · t0 · 3 new");
+	});
+
+	it("leaves out a count of nothing", () => {
+		expect(formatStatusLine(session(), { tier: "t0", uncommitted: 0 })).toBe("⟡ muninn · project · t0");
+	});
+
+	it("keeps the warning count last, where it is noticed", () => {
+		const warnings: SettingsWarning[] = [
+			{ path: "recall.factsPerTurn", scope: "project", kind: "not-tightening", message: "ignored" },
+		];
+		expect(formatStatusLine(session({ loaded: loaded({ warnings }) }), { tier: "t0", uncommitted: 2 })).toBe(
+			"⟡ muninn · project · t0 · 2 new · 1⚠",
+		);
+	});
+});
+
+describe("formatStatus — uncommitted entries", () => {
+	it("says how many entries are written but not yet in git", () => {
+		const text = formatStatus({
+			muninnVersion: "0.1.0",
+			piVersion: "0.84.2",
+			runtime: "node v22.19.0",
+			session: session(),
+			uncommitted: 2,
+		});
+		expect(text).toContain("2 entries written, not yet committed");
+	});
+});
