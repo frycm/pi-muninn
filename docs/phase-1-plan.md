@@ -238,7 +238,7 @@ milliseconds but can wait seconds on a contended store lock, and stalling a keys
 record a note about it is the wrong trade. `session_shutdown` flushes the queue, closing
 the window where a queued entry could be lost to process exit.
 
-### 6. Capture — accumulate, outcome, pre-compaction (2 d)
+### 6. Capture — accumulate, outcome, pre-compaction (2 d) — **done**
 
 - `accumulate.ts`: `turn_end` pushes `{ turnIndex, message, toolResults }`; `agent_end`
   replaces the buffer with `messages` (authoritative); both drop messages with
@@ -267,6 +267,26 @@ fake provider (pi's test utilities) and asserts exactly one outcome entry with t
 expected `task`, `phase`, ≥ 1 claim, `recalled` equal to the injected ids, and that
 Muninn's own messages are absent from the prompt the fake provider received. A
 compaction test asserts one entry, not two.
+**Met**, in `test/integration/outcome.test.ts`, against a real `pi` process rather than the
+SDK (see the test-strategy note on why the SDK route is closed to an extension).
+
+Notes from building it:
+
+- **Tool calls carry their arguments into the transcript.** The first version rendered
+  `[called: read]`, which tells a future session nothing. `read(path: README.md)` — which
+  command was run, which file was edited — is the durable detail an outcome entry exists
+  for. Argument values are truncated, since a `write` call carries a whole file.
+- **The compaction test needs three things true at once** or it passes vacuously: the mock
+  must *report* a nearly full context (pi decides from provider-reported usage, not from
+  message size), `compaction.reserveTokens` must leave almost no room, and
+  `keepRecentTokens` must be small enough that there is anything to cut. The test asserts a
+  `"type":"compaction"` entry appears in the session file, so a future change that stops
+  compaction firing fails loudly instead of silently proving nothing. Verified to have
+  teeth by disabling the guard: two entries appear where one should.
+- **The `agent_end` cross-check is a counter, not a diff.** What matters for core change #2
+  is how often a run settles *without* pi's authoritative payload, since that is the
+  fragile path a turn-summary on `agent_settled` would remove. `/muninn` reports the count;
+  if it stays at zero in real use, the core change is an ergonomics ask, not a gap.
 
 ### 7. Journal commits (0.5 d)
 
