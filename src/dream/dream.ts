@@ -35,6 +35,7 @@ import { emptyTopic, formatTopic } from "../topics/format.ts";
 import { type ConsolidateJob, consolidate } from "./consolidate.ts";
 import { ECHO_THRESHOLD, type GatherResult, gather } from "./gather.ts";
 import { lint } from "./lint.ts";
+import { buildMemory } from "./memory-md.ts";
 import type { DreamModel } from "./model.ts";
 import { type Orientation, orient, readTopics } from "./orient.ts";
 import { type DreamReport, emptyReport, formatReport, reportPath, reportTotals } from "./report.ts";
@@ -229,6 +230,21 @@ async function runLocked(options: DreamOptions, context: LockedContext): Promise
 		}
 
 		progress?.("commit");
+		// Regenerated even when no topic changed: use counts move with every
+		// session, so the ordering can be stale while the facts are not. It is
+		// byte-stable, so an unchanged ordering still produces no diff.
+		const memory = buildMemory({
+			topics: readTopics(worktree.storePath),
+			rules: orientation.rules,
+			usage: orientation.usage,
+			current: orientation.memory,
+			budget: options.settings.recall.snapshotLines[scope.scope],
+		});
+		writeFileSync(join(worktree.storePath, "MEMORY.md"), memory.text);
+		if (memory.dropped.length > 0) {
+			report.notes.push(`MEMORY.md: ${memory.dropped.length} topic(s) over the line budget, still searchable`);
+		}
+
 		report.finished = new Date(now.getTime()).toISOString();
 		await writeReport(worktree.storePath, report);
 		await commitDream(worktree.storePath, report, identity);

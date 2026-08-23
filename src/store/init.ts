@@ -35,7 +35,8 @@ const GITIGNORE = [
 ].join("\n");
 
 const MEMORY_HEADER = [
-	"<!-- Written by muninn dreams. Hand edits survive until the next dream rewrites this file. -->",
+	"<!-- The index a session reads at start. Write what you like here; dreams add a generated",
+	"     section below a marker line and never touch anything above it. -->",
 	"",
 	"# Memory",
 	"",
