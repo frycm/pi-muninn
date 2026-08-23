@@ -16,6 +16,7 @@
 import { closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { newEntryId } from "../ids.ts";
+import { redact } from "../redact.ts";
 import { withStoreLock } from "../store/lock.ts";
 import { claimsOf, formatDate, formatEntry, formatTime, type JournalEntry } from "./format.ts";
 
@@ -53,7 +54,7 @@ export function dailyFilePath(storePath: string, hostId: string, date: Date): st
 export async function appendEntry(entry: NewJournalEntry, options: AppendOptions): Promise<AppendResult> {
 	const now = options.now ?? new Date();
 	const id = newEntryId();
-	const full: JournalEntry = { ...entry, id, time: formatTime(now) };
+	const full: JournalEntry = { ...scrub(entry), id, time: formatTime(now) };
 	const block = formatEntry(full);
 	const path = dailyFilePath(options.storePath, options.hostId, now);
 
@@ -124,4 +125,33 @@ function fsyncDirectory(dir: string): void {
 			}
 		}
 	}
+}
+
+/**
+ * Scrub secrets out of the parts of an entry that carry free text.
+ *
+ * There is no way to opt out. Redaction happening at the call site would mean
+ * one forgotten caller is enough to write a credential into a repository that
+ * syncs — so it happens here, where every entry must pass.
+ *
+ * Applied to prose, claims and `cue`. Never to ids, `task`, `session` or the
+ * derivation lists: those are identifiers Muninn resolves later, and a
+ * redacted id is a broken pointer.
+ */
+function scrub(entry: NewJournalEntry): NewJournalEntry {
+	const prose = redact(entry.prose);
+	const claims = entry.claims.map((claim) => redact(claim));
+	const cue = entry.cue === undefined ? undefined : redact(entry.cue);
+
+	const hits = prose.hits.length + claims.reduce((n, c) => n + c.hits.length, 0) + (cue?.hits.length ?? 0);
+	if (hits === 0) return entry;
+
+	const scrubbed: NewJournalEntry = {
+		...entry,
+		prose: prose.text,
+		claims: claims.map((claim) => claim.text),
+		redacted: true,
+	};
+	if (cue !== undefined) scrubbed.cue = cue.text;
+	return scrubbed;
 }

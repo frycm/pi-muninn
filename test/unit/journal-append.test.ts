@@ -193,3 +193,68 @@ describe("truncated files", () => {
 		expect(read.problems[0]?.kind).toBe("unreadable-file");
 	});
 });
+
+describe("appended entries are scrubbed", () => {
+	it("never writes a secret to disk and marks the entry redacted", async () => {
+		// Redaction lives inside appendEntry precisely so no caller can forget
+		// it: the journal is append-only and syncs, so a secret that lands here
+		// is in history on every machine that pulls.
+		const result = await appendEntry(
+			{
+				source: "user",
+				prose: "Deploy failed until I exported AKIAIOSFODNN7EXAMPLE.",
+				claims: ["The CI job needs api_key: deadbeefcafebabe0123456789abcdef to talk to the registry."],
+			},
+			{ storePath: store, hostId: host },
+		);
+
+		const text = readFileSync(result.path, "utf-8");
+		expect(text).not.toContain("AKIAIOSFODNN7EXAMPLE");
+		expect(text).not.toContain("deadbeefcafebabe");
+		expect(text).toContain("[redacted: aws-access-key]");
+		expect(text).toContain("redacted: true");
+
+		const read = readDailyFile(result.path);
+		expect(read.entries[0]?.redacted).toBe(true);
+	});
+
+	it("scrubs the cue as well as prose and claims", async () => {
+		const result = await appendEntry(
+			{ source: "user", cue: "when ghp_1a2B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ12 expires", prose: "", claims: ["x"] },
+			{ storePath: store, hostId: host },
+		);
+		expect(readFileSync(result.path, "utf-8")).not.toContain("ghp_1a2B3c");
+	});
+
+	it("leaves identifiers intact so pointers keep resolving", async () => {
+		// A redacted id is a broken pointer, so task, session and the derivation
+		// lists are never scrubbed.
+		const task = "0198f2b0-1111-7000-8000-000000000001";
+		const session = "~/.pi/agent/sessions/--x--/y.jsonl#e5f6";
+		const result = await appendEntry(
+			{
+				source: "user",
+				task,
+				session,
+				recalled: ["j-0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b01.1"],
+				prose: "ok",
+				claims: [],
+			},
+			{ storePath: store, hostId: host },
+		);
+
+		const read = readDailyFile(result.path);
+		expect(read.entries[0]?.task).toBe(task);
+		expect(read.entries[0]?.session).toBe(session);
+		expect(read.entries[0]?.recalled).toEqual(["j-0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b01.1"]);
+		expect(read.entries[0]?.redacted).toBeUndefined();
+	});
+
+	it("does not mark a clean entry as redacted", async () => {
+		const result = await appendEntry(
+			{ source: "user", prose: "Run `pnpm test --run`.", claims: [] },
+			{ storePath: store, hostId: host },
+		);
+		expect(readDailyFile(result.path).entries[0]?.redacted).toBeUndefined();
+	});
+});

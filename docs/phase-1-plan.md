@@ -172,17 +172,33 @@ scope` shows active scopes, the capture target, and *why*.
 daily file yield 400 well-formed entries, in id order per process, none interleaved. A
 fixture with a deliberately truncated tail parses with exactly one `truncated` report.
 
-### 4. Secret redaction (0.5 d)
+### 4. Secret redaction (0.5 d) — **done**
 
-- `redact.ts`: the pi-enclave audit-log regex set (copied with attribution, kept in one
-  file so the two can be diffed), plus Shannon-entropy detection for ≥ 20-char tokens with
-  entropy > 4.0 bits/char in base64/hex alphabets. Output is the redacted text plus a list
-  of hits; `append.ts` sets `redacted: true` when the list is non-empty.
+- `redact.ts`: a provider pattern table (AWS, GitHub, GitLab, Slack, Anthropic, OpenAI,
+  Google, Stripe, npm, JWT, PEM, URL credentials) plus a keyword-context rule and a
+  Shannon-entropy sweep. Output is the redacted text plus a list of hits; `append.ts` sets
+  `redacted: true` when the list is non-empty.
 - Applied to prose *and* claims *and* `cue`, never to ids or the `session:` pointer.
+
+Two deviations from this plan, both forced by what the code met:
+
+1. **There is no pi-enclave regex set to copy.** Enclave defers its audit log to its own
+   Phase 2, so the set is written here first, in one table, for enclave to adopt later.
+2. **Entropy is scored on base64 only, never hex.** The plan asked for `> 4.0 bits/char`
+   over "base64/hex", but a 16-symbol alphabet caps at exactly `log2(16) = 4.0`, so that
+   threshold can never fire for hex. Lowering it would be actively harmful: the
+   high-entropy hex in a coding journal is overwhelmingly git SHAs, content hashes and the
+   UUIDv7s in every entry, claim and fact id — redacting those would corrupt the memory the
+   journal exists to keep. Hex secrets are caught by *context* instead (`api_key: …`),
+   which is the shape they actually appear in. Base64 uses a 4.5 threshold, with an
+   exemption for `sha256-`/`sha512-` integrity digests, which are published hashes.
 
 **Done when:** the fixture corpus (AWS, GitHub, Slack, OpenAI, Anthropic, generic
 `key=…`, JWT, PEM blocks, high-entropy blobs, plus negatives: UUIDs, git SHAs, normal code)
 produces zero false negatives and a documented false-positive rate under 1 %.
+**Met:** 36 positives, 0 missed; 36 negatives, 0 flagged (0 %). At that corpus size the 1 %
+gate is arithmetically a demand for zero — one false positive would be 2.8 % — and it is
+stated as a rate so the corpus can grow without the gate loosening.
 
 ### 5. Capture — explicit and corrections (1 d)
 
