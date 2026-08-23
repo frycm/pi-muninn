@@ -418,7 +418,7 @@ Four details worth keeping:
   transcript all cap themselves by the same four-characters-per-token approximation; it now
   lives in one file so the three budgets cannot disagree about what a token is.
 
-### 10. Tools (1 d)
+### 10. Tools (1 d) — **done**
 
 - `memory_search`, `memory_read`, `memory_note` per the README's table, registered with
   `pi.registerTool` (`core/extensions/types.ts:1251`), TypeBox parameters, `executionMode:
@@ -434,6 +434,39 @@ Four details worth keeping:
 
 **Done when:** tool schemas snapshot-tested; `memory_note` under a read-only test store
 fails loudly instead of writing elsewhere.
+**Met**, in `test/unit/tools.test.ts` (inline schema snapshots, and the read-only store),
+with `test/integration/tools.test.ts` driving a real pi run where the model calls
+`memory_note` and then finds what it wrote with `memory_search` in the same run.
+
+Five details worth keeping:
+
+- **TypeBox is a devDependency, not a runtime one.** pi's extension loader aliases
+  `typebox` (and `@sinclair/typebox`) to its own bundled copy for every extension it loads
+  (`core/extensions/loader.js:33`), so the import resolves at runtime without Muninn
+  shipping the package. The devDependency, pinned to pi's exact version, exists so `tsc`
+  and vitest can resolve it outside a pi process. The runtime dependency list is still two.
+- **The tools know nothing about pi.** `tools/runtime.ts` is the whole surface they get —
+  `settle`, `session`, `indexes`, `state`, `append` — implemented by `index.ts` from
+  closures it already had. That is what lets the unit tests drive `execute` against a
+  scratch store with no pi process anywhere.
+- **Every read settles the queue first.** A tool that answered "no memories" because an
+  append from the same turn was still queued would be worse than one that took another
+  twenty milliseconds.
+- **`memory_note` is awaited, not queued, and never redirected.** Capture writes are
+  queued because nobody is waiting on them; a tool call has a caller who is entitled to be
+  told whether the write happened. A store that cannot be written fails the call by name —
+  after the 5 s lock budget, because an unlockable store is indistinguishable from a busy
+  one until the wait is over. The entry is also committed before the model moves on.
+- **Reads are confined to the active stores, on the resolved path.** `../../etc/passwd` and
+  an absolute path both have to fail, and only comparing what the filesystem would actually
+  open catches them. Session pointers are the deliberate exception: they name pi's own
+  transcripts, which is exactly the evidence the journal does not copy.
+
+The renderers are text, not `pi-tui` components: `render.ts` produces the model-facing
+trailer format and the one-line terminal form (`date · scope · source · id(short) ·
+heading`, with claim ordinals surviving the elision), and both are unit-tested. Wiring
+`renderResult` into a TUI component would need `@earendil-works/pi-tui` and a terminal to
+test it in; the compact line is ready for whichever surface asks for it.
 
 ### 11. Commands and status (0.5 d)
 

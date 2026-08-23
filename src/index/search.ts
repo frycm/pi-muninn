@@ -19,7 +19,7 @@ import { readSupersessions } from "../journal/supersessions.ts";
 import type { ActiveScope, CaptureTarget } from "../store/scopes.ts";
 import { type RefreshResult, StoreIndex } from "./build.ts";
 import type { ChunkKind } from "./chunk.ts";
-import type { Hit } from "./tier0.ts";
+import type { Hit, StoredChunk } from "./tier0.ts";
 
 export interface SearchRequest {
 	query: string;
@@ -175,6 +175,20 @@ export class SessionIndexes {
 
 	search(request: SearchRequest): SearchHit[] {
 		return search(this.scoped, request);
+	}
+
+	/**
+	 * Find one chunk by id, in whichever scope holds it.
+	 *
+	 * Ids are unique across stores by construction — a UUIDv7 minted by the host
+	 * that wrote it — so the first scope that has it is the one that has it.
+	 */
+	find(id: string): { scope: ScopeIndex; chunk: StoredChunk } | undefined {
+		for (const scoped of this.scoped) {
+			const chunk = scoped.index.get(id);
+			if (chunk) return { scope: scoped, chunk };
+		}
+		return undefined;
 	}
 
 	/** Index an entry the moment it is appended, so this turn's write is findable in the next. */

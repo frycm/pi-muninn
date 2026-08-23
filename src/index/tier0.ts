@@ -60,7 +60,8 @@ export interface QueryOptions {
 	superseded?: ReadonlySet<string>;
 }
 
-export interface Hit {
+/** A chunk as the index kept it: everything a result needs, without the file. */
+export interface StoredChunk {
 	id: string;
 	kind: ChunkKind;
 	path: string;
@@ -68,13 +69,16 @@ export interface Hit {
 	headingPath: string;
 	cue?: string;
 	body: string;
-	/** A window of the body around the first matched term. */
-	snippet: string;
 	date?: string;
 	source?: string;
 	phase?: string;
 	entry?: string;
 	superseded: boolean;
+}
+
+export interface Hit extends StoredChunk {
+	/** A window of the body around the first matched term. */
+	snippet: string;
 	score: number;
 }
 
@@ -125,6 +129,18 @@ export class Tier0Index {
 
 	has(id: string): boolean {
 		return this.mini.has(id);
+	}
+
+	/**
+	 * One chunk by id, without a query.
+	 *
+	 * `memory_read` resolves an id this way: the stored fields already say which
+	 * file the chunk came from, so a read costs one lookup rather than a scan of
+	 * every daily file in the store.
+	 */
+	get(id: string): StoredChunk | undefined {
+		const stored = this.mini.getStoredFields(id);
+		return stored ? toStored(stored, new Set()) : undefined;
 	}
 
 	add(chunks: readonly Chunk[]): void {
@@ -201,25 +217,27 @@ export class Tier0Index {
 }
 
 function toHit(result: Record<string, unknown>, superseded: ReadonlySet<string>, query: string): Hit {
-	const body = (result.body as string | undefined) ?? "";
+	const stored = toStored(result, superseded);
+	return { ...stored, snippet: snippet(stored.body, query), score: result.score as number };
+}
+
+function toStored(result: Record<string, unknown>, superseded: ReadonlySet<string>): StoredChunk {
 	const id = result.id as string;
-	const hit: Hit = {
+	const stored: StoredChunk = {
 		id,
 		kind: result.kind as ChunkKind,
 		path: (result.path as string | undefined) ?? "",
 		title: (result.title as string | undefined) ?? "",
 		headingPath: (result.headingPath as string | undefined) ?? "",
-		body,
-		snippet: snippet(body, query),
+		body: (result.body as string | undefined) ?? "",
 		superseded: result.superseded === true || superseded.has(id),
-		score: result.score as number,
 	};
-	if (typeof result.cue === "string") hit.cue = result.cue;
-	if (typeof result.date === "string") hit.date = result.date;
-	if (typeof result.source === "string") hit.source = result.source;
-	if (typeof result.phase === "string") hit.phase = result.phase;
-	if (typeof result.entry === "string") hit.entry = result.entry;
-	return hit;
+	if (typeof result.cue === "string") stored.cue = result.cue;
+	if (typeof result.date === "string") stored.date = result.date;
+	if (typeof result.source === "string") stored.source = result.source;
+	if (typeof result.phase === "string") stored.phase = result.phase;
+	if (typeof result.entry === "string") stored.entry = result.entry;
+	return stored;
 }
 
 /**

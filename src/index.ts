@@ -1,12 +1,11 @@
 /**
  * pi-muninn extension entry point.
  *
- * Phase 1 step 9: sessions leave a journal of what the user asked to be
+ * Phase 1 step 10: sessions leave a journal of what the user asked to be
  * remembered, what they corrected and how each task turned out; every store
- * carries a Tier 0 index of it; and both halves of recall are wired up — the
- * frozen `MEMORY.md` snapshot in the system prompt, and a bounded, prompt-
- * driven injection each turn. The tools the model can drive itself arrive in
- * step 10.
+ * carries a Tier 0 index of it; recall injects the frozen `MEMORY.md` snapshot
+ * and a bounded per-turn selection; and the model can now search, read and
+ * write memory itself through three tools.
  */
 import {
 	type BeforeAgentStartEventResult,
@@ -28,6 +27,7 @@ import {
 	rebuildState,
 	STATE_CUSTOM_TYPE,
 	type StateDelta,
+	sessionPointer,
 	taskFromSessionFile,
 } from "./capture/session-state.ts";
 import { SessionIndexes } from "./index/search.ts";
@@ -36,23 +36,16 @@ import { buildRecallMessage, contextFileLines, RECALL_KINDS } from "./recall/per
 import { appendSnapshot, readSnapshot, type Snapshot } from "./recall/snapshot.ts";
 import { buildSessionContext, journalStats, type SessionContext } from "./session.ts";
 import { formatScopes, formatStatus, formatStatusLine, formatWarning } from "./status.ts";
+import { memoryNoteTool } from "./tools/memory-note.ts";
+import { memoryReadTool } from "./tools/memory-read.ts";
+import { memorySearchTool } from "./tools/memory-search.ts";
+import type { ToolRuntime } from "./tools/runtime.ts";
 import { MUNINN_VERSION } from "./version.ts";
 
 function describeRuntime(): string {
 	const bunVersion = (globalThis as { Bun?: { version: string } }).Bun?.version;
 	if (bunVersion) return `bun ${bunVersion}`;
 	return `node ${process.versions.node}`;
-}
-
-/** `<session file>#<leaf entry id>` — the evidence pointer into pi's session tree. */
-function sessionPointer(sessionManager: {
-	getSessionFile(): string | undefined;
-	getLeafId(): string | null;
-}): string | undefined {
-	const file = sessionManager.getSessionFile();
-	if (!file) return undefined;
-	const leaf = sessionManager.getLeafId();
-	return leaf ? `${file}#${leaf}` : file;
 }
 
 export default function (pi: ExtensionAPI): void {
@@ -148,6 +141,39 @@ export default function (pi: ExtensionAPI): void {
 			}
 		});
 	};
+
+	/**
+	 * What the three tools are allowed to know about this session.
+	 *
+	 * They get accessors rather than values because a session is rebuilt on
+	 * `session_start` and the tools are registered once, at load.
+	 */
+	const toolRuntime: ToolRuntime = {
+		settle: () => queue.flush(),
+		session: () => session,
+		indexes: () => indexes,
+		state: () => state,
+		async append(scope, entry) {
+			const current = session;
+			const currentState = state;
+			if (!current) throw new Error("muninn: memory is not available in this session yet");
+			const storePath = current.scopes.active.find((active) => active.scope === scope)?.path;
+			if (!storePath) throw new Error(`muninn: the ${scope} store is not active in this session`);
+
+			// Awaited, not queued: the model asked for this write and is entitled
+			// to be told whether it happened. A failure here fails the tool call.
+			const written = await appendEntry(entry, { storePath, hostId: current.host.id });
+			if (currentState) afterAppend(current, currentState, storePath, written);
+			// The entry is durable in git before the model moves on, so a crash
+			// mid-session cannot lose what it was asked to remember.
+			commitPending(false);
+			return written;
+		},
+	};
+
+	pi.registerTool(memorySearchTool(toolRuntime));
+	pi.registerTool(memoryReadTool(toolRuntime));
+	pi.registerTool(memoryNoteTool(toolRuntime));
 
 	pi.registerCommand("muninn", {
 		description: "Muninn status, scopes, settings and index",

@@ -27,7 +27,7 @@ import type { JournalEntryWithContext } from "../journal/read.ts";
 import { listJournalFiles, readDailyFile } from "../journal/read.ts";
 import { SCHEMA_VERSION } from "../store/store-md.ts";
 import { type Chunk, chunkFile, chunkJournalEntry } from "./chunk.ts";
-import { type Hit, type QueryOptions, type Tier0Data, Tier0Index } from "./tier0.ts";
+import { type Hit, type QueryOptions, type StoredChunk, type Tier0Data, Tier0Index } from "./tier0.ts";
 
 /**
  * The index format's own version.
@@ -136,6 +136,11 @@ export class StoreIndex {
 
 	search(query: string, options?: QueryOptions): Hit[] {
 		return this.index.search(query, options);
+	}
+
+	/** One chunk by id — a claim, a fact, a rule, or a slice of a file. */
+	get(id: string): StoredChunk | undefined {
+		return this.index.get(id);
 	}
 
 	linksFrom(id: string): string[] {

@@ -92,6 +92,23 @@ export function taskFromSessionFile(path: string | undefined): string | undefine
 }
 
 /**
+ * `<session file>#<leaf entry id>` — the evidence pointer into pi's session tree.
+ *
+ * Lives here rather than in the extension entry because two callers need it:
+ * capture, which stamps it on every entry, and `memory_note`, which stamps the
+ * same pointer on what the model asks to remember.
+ */
+export function sessionPointer(sessionManager: {
+	getSessionFile(): string | undefined;
+	getLeafId(): string | null;
+}): string | undefined {
+	const file = sessionManager.getSessionFile();
+	if (!file) return undefined;
+	const leaf = sessionManager.getLeafId();
+	return leaf ? `${file}#${leaf}` : file;
+}
+
+/**
  * Plain text of an assistant message.
  *
  * Thinking blocks and tool calls are excluded: the correction classifier asks
