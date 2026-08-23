@@ -110,7 +110,7 @@ pi-muninn/
 Each step is a PR-sized unit, ordered so every step leaves `main` loadable by pi and
 strictly more useful than before. Estimates are in working days for one person.
 
-### 1. Scaffold and settings (0.5 d)
+### 1. Scaffold and settings (0.5 d) — **done**
 
 - `package.json`, tooling, CI (`check` + `test` on Node 22 and Bun).
 - `src/index.ts` registers only `/muninn` → `status`, printing the extension version,
@@ -127,7 +127,7 @@ strictly more useful than before. Estimates are in working days for one person.
 **Done when:** `pi -e ./src/index.ts` loads, `/muninn` prints status, `npm run check` and
 `npm test` pass on Node and Bun.
 
-### 2. Ids, store, host, lock (1 d)
+### 2. Ids, store, host, lock (1 d) — **done**
 
 - `ids.ts`: `newEntryId()` → `j-<uuidv7>`, `newHostId()`, `claimId(entry, ordinal)`, parsers
   with strict regexes. Ids are never truncated anywhere in code; display truncation is the
@@ -153,7 +153,7 @@ strictly more useful than before. Estimates are in working days for one person.
 wins, the other waits), stale-lock recovery, and store creation is idempotent. `/muninn
 scope` shows active scopes, the capture target, and *why*.
 
-### 3. Journal format, append, read (1.5 d)
+### 3. Journal format, append, read (1.5 d) — **done**
 
 - `format.ts`: the README's entry grammar. Serialize: `## HH:MM · <id>` heading, flat
   `key: value` block, blank line, prose, bullet claims. Parse: tolerant of missing
@@ -569,7 +569,7 @@ Six details worth keeping:
 resolving pi's agent directory locally rather than importing pi keeps `muninn sync` in cron
 working — and starting about a second faster — even when a pi install is half-upgraded.
 
-### 13. Hardening and docs (1 d)
+### 13. Hardening and docs (1 d) — **done**
 
 - Failure-injection tests: lock held by a dead pid, disk full on append (ENOSPC → entry
   not written, reported), git missing, remote unreachable, index file corrupted (rebuild,
@@ -579,7 +579,12 @@ working — and starting about a second faster — even when a pi install is hal
   design text for unbuilt phases. Write `docs/journal-format.md` as the normative grammar
   extracted from `format.ts` tests.
 
-**Total: ~13 working days.**
+**Total: ~13 working days. All thirteen steps are done**, and the acceptance criteria at the
+top of this document are met: `test/integration/acceptance.test.ts` carries a correction
+between two scratch machines through `sync`, `test/integration/capture.test.ts` shows a
+session writing nothing outside `journal/` and leaving the project repository untouched, and
+`test/unit/journal-append.test.ts` runs eight processes × fifty appends into one daily file.
+535 tests, on Node and on Bun.
 
 ## Test strategy
 

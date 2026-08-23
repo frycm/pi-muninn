@@ -15,18 +15,17 @@ path.
 > evening. Odin fears losing him more than losing thought.
 
 > [!IMPORTANT]
-> **Status: design proposal (v0.2.1). No implementation yet.**
-> This README is the design document, published first so the architecture can be reviewed
-> and argued with before any code exists. Every section is a commitment to be tested, not a
-> description of working software. It will shrink into a normal project README as phases
-> land. v0.2 (revised after a second review pass) adds the contracts the v0.1 review asked
-> for: global claim identities and
-> active-only recall, the journal→dream git transaction, provenance channels that block
-> self-reinforcement, capture scope, a held-out evaluation, sync across hosts with
-> model-assisted merging of conflicting dreams, and schema versioning. v0.2.1 verifies the
-> "works as an extension" claim against the pinned pi source — see
-> [verified at the baseline](#verified-at-the-baseline) — and adds a
-> [Phase 1 implementation plan](docs/phase-1-plan.md).
+> **Status: Phase 1 is implemented; Phases 2–5 are still design.**
+> This README began as a design document, published before any code existed so the
+> architecture could be argued with first. **Journal and recall now work** — see
+> [Using it today](#using-it-today) for what is built and how to run it. Everything about
+> *dreaming*, `topics/`, `rules.md`, Tier 1 retrieval, team scope and erasure is still
+> design text: a commitment to be tested, not a description of working software. Each
+> section below says which it is where the distinction matters, and the
+> [delivery plan](#delivery-plan) is the map. The normative file format lives in
+> [docs/journal-format.md](docs/journal-format.md); the step-by-step Phase 1 record, with
+> what each step actually cost and what it turned up, is in
+> [docs/phase-1-plan.md](docs/phase-1-plan.md).
 
 ### API baseline
 
@@ -52,6 +51,7 @@ neither.
 
 ## Contents
 
+- [Using it today](#using-it-today)
 - [Why this exists](#why-this-exists)
 - [Goals and non-goals](#goals-and-non-goals)
 - [The memory model](#the-memory-model)
@@ -70,6 +70,106 @@ neither.
 - [Open questions and risks](#open-questions-and-risks)
 - [Why this name](#why-this-name)
 - [License](#license)
+
+---
+
+## Using it today
+
+Phase 1 — journal and recall — is built and tested. Nothing below this section's list is
+implemented yet.
+
+### Install
+
+```bash
+pi install git:github.com/frycm/pi-muninn          # or a local checkout: pi install ./pi-muninn
+```
+
+Or load a checkout directly for one session, which is how the tests run it:
+
+```bash
+pi -e /path/to/pi-muninn/src/index.ts
+```
+
+Node `>=22.19.0` or Bun; no native dependencies, nothing to compile. Two runtime packages
+(`minisearch` and `proper-lockfile`) and `git` on the PATH.
+
+### What happens without you doing anything
+
+- **Capture.** Asking for something to be remembered ("remember that…", "from now on…"),
+  correcting the agent, and the end of each run are journaled — the last as a short
+  outcome entry written by the session's own model. Nothing else is. Secrets are scrubbed
+  on the way in, and every entry records where it came from.
+- **Recall.** At session start `MEMORY.md` is merged into the system prompt, byte-identical
+  for the whole session so the prompt cache stays warm. On every turn, memories matching
+  the prompt are injected — at most `recall.factsPerTurn`, within `recall.tokenBudget`,
+  labelled as memories rather than as fact, and never repeating what `AGENTS.md` or your
+  own prompt already says.
+- **Commit.** The journal is committed to the store's git history when a run settles and at
+  shutdown — one commit per batch, touching only `journal/`.
+
+### What the model can do
+
+| Tool | Does |
+|---|---|
+| `memory_search` | Search the journal, topics and rules. Active-only unless `history: true`. |
+| `memory_read` | One entry with its context, one claim inside its entry, a store file, or the pi session transcript behind an entry. |
+| `memory_note` | Record one journal entry as `source: agent`. The only tool that writes. |
+
+### What you can do
+
+```
+/muninn                          status: scopes, journal, index, recall, sync
+/muninn note [--global] <text>   remember something, as source: user
+/muninn promote <id>             copy a project entry into the global journal
+/muninn search [--history] [--limit n] <query>
+/muninn scope                    which scopes are active here, and why
+/muninn reindex                  rebuild the index from the files
+/muninn sync [--no-push]         commit, fetch, rebase, push
+
+muninn sync [--scope global|project] [--no-push]   # headless, for cron
+muninn status [--scope global|project]
+```
+
+### Where memory lives
+
+```
+~/.pi/agent/muninn/                     global store
+~/.pi/agent/muninn-projects/<project>/  project store, keyed by the git toplevel
+```
+
+Both are git repositories of markdown, yours to read, grep, edit and delete. Project scope
+is on by default when the working directory is a trusted git repository; `scopes.project:
+"in-repo"` puts the store inside the repository instead, and `false` turns it off. The
+[journal format](docs/journal-format.md) is the contract; `.index/` is derived and
+disposable.
+
+### Syncing across machines
+
+Set `sync.remote` to a private git remote you own — any URL git accepts, including a path
+on a NAS. `muninn sync` (and, with `sync.onShutdown`, the end of every session) commits,
+fetches, rebases and pushes. Journal files are per host, so machines never collide; the one
+file two machines write concurrently is the host registry, and that is merged
+automatically. Any other conflict stops sync with the store untouched, and nothing is ever
+force-pushed. A second machine joins by cloning the remote into its store path.
+
+> `sync.remote` names the **global** store's remote. A separate project store syncs with
+> the `origin` it already has, and an in-repo store is never pushed by Muninn — that
+> repository belongs to the project.
+
+### Settings
+
+Under `muninn` in `~/.pi/agent/settings.json`, and — **tighten-only** — in a project's
+`.pi/settings.json`. A project may lower a budget, disable a capture kind or turn a scope
+off; it may never widen anything, and it may never name a remote or an endpoint. See
+[Commands and settings](#commands-and-settings) for the full block; the Phase 1 keys are
+`scopes`, `sync`, `capture` and `recall`.
+
+### Not built yet
+
+Dreaming and everything downstream of it: `topics/`, `rules.md`, consolidated facts,
+supersession *writing* (the reader is in, so recall is active-only from day one), the
+held-out evaluation, Tier 1 retrieval, team scope, erasure and skills. `MEMORY.md` is yours
+to write by hand until a dream writes it for you.
 
 ---
 
@@ -710,8 +810,8 @@ So:
 | Store | Remote | What moves | Trust |
 |---|---|---|---|
 | **global** (personal, many hosts) | a private remote the operator owns (`sync.remote`) | everything: `journal/`, derived layers, `dream/*` branches | trusted — it is the operator's own |
-| **project**, separate store | same, keyed by project | same | same |
-| **project**, committed in the repo | the project's own remote | same, inside the product's history | trusted only when the project is trusted |
+| **project**, separate store | the `origin` that store already has, if any — a project `settings.json` travels with a repository anyone can clone, so it may not name one | same | same |
+| **project**, committed in the repo | the project's own remote, pushed by the project's own workflow — **never by Muninn** | same, inside the product's history | trusted only when the project is trusted |
 | **team** | a remote others write to | **derived layers only** — `topics/`, `rules.md`, `skills/`, `MEMORY.md`, `supersessions.md`; never a journal | untrusted input — see below |
 
 **`muninn sync`** (also run automatically at `session_shutdown` when a remote is
@@ -897,6 +997,9 @@ Also confirmed: `session_before_compact` (`types.ts:593`) and `session_shutdown`
 
 ## Commands and settings
 
+The full surface, across all phases. What exists today is the shorter list under
+[Using it today](#using-it-today); the rest arrives with the phase that needs it.
+
 ```
 /muninn                     status: scopes, entries since last dream, index tier, pending dreams
 /muninn note [--global] <text>   journal entry, source: user, to the capture target (or global)
@@ -1041,10 +1144,12 @@ small models: 2605.26128, 2605.02363.
 Phases are ordered so each is independently useful and the riskiest assumption — that a
 small local model can dream well enough — is validated before anything depends on it.
 
-### Phase 1 — Journal and recall
+### Phase 1 — Journal and recall — **done**
 
 *Outcome: pi sessions leave a journal, and the next session can find it.*
-Implementation plan: [docs/phase-1-plan.md](docs/phase-1-plan.md).
+Built and tested; see [Using it today](#using-it-today) for what that means in practice, and
+[docs/phase-1-plan.md](docs/phase-1-plan.md) for the step-by-step record — each step's
+"done when", how it was met, and what it turned up.
 
 Capture (explicit, corrections, outcomes, pre-compaction), secret redaction, per-host journal
 directories with locked appends, UUIDv7 ids and claim bullets, `task`/`continues`
@@ -1054,7 +1159,9 @@ grouping, capture-target scope, journal commits,
 `/muninn note|promote|search|scope|reindex|sync`. Done when: a correction made on Monday on
 one laptop is surfaced by `memory_search` on Tuesday on another laptop in a different
 project directory, nothing outside `journal/` was written, and two concurrent sessions on
-one host produce a well-formed daily file.
+one host produce a well-formed daily file. **All three met**, in
+`test/integration/acceptance.test.ts`, `test/integration/capture.test.ts` and
+`test/unit/journal-append.test.ts` respectively.
 
 ### Phase 2 — Dreaming, manual
 

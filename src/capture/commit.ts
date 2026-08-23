@@ -11,7 +11,7 @@
  * an in-repo store cannot sweep up work the developer had staged for
  * themselves.
  */
-import { GitError, git, hasChanges, isGitRepository } from "../git.ts";
+import { GitError, GitMissingError, git, hasChanges, isGitRepository } from "../git.ts";
 import { withStoreLock } from "../store/lock.ts";
 
 /** Journal paths, and the only paths this module will ever stage. */
@@ -76,8 +76,13 @@ export async function commitJournal(options: CommitOptions): Promise<CommitResul
 		}
 	}
 
-	if (!(await isGitRepository(options.storePath))) {
-		return { committed: false, reason: "store is not a git repository" };
+	try {
+		if (!(await isGitRepository(options.storePath))) {
+			return { committed: false, reason: "store is not a git repository" };
+		}
+	} catch (error) {
+		if (error instanceof GitMissingError) return { committed: false, reason: error.message };
+		throw error;
 	}
 
 	return withStoreLock(options.storePath, "commit", { host: options.hostId }, () => commitJournalLocked(options, now));

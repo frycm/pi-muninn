@@ -25,7 +25,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
-import { GitError, git, isGitRepository } from "../git.ts";
+import { GitError, GitMissingError, git, isGitRepository } from "../git.ts";
 import { withStoreLock } from "../store/lock.ts";
 import { formatStoreMd, mergeStoreMd, parseStoreMd } from "../store/store-md.ts";
 
@@ -91,9 +91,19 @@ function empty(): SyncResult {
 export async function sync(options: SyncOptions): Promise<SyncResult> {
 	const result = empty();
 
-	if (!(await isGitRepository(options.storePath))) {
-		result.problem = `${options.storePath} is not a git repository`;
+	try {
+		if (!(await isGitRepository(options.storePath))) {
+			result.problem = `${options.storePath} is not a git repository`;
+			result.stoppedAt = "commit";
+			return result;
+		}
+	} catch (error) {
+		// Without git there is nothing sync can do, and saying so is the whole
+		// remedy: install git, run it again.
+		const problem = error instanceof GitMissingError ? error.message : describe(error);
+		result.problem = problem;
 		result.stoppedAt = "commit";
+		result.notes.push(problem);
 		return result;
 	}
 

@@ -61,6 +61,22 @@ export type GitCommand =
 	/** Whether `ref` exists, for telling a first push from a rebase. */
 	| { kind: "verify-ref"; ref: string };
 
+/**
+ * git itself is not on the PATH.
+ *
+ * Distinguished from every other git failure because the answer is different:
+ * nothing about a store works without git, and reporting it as "not a git
+ * repository" — which is what a swallowed ENOENT looks like — would send
+ * whoever reads it looking in exactly the wrong place.
+ */
+export class GitMissingError extends Error {
+	constructor(cause?: unknown) {
+		super("git is not installed or not on PATH; muninn stores are git repositories and cannot be used without it");
+		this.name = "GitMissingError";
+		this.cause = cause;
+	}
+}
+
 export class GitError extends Error {
 	readonly stderr: string;
 	readonly command: GitCommand;
@@ -228,22 +244,41 @@ export async function git(cwd: string, command: GitCommand, options: GitOptions 
 		});
 		return { stdout, stderr };
 	} catch (error) {
+		if (
+			(error as NodeJS.ErrnoException).code === "ENOENT" &&
+			(error as { syscall?: string }).syscall?.includes("spawn")
+		) {
+			throw new GitMissingError(error);
+		}
 		const stderr = (error as { stderr?: string }).stderr ?? "";
 		throw new GitError(command, stderr, error);
 	}
 }
 
-/** True when `path` is inside a git work tree. Never throws. */
+/**
+ * True when `path` is inside a git work tree.
+ *
+ * Never throws — except when git itself is missing, which is not an answer to
+ * the question that was asked and must not be reported as "no".
+ */
 export async function isGitRepository(path: string): Promise<boolean> {
 	try {
 		const { stdout } = await git(path, { kind: "rev-parse", target: "--is-inside-work-tree" });
 		return stdout.trim() === "true";
-	} catch {
+	} catch (error) {
+		if (error instanceof GitMissingError) throw error;
 		return false;
 	}
 }
 
-/** The work-tree root containing `cwd`, or undefined when there is none. */
+/**
+ * The work-tree root containing `cwd`, or undefined when there is none.
+ *
+ * This one *does* swallow a missing git: it runs at session start to decide
+ * whether a project scope exists, and a machine without git should get a
+ * global store and a clear problem from the store it tries to open, not a
+ * session that refuses to start.
+ */
 export async function gitToplevel(cwd: string): Promise<string | undefined> {
 	try {
 		const { stdout } = await git(cwd, { kind: "rev-parse", target: "--show-toplevel" });
