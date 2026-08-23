@@ -118,9 +118,13 @@ own facts already stand on. That is deliberate — a consolidation that merges t
 has to be able to re-cite what they rested on — but it means a model can pull an id
 forward from an old fact into a new one without seeing the entry it came from.
 
-Lint still requires that id to exist and be live, so nothing untraceable gets in. The
-question is whether "cited by a fact in this topic" is a strong enough licence, or
-whether a merge should be the only job allowed to do it.
+Lint still requires that id to exist and be live, so nothing untraceable gets in, and a
+review of this found and closed the one real consequence: those claims are in no job's
+entries, so their `source` was unknown and a fact resting only on fetched content escaped
+the external quarantine. A fact's own source is now carried forward to its evidence.
+
+What remains is the judgement: is "cited by a fact in this topic" a strong enough licence,
+or should a merge dream be the only job allowed to do it?
 
 ---
 

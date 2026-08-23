@@ -477,7 +477,7 @@ yielding zero unsourced facts on the fixture — ships as the fixture, the score
 harness, scored in CI against scripted dreamers; the model rows in
 [qualify-results.md](qualify-results.md) need the models on hand.
 
-726 tests. Bun is exercised by CI (`.github/workflows/ci.yml`) and was not run locally —
+739 tests. Bun is exercised by CI (`.github/workflows/ci.yml`) and was not run locally —
 Bun is not installed on the machine this was built on, and nothing added in this phase is
 native.
 
@@ -518,6 +518,38 @@ are the argument for writing the "done when" first.
   append on the machine for minutes, and a queued append that times out is an entry lost
   for good. The lock now covers the setup — commit the pending journal, read `HEAD`, cut
   the worktree — and a separate `.dreaming` marker excludes other dreams (step 12).
+
+## The review
+
+A review over the whole diff — every finding verified against the running code before it
+was reported — found seven correctness bugs and six smaller ones. All are fixed, each with
+a test that fails against the old code. Four are worth keeping, because each is a boundary
+that looked closed:
+
+- **Erase left the erased body in the file.** A daily file starts with `## ` at byte 0, so
+  a search for `"\n## "` found the *second* entry and treated the first as a preamble —
+  copying it out verbatim, secret included, with its id then appearing twice. Only a
+  single-entry file behaved, which is exactly what the tests built. The Phase 1 lesson,
+  again: a fixture that is simpler than reality tests the code against the fixture.
+- **The echo refusal was inverted.** `echo:` names the memory that was restated, so the
+  refusal list held the *original observation* and left the echo citable. An entry reaches
+  a job for one of its claims and brings all of them into the prompt and the allow-list,
+  so the refusal has to be by claim id.
+- **Held-out and deferred entries were dropped from every future dream.** The watermark
+  took the maximum over everything in range, so what gather withheld sat below it and no
+  later dream ever saw it. A hold-out became a deletion — and the comment promising
+  deferred claims were "deferred rather than lost" was, exactly, the Phase 1 pattern of a
+  comment asserting a boundary that is not enforced.
+- **The transaction and a running dream fought over worktrees.** `collectWorktrees`
+  justified force-removing every dream checkout with "the store lock is held, so no other
+  dream is alive" — true before step 12 split the lock, false after. Splitting a lock
+  invalidates every comment that reasoned from it, and this one was not re-read.
+
+And the merge dream had no caller at all: `rebaseOnto` threw `RebaseConflict` and its own
+comment said "the caller is told which topics need it", but the caller was a generic
+`catch`. Step 9 shipped a tested module that nothing could reach. It is wired now, through
+a `resolve` callback the caller supplies, with the cross-host test the step's "done when"
+always described.
 
 ## Decisions made by this plan
 
