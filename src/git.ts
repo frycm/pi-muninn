@@ -543,6 +543,23 @@ export async function gitToplevel(cwd: string): Promise<string | undefined> {
 }
 
 /**
+ * The branch this repository is on, or nothing when HEAD is detached.
+ *
+ * A store Muninn owns is pinned to `main`, but an in-repo store lives in the
+ * user's project and is on whatever branch they are — so anything that names a
+ * branch has to ask rather than assume. Never throws: "which branch" is a
+ * question with a legitimate "none" answer.
+ */
+export async function currentBranch(cwd: string): Promise<string | undefined> {
+	try {
+		const { stdout } = await git(cwd, { kind: "current-branch" });
+		return stdout.trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * True when any of `paths` has staged or unstaged changes.
  *
  * Always pass a pathspec for a store that might be in-repo: an unscoped status

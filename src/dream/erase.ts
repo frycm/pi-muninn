@@ -27,7 +27,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
-import { GitError, git, hasChanges } from "../git.ts";
+import { currentBranch, GitError, git, hasChanges } from "../git.ts";
 import { indexDir } from "../index/build.ts";
 import { resetSupersessionCache } from "../index/search.ts";
 import { appendErasure, readErasures } from "../journal/erasures.ts";
@@ -35,7 +35,7 @@ import { claimsOf, formatEntry, type JournalEntry } from "../journal/format.ts";
 import { parseDailyFile, readStoreJournal } from "../journal/read.ts";
 import { appendSupersessions } from "../journal/supersessions.ts";
 import type { HostIdentity } from "../store/host.ts";
-import { storeIdentity } from "../store/init.ts";
+import { STORE_BRANCH, storeIdentity } from "../store/init.ts";
 import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import type { ActiveScope } from "../store/scopes.ts";
 import { allFacts, formatTopic } from "../topics/format.ts";
@@ -187,7 +187,8 @@ async function applyErase(options: EraseOptions, result: EraseResult): Promise<E
 		await rewriteHistory(scope.path, secrets, result);
 		if (result.rewroteHistory && options.remote !== undefined) {
 			try {
-				await git(scope.path, { kind: "push-force", remote: "origin", branch: "main" });
+				const branch = (await currentBranch(scope.path)) ?? STORE_BRANCH;
+				await git(scope.path, { kind: "push-force", remote: "origin", branch });
 				result.notes.push("force-pushed the rewritten history to origin");
 			} catch (error) {
 				result.notes.push(

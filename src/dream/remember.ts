@@ -26,9 +26,9 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
-import { DERIVED_PATHS, GitError, type GitIdentity, git } from "../git.ts";
+import { currentBranch, DERIVED_PATHS, GitError, type GitIdentity, git } from "../git.ts";
 import type { HostIdentity } from "../store/host.ts";
-import { storeIdentity } from "../store/init.ts";
+import { STORE_BRANCH, storeIdentity } from "../store/init.ts";
 import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import type { ActiveScope } from "../store/scopes.ts";
 import { collectWorktrees, repositoryFor, worktreeRoot } from "./worktree.ts";
@@ -229,11 +229,16 @@ async function rebaseOnto(
 	// check a branch out twice.
 	await collectWorktrees(repo);
 
+	// The store's own branch, not the literal "main": an in-repo store is on
+	// whatever branch the project is on, and rebasing onto a branch that is not
+	// there fails in a way nobody would connect to their checkout.
+	const onto = (await currentBranch(options.scope.path)) ?? STORE_BRANCH;
+
 	const path = join(worktreeRoot(options.agentDir), "remember", branch.replace(/\//g, "-"));
 	rmSync(path, { recursive: true, force: true });
 	await git(repo, { kind: "worktree-add-existing", path, branch });
 	try {
-		await git(path, { kind: "rebase", onto: "main" }, identity ? { identity } : {});
+		await git(path, { kind: "rebase", onto }, identity ? { identity } : {});
 		result.notes.push(`rebased ${branch} onto main`);
 	} catch (error) {
 		// Which derived files disagreed, read before the abort throws it away.

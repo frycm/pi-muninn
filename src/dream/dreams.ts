@@ -10,9 +10,9 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
-import { GitError, type GitIdentity, git } from "../git.ts";
+import { currentBranch, GitError, type GitIdentity, git } from "../git.ts";
 import type { HostIdentity } from "../store/host.ts";
-import { storeIdentity } from "../store/init.ts";
+import { STORE_BRANCH, storeIdentity } from "../store/init.ts";
 import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import type { ActiveScope } from "../store/scopes.ts";
 import { readTopics } from "./orient.ts";
@@ -38,9 +38,12 @@ const RECORD = "\x1e";
 /** Commits on `main` that were dreams, keyed by stamp. */
 export async function rememberedDreams(storePath: string, limit = 50): Promise<Map<string, string>> {
 	const found = new Map<string, string>();
+	// The store's own branch, not the literal "main": an in-repo store lives in
+	// the user's project and is on whatever branch they are.
+	const branch = (await currentBranch(storePath)) ?? STORE_BRANCH;
 	let stdout: string;
 	try {
-		stdout = (await git(storePath, { kind: "log-entries", ref: "main", limit })).stdout;
+		stdout = (await git(storePath, { kind: "log-entries", ref: branch, limit })).stdout;
 	} catch {
 		return found;
 	}
@@ -168,7 +171,7 @@ async function applyForget(
 	const { scope, host, stamp } = options;
 	const sha = (await rememberedDreams(scope.path)).get(stamp);
 	if (sha === undefined) {
-		result.problems.push(`no remembered dream ${stamp} on main`);
+		result.problems.push(`no remembered dream ${stamp} in this store`);
 		return result;
 	}
 

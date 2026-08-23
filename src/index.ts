@@ -359,6 +359,17 @@ export default function (pi: ExtensionAPI): void {
 		if (!active) throw new Error(`muninn: no ${wanted ?? "active"} store here`);
 
 		const model = sessionDreamModel(ctx, current.loaded.settings.dream.model);
+		// A session has a model at hand, so falling back to it is better than
+		// refusing — but never silently. The design's point is that the dreamer
+		// runs locally and offline while the session talks to whatever it likes,
+		// and a dream that quietly sent the whole store to a frontier API because
+		// one setting was unset is exactly the surprise this says out loud.
+		if (model !== undefined && current.loaded.settings.dream.model === null) {
+			process.stderr.write(
+				"muninn: dream.model is not set, so this dream uses the session's own model. " +
+					"Set muninn.dream.model to dream against a local endpoint.\n",
+			);
+		}
 		const globalRules =
 			active.scope === "project" ? readIfPresent(current.scopes.active, "global", "rules.md") : undefined;
 
