@@ -411,7 +411,7 @@ function echoClaims(storePath: string, orientation: Orientation): Set<string> {
 	for (const entry of readStoreJournal(storePath).entries) {
 		if (entry.echo === undefined || entry.echo.length === 0) continue;
 		const texts = entry.echo
-			.map((id) => orientation.factsById.get(id)?.claim)
+			.map((id) => orientation.echoedText.get(id))
 			.filter((text): text is string => text !== undefined);
 		if (texts.length === 0) continue;
 		for (const claim of claimsOf(entry)) {

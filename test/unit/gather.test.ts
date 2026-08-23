@@ -16,6 +16,7 @@ function orientation(overrides: Partial<Orientation> = {}): Orientation {
 		topics: new Map(),
 		factsById: new Map(),
 		citedBy: new Map(),
+		echoedText: new Map(),
 		superseded: new Set(),
 		erased: new Set(),
 		usage: new Map(),
@@ -136,7 +137,7 @@ describe("gather refuses what must never become a fact", () => {
 					echo: [fact.id],
 				},
 			],
-			{ orientation: orientation({ factsById: new Map([[fact.id, fact]]) }) },
+			{ orientation: orientation({ echoedText: new Map([[fact.id, fact.claim]]) }) },
 		);
 		expect(result.jobs).toEqual([]);
 		expect(droppedFor(result, `${entryIdAt(0, 0)}.1`)).toMatch(/echo/);

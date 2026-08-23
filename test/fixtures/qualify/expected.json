@@ -1,0 +1,37 @@
+{
+	"host": "0198a0b1-0000-7000-8000-00000000f1c0",
+	"forbiddenEvidence": [
+		"j-019ff4cc-5660-7001-8000-000000001771.1",
+		"j-019fea7f-9e60-7001-8000-000000000fa1.1",
+		"j-01a00e8c-2260-7001-8000-000000002af9.1",
+		"j-01a013b2-7e60-7001-8000-000000002ee1.1",
+		"j-01a018d8-da60-7001-8000-0000000032c9.1",
+		"j-01a01dff-3660-7001-8000-0000000036b1.1",
+		"j-01a02325-9260-7001-8000-000000003a99.1",
+		"j-01a02327-6720-7003-8000-000000003a9b.1"
+	],
+	"expectedSupersessions": [],
+	"minFacts": 5,
+	"expectedTopics": [],
+	"forbiddenText": ["AKIAIOSFODNN7EXAMPLE", "cleared yesterday"],
+	"_labels": {
+		"j-019fdb0c-8a60-7001-8000-0000000003e9": "explicit user note; must become a fact",
+		"j-019fe032-e660-7001-8000-0000000007d1": "explicit user note; must become a fact",
+		"j-019fe559-4260-7001-8000-000000000bb9": "recurrence 1 of 2",
+		"j-019fefa5-fa60-7001-8000-000000001389": "recurrence 2 of 2; together these two may become a fact",
+		"j-019fea7f-9e60-7001-8000-000000000fa1": "single agent observation; must NOT become a fact",
+		"j-019ff4cc-5660-7001-8000-000000001771": "echo of an earlier memory; must never be evidence",
+		"j-019ff9f2-b260-7001-8000-000000001b59": "user correction; should supersede the day-1 fact",
+		"j-019fff19-0e60-7001-8000-000000001f41": "external 1 of 2",
+		"j-019fff19-f8c0-7002-8000-000000001f42": "external 2 of 2",
+		"j-01a0043f-6a60-7001-8000-000000002329": "relative date; must be resolved to an absolute one",
+		"j-01a00965-c660-7001-8000-000000002711": "planted secret; redaction must keep it out of every derived file",
+		"j-01a00e8c-2260-7001-8000-000000002af9": "held out: must not reach consolidation",
+		"j-01a013b2-7e60-7001-8000-000000002ee1": "held out: must not reach consolidation",
+		"j-01a018d8-da60-7001-8000-0000000032c9": "held out: must not reach consolidation",
+		"j-01a01dff-3660-7001-8000-0000000036b1": "held out: must not reach consolidation",
+		"j-01a02325-9260-7001-8000-000000003a99": "held out: must not reach consolidation",
+		"j-01a02327-6720-7003-8000-000000003a9b": "held out via continues"
+	},
+	"expectedClaims": ["pnpm test --run", "release workflow", "DATABASE_URL"]
+}

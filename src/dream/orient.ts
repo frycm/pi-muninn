@@ -13,6 +13,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { readErasures } from "../journal/erasures.ts";
+import { claimsOf } from "../journal/format.ts";
 import { readStoreJournal } from "../journal/read.ts";
 import { readSupersessions } from "../journal/supersessions.ts";
 import { allFacts, type Fact, parseTopic, type TopicFile } from "../topics/format.ts";
@@ -26,6 +27,16 @@ export interface Orientation {
 	factsById: Map<string, Fact>;
 	/** Journal claim id → the topic whose fact already cites it. */
 	citedBy: Map<string, string>;
+	/**
+	 * Text of the memories entries recorded themselves as echoing.
+	 *
+	 * `echo:` names a recalled *memory*, which may be a fact id or a journal
+	 * claim id — recall injects both — so resolving it needs both sources. Only
+	 * the ids some entry actually echoed are resolved: a map of every claim in
+	 * the store would be most of the journal held in memory to answer a question
+	 * about a handful of them.
+	 */
+	echoedText: Map<string, string>;
 	/** Claim ids ordinary recall must drop. */
 	superseded: Set<string>;
 	/** Entry ids erased for privacy; a dream may never cite one. */
@@ -52,6 +63,7 @@ export function orient(storePath: string): Orientation {
 		topics: new Map(),
 		factsById: new Map(),
 		citedBy: new Map(),
+		echoedText: new Map(),
 		superseded: supersessions.superseded,
 		erased: readErasures(storePath).ids,
 		usage,
@@ -71,6 +83,20 @@ export function orient(storePath: string): Orientation {
 			// misread once can be consolidated correctly later.
 			if (fact.validTo !== undefined) continue;
 			for (const claim of fact.evidence) orientation.citedBy.set(claim, slug);
+		}
+	}
+
+	// Resolve what was echoed, now that both the facts and the journal are read.
+	const echoed = new Set(journal.entries.flatMap((entry) => entry.echo ?? []));
+	for (const id of echoed) {
+		const fact = orientation.factsById.get(id);
+		if (fact !== undefined) orientation.echoedText.set(id, fact.claim);
+	}
+	if (echoed.size > 0) {
+		for (const entry of journal.entries) {
+			for (const claim of claimsOf(entry)) {
+				if (echoed.has(claim.id)) orientation.echoedText.set(claim.id, claim.text);
+			}
 		}
 	}
 

@@ -298,6 +298,14 @@ const FAILURE = /\b(failed|failing|fails|broke|broken|error|regression|flaky|tim
  * signal in the store. Everything the model or a tool produced has to earn its
  * place: by being about a decision or a failure, or by having been observed in
  * two different pieces of work.
+ *
+ * A decision is recognised by what a claim *says*, not by which phase it
+ * happened in. The plan proposed treating `phase: ops` and `phase: review` as
+ * decisions on their own; the qualification fixture showed what that costs —
+ * every "finished the investigation" outcome entry of an ops task became a
+ * fact. Phase is where work happened, not what was learned. Missing a genuine
+ * decision that used none of the words is the safe direction to be wrong in: it
+ * stays in the journal, searchable, and the next sighting promotes it.
  */
 function selectionReason(
 	claim: GatheredClaim,
@@ -307,14 +315,10 @@ function selectionReason(
 
 	const text = `${claim.text} ${claim.entry.cue ?? ""} ${claim.entry.prose}`;
 	if (FAILURE.test(text)) return { reason: "failure", occurrences: 1 };
-	if (DECISION.test(text) || isDecisionPhase(claim.entry.phase)) return { reason: "decision", occurrences: 1 };
+	if (DECISION.test(text)) return { reason: "decision", occurrences: 1 };
 
 	const occurrences = countRecurrence(claim, all);
 	return occurrences >= 2 ? { reason: "recurrence", occurrences } : undefined;
-}
-
-function isDecisionPhase(phase: JournalEntry["phase"]): boolean {
-	return phase === "review" || phase === "ops";
 }
 
 /**
@@ -351,12 +355,18 @@ export function countRecurrence(claim: GatheredClaim, all: readonly GatheredClai
 	return independent;
 }
 
-/** Text of the memories this entry was found to be echoing. */
+/**
+ * Text of the memories this entry recorded itself as echoing.
+ *
+ * The ids may be facts or journal claims, because recall injects both, and
+ * `orient` resolves either — looking only in the topic files was a hole through
+ * which every echo of a *journal* memory walked straight into consolidation.
+ */
 function echoedText(entry: JournalEntry, orientation: Orientation): string[] {
 	const texts: string[] = [];
 	for (const id of entry.echo ?? []) {
-		const fact = orientation.factsById.get(id);
-		if (fact) texts.push(fact.claim);
+		const text = orientation.echoedText.get(id);
+		if (text !== undefined) texts.push(text);
 	}
 	return texts;
 }

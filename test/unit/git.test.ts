@@ -85,7 +85,7 @@ describe("toArgv — the allow-list is the promise", () => {
 			"for-each-ref",
 			"--sort=-committerdate",
 			"--format=%(refname:short)",
-			"refs/heads/dream/*",
+			"refs/heads/dream/**",
 		]);
 		expect(toArgv({ kind: "branch-delete", name: "dream/mbp/x", force: true })).toEqual([
 			"branch",
