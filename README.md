@@ -906,7 +906,7 @@ muninn serve-cron                                 # prints a crontab / launchd /
 Settings live in pi's settings under `muninn` (global) and `.pi/settings.json` (project,
 tighten-only):
 
-```jsonc
+```json
 {
   "muninn": {
     "scopes": { "global": true, "project": "auto", "team": { "remote": null, "pin": null } },
@@ -915,10 +915,10 @@ tighten-only):
     "recall": {
       "factsPerTurn": 8, "tokenBudget": 1500, "indexTier": "auto",
       "snapshotLines": { "total": 200, "global": 120, "project": 60, "team": 20 },
-      "embedding": null, "rerank": null   // { provider, model } — Tier 1 only
+      "embedding": null, "rerank": null
     },
     "dream": {
-      "model": null,                  // provider/model id; null = session model
+      "model": null,
       "auto": false, "autoRemember": false,
       "minHours": 24, "minEntries": 5, "maxEntriesBeforeForce": 50,
       "evalSessions": 5, "canaries": "eval/canaries.md",
@@ -927,6 +927,19 @@ tighten-only):
   }
 }
 ```
+
+`recall.embedding` and `recall.rerank` take `{ provider, model }` and are Tier 1 only;
+`dream.model` is a provider/model id, `null` meaning the session model. Strict JSON only —
+pi parses `settings.json` with plain `JSON.parse`, so a comment breaks the file for pi as
+well as for Muninn.
+
+**Project settings are tighten-only.** A `.pi/settings.json` travels with the repository, so
+a project may lower a budget, disable a capture kind, pin a lower index tier or turn a scope
+off — never the reverse. Fields where a project value would widen behaviour in a way no
+ordering captures are **global-only** and ignored with a warning when a project sets them:
+`sync.remote` (where memory is pushed), `recall.embedding` / `recall.rerank` (where memory
+is sent), `scopes.team.*`, and every `dream` field (which model reads the whole store).
+Violations are reported in `/muninn` and on stderr, never applied silently.
 
 ---
 

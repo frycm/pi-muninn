@@ -1,0 +1,33 @@
+{
+	"name": "pi-muninn",
+	"version": "0.1.0",
+	"description": "Journal, dream, remember — offline long-term memory for pi",
+	"type": "module",
+	"license": "MIT",
+	"main": "./src/index.ts",
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"scripts": {
+		"check": "tsc --noEmit && biome check src test",
+		"format": "biome check --write src test",
+		"test": "vitest --run",
+		"test:unit": "vitest --run test/unit",
+		"test:integration": "vitest --run --passWithNoTests test/integration"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.84.2 <0.85.0"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.3.11",
+		"@earendil-works/pi-coding-agent": "0.84.2",
+		"@types/node": "22.10.2",
+		"typescript": "5.7.2",
+		"vitest": "2.1.8"
+	}
+}
