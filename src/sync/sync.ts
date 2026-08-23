@@ -285,26 +285,45 @@ async function currentBranch(storePath: string): Promise<string> {
 }
 
 /**
- * A message when the remote holds a *different* store, or nothing.
+ * A message when the remote is not this store's, or nothing.
  *
  * The store id is the identity guard the format already has, and this is the
- * one place it can be checked before anything is written: after the fetch,
- * before the rebase. A remote with no `store.md` yet is not a mismatch — that
- * is a remote waiting for its first push.
+ * one place to check it: after the fetch, before anything is written. The
+ * check is *positive* — the remote must prove it is the same store — because
+ * every way of failing to prove it is a way of pushing memory somewhere it
+ * does not belong:
+ *
+ *  - no `store.md` at all: an existing branch that is not a muninn store, and
+ *    rebasing onto it would graft the store into an unrelated history;
+ *  - an unreadable one: a store this Muninn cannot reason about;
+ *  - a different id: two stores, one remote, a typo.
+ *
+ * The genuine first push has no `origin/<branch>` ref at all and never reaches
+ * this function.
  */
 async function storeMismatch(storePath: string, remoteRef: string): Promise<string | undefined> {
-	const ours = parseStoreMd(readFileSync(join(storePath, "store.md"), "utf-8")).store;
-	if (!ours) return undefined;
-
-	let theirs: StoreMd | undefined;
+	let ours: StoreMd | undefined;
 	try {
-		theirs = parseStoreMd((await git(storePath, { kind: "show-file", ref: remoteRef, path: "store.md" })).stdout).store;
+		ours = parseStoreMd(readFileSync(join(storePath, "store.md"), "utf-8")).store;
 	} catch {
-		return undefined;
+		ours = undefined;
 	}
-	if (!theirs || theirs.store === ours.store) return undefined;
+	if (!ours) return `${storePath} has no readable store.md; refusing to sync a store this Muninn cannot identify`;
 
-	return `${remoteRef} holds a different store (${theirs.store}, not ${ours.store}); refusing to merge two stores' histories`;
+	let text: string;
+	try {
+		text = (await git(storePath, { kind: "show-file", ref: remoteRef, path: "store.md" })).stdout;
+	} catch {
+		return `${remoteRef} exists but has no store.md; it is not this store's remote, and syncing would graft ${ours.store} into an unrelated history`;
+	}
+
+	const theirs = parseStoreMd(text).store;
+	if (!theirs)
+		return `store.md on ${remoteRef} is unreadable; refusing to rebase onto a store that cannot be identified`;
+	if (theirs.store !== ours.store) {
+		return `${remoteRef} holds a different store (${theirs.store}, not ${ours.store}); refusing to merge two stores' histories`;
+	}
+	return undefined;
 }
 
 async function refExists(storePath: string, ref: string): Promise<boolean> {

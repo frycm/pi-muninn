@@ -143,6 +143,53 @@ describe("sync", () => {
 		expect(readStoreJournal(two).entries).toHaveLength(1);
 	});
 
+	it("refuses a remote whose branch is not a muninn store at all", async () => {
+		// An existing branch with no `store.md` is not a young remote — a young
+		// remote has no branch. Rebasing onto it would graft the store into
+		// someone else's history and push the result.
+		const someone = join(root, "someone-elses-work");
+		mkdirSync(someone, { recursive: true });
+		await git(someone, ["init", "--quiet", "--initial-branch=main"]);
+		await git(someone, ["config", "user.email", "dev@example.com"]);
+		await git(someone, ["config", "user.name", "Dev"]);
+		writeFileSync(join(someone, "README.md"), "# not a memory store\n");
+		await git(someone, ["add", "README.md"]);
+		await git(someone, ["commit", "--quiet", "-m", "initial"]);
+		await git(someone, ["push", "--quiet", remote, "HEAD:main"]);
+
+		await ensureStore(one, { host: hostOne });
+		await note(one, hostOne, "Must not end up in someone else's repository.");
+		const result = await sync({ storePath: one, hostId: hostOne.id, hostName: hostOne.name, remote });
+
+		expect(result.problem).toContain("has no store.md");
+		expect(result.rebased).toBe(false);
+		expect(result.pushed).toBe(false);
+		// The remote still holds exactly what it held.
+		const files = await git(remote, ["ls-tree", "--name-only", "main"]);
+		expect(files.trim()).toBe("README.md");
+	});
+
+	it("refuses a remote whose store.md cannot be read", async () => {
+		const someone = join(root, "malformed-store");
+		mkdirSync(someone, { recursive: true });
+		await git(someone, ["init", "--quiet", "--initial-branch=main"]);
+		await git(someone, ["config", "user.email", "dev@example.com"]);
+		await git(someone, ["config", "user.name", "Dev"]);
+		writeFileSync(join(someone, "store.md"), "# muninn store\n\nschema: not-a-number\n");
+		await git(someone, ["add", "store.md"]);
+		await git(someone, ["commit", "--quiet", "-m", "initial"]);
+		await git(someone, ["push", "--quiet", remote, "HEAD:main"]);
+
+		await ensureStore(one, { host: hostOne });
+		await note(one, hostOne, "Also must not be pushed.");
+		const result = await sync({ storePath: one, hostId: hostOne.id, hostName: hostOne.name, remote });
+
+		expect(result.problem).toContain("unreadable");
+		expect(result.pushed).toBe(false);
+		const files = await git(remote, ["ls-tree", "--name-only", "main"]);
+		expect(files.trim()).toBe("store.md");
+	});
+
 	it("stops on a conflict it does not understand, leaving the store where it was", async () => {
 		await seedOne();
 		await git(root, ["clone", "--quiet", remote, two]);

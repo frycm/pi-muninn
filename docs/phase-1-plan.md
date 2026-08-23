@@ -613,7 +613,13 @@ looked closed and was not.
 - **Sync trusted any remote that parsed.** A mistyped remote was resolved by rebasing one
   store's history onto another's and pushing the result. The store id has been the identity
   guard all along; sync now checks it after the fetch and before the rebase, and the
-  registry merge refuses a foreign store as well.
+  registry merge refuses a foreign store as well. The first fix was still too generous — it
+  treated an *unreadable* remote `store.md` as compatible, so an existing branch that was
+  not a store at all (a repository with a `README.md` in it) was rebased onto and pushed
+  into. The check is positive now: once `origin/<branch>` exists, the remote must **prove**
+  it is this store — a parseable `store.md` with a matching id — and no `store.md`, an
+  unreadable one and a different id are all refusals. The genuine first push has no remote
+  ref at all and never reaches the check.
 
 **Four ways to be quietly wrong, closed.**
 
@@ -628,10 +634,11 @@ looked closed and was not.
 - **`capture.toolFacts` defaulted to on while nothing read it**, and `/muninn` listed tool
   facts among the capture kinds. It defaults off, is not listed, and warns if switched on.
 
-The pattern worth naming: every one of the four security findings was a check that existed
-and was one abstraction short — a prefix test that was not canonical, a repository test that
+The pattern worth naming, and the reason the store-identity check needed two passes: every
+one of these was a check that existed and was one abstraction short — a prefix test that was not canonical, a repository test that
 answered a neighbouring question, a parse that was mistaken for an identity check, an
-allow-list that was never built because the value looked like it came from us. Comments
+allow-list that was never built because the value looked like it came from us, a guard
+written as "prove it is different" where only "prove it is the same" is safe. Comments
 asserting a boundary is enforced are not enforcement, and three of these had one.
 
 ## Test strategy
