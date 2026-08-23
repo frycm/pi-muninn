@@ -320,8 +320,20 @@ export function checkFactList(
 			refusals.push({ claim: "(refused: would carry a secret)", rule: "secret" });
 			continue;
 		}
-		const supersedes = (item.supersedes ?? []).filter((id) => known.has(id));
-		kept.push({ ...item, evidence, ...(supersedes.length > 0 ? { supersedes } : {}) });
+		// `{id, claim}` together: the prompt asks for `{id}` alone to mean "leave
+		// this one", but the premise is a 4B model and every other way of not
+		// complying has a named refusal. Read as "replace that fact with this
+		// claim" — the likely intent, and safe, because supersession keeps the
+		// original. Taken as an addition it silently doubled the topic on every
+		// dream that did it.
+		const named = item.id !== undefined && known.has(item.id) ? [item.id] : [];
+		const supersedes = [...new Set([...named, ...(item.supersedes ?? [])])].filter((id) => known.has(id));
+		kept.push({
+			...item,
+			evidence,
+			...(supersedes.length > 0 ? { supersedes } : {}),
+			...(named.length > 0 && item.reason === undefined ? { reason: "restated by a later dream" } : {}),
+		});
 	}
 
 	const applied = applyFactList(job.file, kept, options);

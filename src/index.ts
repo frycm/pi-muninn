@@ -39,7 +39,7 @@ import { erase, eraseImpact } from "./dream/erase.ts";
 import type { DreamModel } from "./dream/model.ts";
 import { latestReport, readTopics } from "./dream/orient.ts";
 import { readMarker, remember, resolveConflict } from "./dream/remember.ts";
-import { newStoreId } from "./ids.ts";
+
 import { SessionIndexes } from "./index/search.ts";
 import { type AppendResult, appendEntry } from "./journal/append.ts";
 import { readStoreJournal } from "./journal/read.ts";
@@ -54,7 +54,9 @@ import { appendSnapshot, readSnapshot, type Snapshot } from "./recall/snapshot.t
 import { buildSessionContext, journalStats, type SessionContext } from "./session.ts";
 import { type DreamStats, formatStatus, formatStatusLine, formatWarning } from "./status.ts";
 import { storeIdentity } from "./store/init.ts";
+import { projectStoreSlug } from "./store/paths.ts";
 import type { CaptureTarget } from "./store/scopes.ts";
+import { parseStoreMd } from "./store/store-md.ts";
 import { describeSync, type SyncResult, sync } from "./sync/sync.ts";
 import { memoryNoteTool } from "./tools/memory-note.ts";
 import { memoryReadTool } from "./tools/memory-read.ts";
@@ -377,7 +379,11 @@ export default function (pi: ExtensionAPI): void {
 			scope: active,
 			agentDir: getAgentDir(),
 			host: current.host,
-			storeId: newStoreId(),
+			// The store's own id, not a fresh one: a new uuid per dream gives
+			// every dream its own worktree parent directory, and the collector
+			// works through `worktree list` and never reclaims the empty shells.
+			storeId: storeIdOf(active.path),
+
 			settings: current.loaded.settings,
 			now: new Date(),
 			progress: options.progress,
@@ -416,6 +422,15 @@ export default function (pi: ExtensionAPI): void {
 				return messageText(reply as never);
 			},
 		};
+	};
+
+	/** A store's id, for keying its worktrees. Falls back to a path hash. */
+	const storeIdOf = (path: string): string => {
+		try {
+			return parseStoreMd(readFileSync(join(path, "store.md"), "utf-8")).store?.store ?? projectStoreSlug(path);
+		} catch {
+			return projectStoreSlug(path);
+		}
 	};
 
 	const readIfPresent = (

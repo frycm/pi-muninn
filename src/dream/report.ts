@@ -104,6 +104,11 @@ export function formatReport(report: DreamReport): string {
 		.join(" · ");
 	if (through !== "") out.push(`journal_through: ${through}`);
 	if (report.heldOut.length > 0) out.push(`held_out: ${report.heldOut.join(", ")}`);
+	// The count, in the front matter, because the body is prose and is not read
+	// back — and a listing that could never show "N blocking" would be quietly
+	// telling everyone every dream was clean.
+	const blocking = report.lint.filter((finding) => finding.blocking).length;
+	if (blocking > 0) out.push(`blocking: ${blocking}`);
 	out.push(`started: ${report.started}`);
 	if (report.finished) out.push(`finished: ${report.finished}`);
 	out.push("---", "", `# Dream ${report.stamp}`, "");
@@ -191,6 +196,17 @@ export function parseReport(text: string, stamp: string): DreamReport | undefine
 	if (previous !== undefined && previous !== "") report.previousInputHead = previous;
 	const finished = fields.get("finished");
 	if (finished !== undefined && finished !== "") report.finished = finished;
+
+	const blocking = Number.parseInt(fields.get("blocking") ?? "0", 10);
+	if (Number.isFinite(blocking) && blocking > 0) {
+		// Reconstructed as anonymous findings: the count is what a listing needs,
+		// and the detail is in the body where a person reads it.
+		report.lint = Array.from({ length: blocking }, () => ({
+			blocking: true,
+			rule: "lint",
+			message: "see the report body",
+		}));
+	}
 
 	const through = fields.get("journal_through");
 	if (through !== undefined && through !== "") {

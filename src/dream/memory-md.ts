@@ -47,11 +47,24 @@ export interface MemoryResult {
 	dropped: string[];
 }
 
-/** Everything a person wrote: the file up to the marker, or all of it. */
+/**
+ * Everything a person wrote: the file up to the marker.
+ *
+ * With no marker — a store from before dreams existed — the split falls back to
+ * the first generated heading. Keeping the whole file would otherwise duplicate
+ * a `## Topics` somebody had written by hand: their stale lines above the
+ * marker, the dream's below, both spending the same line budget, and every
+ * hand-written entry an orphan lint finding.
+ */
 export function preambleOf(current: string): string {
-	const at = current.indexOf(GENERATED_MARKER);
-	if (at < 0) return current.trimEnd();
-	return current.slice(0, at).trimEnd();
+	const marker = current.indexOf(GENERATED_MARKER);
+	if (marker >= 0) return current.slice(0, marker).trimEnd();
+
+	const headings = [current.indexOf(`\n${TOPICS_HEADING}`), current.indexOf(`\n${RULES_HEADING}`)].filter(
+		(at) => at >= 0,
+	);
+	if (headings.length === 0) return current.trimEnd();
+	return current.slice(0, Math.min(...headings)).trimEnd();
 }
 
 /**

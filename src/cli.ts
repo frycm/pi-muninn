@@ -10,7 +10,8 @@
  * Runnable straight from source: Node ≥ 22.19 strips the types, which is also
  * how pi loads the extension itself.
  */
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_DIR, resolveAgentDir } from "./agent-dir.ts";
 import { dream } from "./dream/dream.ts";
@@ -22,7 +23,7 @@ import { formatQualify, qualify } from "./dream/qualify.ts";
 import { remember, resolveConflict } from "./dream/remember.ts";
 import { reportTotals } from "./dream/report.ts";
 import { gitToplevel } from "./git.ts";
-import { newStoreId } from "./ids.ts";
+
 import { claimsOf } from "./journal/format.ts";
 import { readStoreJournal } from "./journal/read.ts";
 import type { MuninnSettings } from "./settings.ts";
@@ -30,8 +31,9 @@ import { loadSettings } from "./settings-io.ts";
 import type { HostIdentity } from "./store/host.ts";
 import { loadHostIdentity } from "./store/host.ts";
 import { storeIdentity } from "./store/init.ts";
-import { storeExistsAt } from "./store/paths.ts";
+import { projectStoreSlug, storeExistsAt } from "./store/paths.ts";
 import { type ActiveScope, type CaptureTarget, resolveScopes } from "./store/scopes.ts";
+import { parseStoreMd } from "./store/store-md.ts";
 import { describeSync, sync } from "./sync/sync.ts";
 import { MUNINN_VERSION } from "./version.ts";
 
@@ -173,6 +175,15 @@ export async function runCli(argv: readonly string[], cwd: string = process.cwd(
 // Dreaming, from the shell
 // ---------------------------------------------------------------------------
 
+/** A store's id, for keying its worktrees. Falls back to a path hash. */
+function storeIdOf(path: string): string {
+	try {
+		return parseStoreMd(readFileSync(join(path, "store.md"), "utf-8")).store?.store ?? projectStoreSlug(path);
+	} catch {
+		return projectStoreSlug(path);
+	}
+}
+
 interface SubcommandContext {
 	host: HostIdentity;
 	settings: MuninnSettings;
@@ -234,7 +245,9 @@ async function runDream(
 		scope,
 		agentDir,
 		host,
-		storeId: newStoreId(),
+		// The store's own id: a fresh one per dream leaves an unreclaimed
+		// worktree parent directory behind every time.
+		storeId: storeIdOf(scope.path),
 		settings,
 		now: new Date(),
 		...(model ? { model } : {}),

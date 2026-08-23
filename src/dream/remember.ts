@@ -27,14 +27,14 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
 import { currentBranch, DERIVED_PATHS, GitError, type GitIdentity, git } from "../git.ts";
-import { claimsOf } from "../journal/format.ts";
+import { claimsOf, type Source } from "../journal/format.ts";
 import { readStoreJournal } from "../journal/read.ts";
 import { appendSupersessions } from "../journal/supersessions.ts";
 import type { HostIdentity } from "../store/host.ts";
 import { STORE_BRANCH, storeIdentity } from "../store/init.ts";
 import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import type { ActiveScope } from "../store/scopes.ts";
-import { emptyTopic, formatTopic, parseTopic, type TopicFile } from "../topics/format.ts";
+import { allFacts, emptyTopic, formatTopic, parseTopic, type TopicFile } from "../topics/format.ts";
 import { runningDream } from "./dream.ts";
 import { mergeDream, mergeTopic } from "./merge.ts";
 import type { DreamModel } from "./model.ts";
@@ -469,12 +469,20 @@ export async function resolveConflict(conflict: RebaseConflict, options: Resolve
 	try {
 		const orientation = orient(worktree.storePath);
 		const entries = readStoreJournal(worktree.storePath).entries;
-		const sources = new Map<string, string>();
+		const sources = new Map<string, Source>();
 		const dates = new Map<string, string>();
 		for (const entry of entries) {
 			for (const claim of claimsOf(entry)) {
 				sources.set(claim.id, entry.source);
 				dates.set(claim.id, entry.date);
+			}
+		}
+		// As in `dream.ts`: a fact's own source is the class its evidence rests
+		// on, and without it a claim cited only through an existing fact has no
+		// known source and escapes the external quarantine.
+		for (const topic of orientation.topics.values()) {
+			for (const fact of allFacts(topic)) {
+				for (const id of fact.evidence) if (!sources.has(id)) sources.set(id, fact.source);
 			}
 		}
 
@@ -501,7 +509,7 @@ export async function resolveConflict(conflict: RebaseConflict, options: Resolve
 					{
 						model: options.model,
 						now: options.now,
-						sourceOf: (id) => sources.get(id) as never,
+						sourceOf: (id) => sources.get(id),
 						dateOf: (id) => dates.get(id),
 						refused: orientation.superseded,
 						...(options.signal ? { signal: options.signal } : {}),

@@ -222,6 +222,19 @@ describe("a job that goes badly is refused by code, not by hope", () => {
 		expect(outcome.ok === false && outcome.reason).toContain("3 of 8 facts");
 	});
 
+	it("reads an id and a claim together as a replacement, not a second copy", async () => {
+		// A small model will do this, and taken as an addition it doubles the
+		// topic on every dream that does it.
+		const outcome = await consolidate(job(), {
+			...OPTIONS,
+			model: scripted(block([{ id: EXISTING, claim: "Tests run with pnpm test, restated.", evidence: [NEW_CLAIM] }])),
+		});
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(outcome.applied.topic.facts).toHaveLength(1);
+		expect(outcome.applied.topic.superseded.map((fact) => fact.id)).toEqual([EXISTING]);
+	});
+
 	it("leaves a fact alone when the model only names its id", async () => {
 		const outcome = await consolidate(job(), { ...OPTIONS, model: scripted(block([{ id: EXISTING }])) });
 		expect(outcome.ok).toBe(true);

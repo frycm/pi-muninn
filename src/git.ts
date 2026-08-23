@@ -100,8 +100,8 @@ export type GitCommand =
 	| { kind: "sparse-checkout-set"; paths: string[] }
 	/** Populate a worktree created with `--no-checkout`. */
 	| { kind: "checkout-head" }
-	/** Branches under a prefix, newest commit first. */
-	| { kind: "branch-list"; prefix: string }
+	/** Branches under a prefix, newest commit first. `remote` lists `refs/remotes/<remote>/…`. */
+	| { kind: "branch-list"; prefix: string; remote?: string }
 	| { kind: "branch-delete"; name: string; force: boolean }
 	/**
 	 * Advance a branch to a descendant, or fail.
@@ -362,12 +362,15 @@ export function toArgv(command: GitCommand): string[] {
 			return ["sparse-checkout", "set", "--no-cone", ...command.paths];
 		case "checkout-head":
 			return ["checkout", "--quiet"];
-		case "branch-list":
+		case "branch-list": {
 			assertName("branch", command.prefix);
+			if (command.remote !== undefined) assertName("remote", command.remote);
 			// `**`, not `*`: git's ref globbing does not let a single star cross a
 			// `/`, and a dream branch is `dream/<host>/<stamp>` — two levels down.
 			// With one star this matches nothing at all, silently.
-			return ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", `refs/heads/${command.prefix}**`];
+			const namespace = command.remote === undefined ? "refs/heads" : `refs/remotes/${command.remote}`;
+			return ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", `${namespace}/${command.prefix}**`];
+		}
 		case "branch-delete":
 			assertName("branch", command.name);
 			return ["branch", command.force ? "-D" : "-d", command.name];

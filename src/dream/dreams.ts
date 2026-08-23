@@ -62,17 +62,19 @@ export async function rememberedDreams(storePath: string, limit = 50): Promise<M
 export async function listDreams(storePath: string): Promise<DreamListing[]> {
 	const listings = new Map<string, DreamListing>();
 
-	let branches: string[] = [];
-	try {
-		branches = (await git(storePath, { kind: "branch-list", prefix: DREAM_BRANCH_PREFIX })).stdout
-			.split("\n")
-			.map((line) => line.trim())
-			.filter((line) => line !== "");
-	} catch {
-		branches = [];
-	}
+	// Local *and* fetched. A dream branch travels on sync, so the recommended
+	// deployment — the server dreams overnight, the laptop remembers — depends
+	// on `origin/dream/…` being listed at all.
+	const branches = [
+		...(await branchesUnder(storePath, DREAM_BRANCH_PREFIX)),
+		...(await branchesUnder(storePath, DREAM_BRANCH_PREFIX, "origin")),
+	];
 	for (const branch of branches) {
 		const stamp = branch.slice(branch.lastIndexOf("/") + 1);
+		// A local branch wins over the same dream fetched from the remote: it is
+		// the one `remember` can check out.
+		if (listings.has(stamp) && !branch.startsWith("origin/")) continue;
+		if (listings.has(stamp) && branch.startsWith("origin/")) continue;
 		const report = await reportOn(storePath, branch, stamp);
 		listings.set(stamp, { stamp, branch, remembered: false, forgotten: false, ...report });
 	}
@@ -91,6 +93,22 @@ export async function listDreams(storePath: string): Promise<DreamListing[]> {
 	}
 
 	return [...listings.values()].sort((a, b) => (a.stamp < b.stamp ? 1 : a.stamp > b.stamp ? -1 : 0));
+}
+
+async function branchesUnder(storePath: string, prefix: string, remote?: string): Promise<string[]> {
+	try {
+		const { stdout } = await git(storePath, {
+			kind: "branch-list",
+			prefix,
+			...(remote !== undefined ? { remote } : {}),
+		});
+		return stdout
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => line !== "");
+	} catch {
+		return [];
+	}
 }
 
 /** A dream's report as of its branch, since it is not on `main` until remembered. */

@@ -31,7 +31,7 @@ import { dirname, join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
 import { jaccard } from "../capture/outcome.ts";
 import { DERIVED_PATHS, GitError, type GitIdentity, git } from "../git.ts";
-import { claimsOf } from "../journal/format.ts";
+import { claimsOf, type Source } from "../journal/format.ts";
 import { type JournalEntryWithContext, readStoreJournal } from "../journal/read.ts";
 import { appendSupersessions, readSupersessions } from "../journal/supersessions.ts";
 import type { MuninnSettings } from "../settings.ts";
@@ -39,7 +39,7 @@ import type { HostIdentity } from "../store/host.ts";
 import { storeIdentity } from "../store/init.ts";
 import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import type { ActiveScope } from "../store/scopes.ts";
-import { emptyTopic, formatTopic } from "../topics/format.ts";
+import { allFacts, emptyTopic, formatTopic } from "../topics/format.ts";
 import { type ConsolidateJob, consolidate } from "./consolidate.ts";
 import { ECHO_THRESHOLD, type GatherResult, gather } from "./gather.ts";
 import { lint } from "./lint.ts";
@@ -405,7 +405,7 @@ async function consolidateAll(
 	// Source and date per journal claim, for the fact's own source and for
 	// turning "yesterday" into a date. Built once: every job asks about the
 	// same claims.
-	const sources = new Map<string, string>();
+	const sources = new Map<string, Source>();
 	const dates = new Map<string, string>();
 	for (const job of gathered.jobs) {
 		for (const entry of job.entries) {
@@ -413,6 +413,17 @@ async function consolidateAll(
 				sources.set(claim.id, entry.source);
 				dates.set(claim.id, entry.date);
 			}
+		}
+	}
+	// The allow-list also admits the evidence the topic's own facts stand on,
+	// and those claims are not in any job's entries — so without this their
+	// source is unknown, `sourceFor` falls back to `agent`, and a fact resting
+	// only on fetched content lands in `## Facts` instead of the quarantine. A
+	// fact's own `source` is exactly the class its evidence rests on, so it is
+	// the right answer to carry forward.
+	for (const topic of orientation.topics.values()) {
+		for (const fact of allFacts(topic)) {
+			for (const id of fact.evidence) if (!sources.has(id)) sources.set(id, fact.source);
 		}
 	}
 
@@ -438,7 +449,7 @@ async function consolidateAll(
 		const outcome = await consolidate(job, {
 			model,
 			now: options.now,
-			sourceOf: (id) => sources.get(id) as never,
+			sourceOf: (id) => sources.get(id),
 			dateOf: (id) => dates.get(id),
 			refused,
 			...(options.signal ? { signal: options.signal } : {}),

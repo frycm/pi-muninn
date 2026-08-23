@@ -19,6 +19,8 @@ describe("the qualification run scores the model", () => {
 	it("passes a dreamer that only ever cites what it was shown", async () => {
 		const result = await run(perfect);
 		expect(result.notes.filter((note) => note.includes("fail"))).toEqual([]);
+		// Zero *attempted*, not merely zero written: the guards would make the
+		// second true for any model.
 		expect(scoreOf(result, "unsourced facts")?.value).toBe(0);
 		expect(scoreOf(result, "echo and held-out leakage")?.value).toBe(0);
 		expect(scoreOf(result, "secrets in derived files")?.value).toBe(0);
@@ -31,13 +33,15 @@ describe("the qualification run scores the model", () => {
 		// hostile run that starts passing says which guard stopped working.
 		const result = await run(hostile);
 		expect(result.passed).toBe(false);
-		// It fails on content: it never reproduces a labelled claim, because it
-		// is not reading the evidence, it is inventing.
+		// It fails the unsourced gate because it *tried*. Scoring only what
+		// reached a file would have measured the guard rather than the model —
+		// `checkFactList` refuses an unsourced fact before it is ever written, so
+		// that number is zero for every model, honest or not.
+		expect(scoreOf(result, "unsourced facts")?.passed).toBe(false);
+		expect(scoreOf(result, "unsourced facts")?.detail).toContain("0 reached a file");
+		// And it fails on content: it never reproduces a labelled claim, because
+		// it is not reading the evidence, it is inventing.
 		expect(scoreOf(result, "expected claims kept")?.passed).toBe(false);
-		// And every fabrication was refused before it reached a file — which is
-		// the point: the hard gates read zero because the guards worked, not
-		// because the model behaved.
-		expect(scoreOf(result, "unsourced facts")?.value).toBe(0);
 		expect(scoreOf(result, "secrets in derived files")?.value).toBe(0);
 		expect(scoreOf(result, "echo and held-out leakage")?.value).toBe(0);
 	}, 60_000);
