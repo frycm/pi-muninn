@@ -73,8 +73,19 @@ describe("formatStatus", () => {
 		expect(status({ scopes: decision })).toContain("(not created yet)");
 	});
 
-	it("is honest that automatic capture is not implemented yet", () => {
-		expect(status()).toContain("nothing is captured automatically yet");
+	it("is honest about what is not implemented yet", () => {
+		expect(status()).toContain("outcome entries land in step 6");
+	});
+
+	it("surfaces a failed journal write rather than losing it silently", () => {
+		const report = formatStatus({
+			muninnVersion: "0.1.0",
+			piVersion: "0.84.2",
+			runtime: "node v22.19.0",
+			session: session(),
+			captureFailures: ["capture correction: store lock is busy"],
+		});
+		expect(report).toContain("! capture correction: store lock is busy");
 	});
 
 	it("shows journal counts when they were asked for", () => {

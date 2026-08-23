@@ -16,6 +16,8 @@ export interface StatusInput {
 	session: SessionContext;
 	/** Per-scope journal counts. Computed on demand, so absent means "not asked for". */
 	journal?: ScopeJournalStats[];
+	/** Journal writes that failed this session. Silence here would be the worst outcome. */
+	captureFailures?: string[];
 }
 
 function describeSource(source: SettingsSource): string {
@@ -55,7 +57,8 @@ export function formatStatus(input: StatusInput): string {
 		settings.capture.toolFacts ? "tool facts" : null,
 	].filter((kind): kind is string => kind !== null);
 	lines.push(`capture   ${captureKinds.length > 0 ? captureKinds.join(", ") : "nothing (all kinds disabled)"}`);
-	lines.push("          nothing is captured automatically yet — that lands in steps 5-6 of Phase 1");
+	lines.push("          outcome entries land in step 6 of Phase 1");
+	for (const failure of input.captureFailures ?? []) lines.push(`          ! ${failure}`);
 
 	if (input.journal) {
 		if (input.journal.length === 0) {

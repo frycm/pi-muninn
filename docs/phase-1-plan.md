@@ -200,7 +200,7 @@ produces zero false negatives and a documented false-positive rate under 1 %.
 gate is arithmetically a demand for zero — one false positive would be 2.8 % — and it is
 stated as a rate so the corpus can grow without the gate loosening.
 
-### 5. Capture — explicit and corrections (1 d)
+### 5. Capture — explicit and corrections (1 d) — **done**
 
 - `session-state.ts`: on `session_start` (`reason` in `startup|new|resume|fork`), rebuild
   state by scanning `ctx.sessionManager.getBranch()` for `customType: "muninn-state"`
@@ -226,6 +226,17 @@ stated as a rate so the corpus can grow without the gate loosening.
 **Done when:** a fixture of 60 user turns (20 explicit, 20 corrections, 20 neither)
 classifies with zero false positives on the "neither" set. Entries land in the capture
 target and `session-state` lists their ids after a `/resume`.
+**Met:** 0 false positives on the 20 "neither" turns, and 20/20 on each of the other two
+sets. Both halves are also verified against a real `pi` process in
+`test/integration/capture.test.ts`, including that a `--continue` run stays in the same
+task group.
+
+Two deviations: `channel` comes from `ctx.mode` (`tui` | `rpc` | `json` | `print`), which
+states the run mode directly, rather than being inferred from `ctx.hasUI`. And appends are
+queued rather than awaited inside pi's event handlers — an append normally takes
+milliseconds but can wait seconds on a contended store lock, and stalling a keystroke to
+record a note about it is the wrong trade. `session_shutdown` flushes the queue, closing
+the window where a queued entry could be lost to process exit.
 
 ### 6. Capture — accumulate, outcome, pre-compaction (2 d)
 
@@ -378,15 +389,24 @@ both sides, including a concurrent-registration conflict in `store.md`.
 | Layer | Runs | Covers |
 |---|---|---|
 | Unit (vitest, no pi) | every push, Node + Bun | format round-trip, ids, lock, redaction corpus, classifier fixtures, chunker, search ranking, git allow-list |
-| Integration (vitest + pi SDK, fake provider, scratch `HOME`) | every push, Node | capture end-to-end, recall injection and prefix stability, compaction path, commands, tools |
+| Integration (vitest + a real `pi` process, scripted HTTP provider, scratch `HOME`) | every push, Node | capture end-to-end, recall injection and prefix stability, compaction path, commands, tools |
 | Acceptance (two scratch `HOME`s, bare remote) | every push, Node | the README's Phase 1 "done when", literally |
 | Concurrency (multi-process) | every push | 8 × 50 appends |
 
-The fake provider follows pi's own test pattern: a scripted `streamFn` handed to the
-session (see `../pi/packages/coding-agent/test/agent-session-retry.test.ts:85` and
-`agent-session-compaction.test.ts`), which returns canned assistant messages and tool
-calls without any network. Muninn keeps its own small helper rather than importing pi test
-internals across the package boundary.
+**The fake provider is an HTTP server, not an in-process double.** pi's own tests script a
+model by handing `Agent` a `streamFn`, but that route is closed to an extension: neither
+`createAgentSession` nor `ProviderConfig.streamSimple` is reachable without constructing an
+`AssistantMessageEventStream`, and pi does not re-export it — it lives in
+`@earendil-works/pi-ai`, shrinkwrapped inside pi's own `node_modules`. So
+`test/fixtures/mock-provider.ts` serves a scripted OpenAI-compatible
+`/v1/chat/completions` endpoint and a small extension registers it with
+`pi.registerProvider`. All of that is pi's public configuration surface, which keeps the
+harness from breaking on a pi upgrade — and it exercises pi's real provider path rather
+than bypassing it.
+
+Two practical notes for anyone extending the harness: pi blocks on stdin, so a child must
+be spawned with `stdio: ["ignore", …]`, and `--continue` resumes the *most recent* session,
+not the first.
 
 ## Risks specific to Phase 1
 

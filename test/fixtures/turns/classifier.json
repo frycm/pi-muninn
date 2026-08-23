@@ -1,0 +1,123 @@
+{
+	"_comment": "60 user turns from realistic coding sessions. 'assistant' is what the agent said immediately before, which corrections need and the other kinds may ignore. The gate is zero false positives on 'neither'.",
+	"explicit": [
+		{ "user": "Remember that we deploy from the release branch, never from main." },
+		{ "user": "remember: the staging database resets every night at 03:00 UTC" },
+		{ "user": "Please remember that Anna owns the billing service now." },
+		{ "user": "Note that the integration suite needs docker compose up first." },
+		{ "user": "note: pnpm workspaces need --filter to run a single package's tests" },
+		{ "user": "Make a note that the CI runner has no TTY." },
+		{ "user": "From now on, run the formatter before committing." },
+		{ "user": "From now on use conventional commit messages in this repo." },
+		{ "user": "Going forward, put integration tests under test/integration." },
+		{ "user": "Keep in mind that the arm64 build needs a different base image." },
+		{ "user": "Please keep in mind we cannot upgrade past Node 22 until Q3." },
+		{ "user": "Don't forget the migration has to run before the deploy." },
+		{ "user": "don't forget that prod uses a read replica for analytics queries" },
+		{ "user": "For future reference, the flaky test is always test/e2e/checkout.spec.ts." },
+		{ "user": "For later reference: the API gateway strips custom headers." },
+		{ "user": "Always run the tests with --run so watch mode never starts in CI." },
+		{ "user": "Always use pnpm in this repo, not npm." },
+		{ "user": "Never commit directly to main, we use PRs for everything." },
+		{ "user": "Never use the sync fs APIs in the request path." },
+		{ "user": "Remember this:\n- deploys need the VPN\n- rollbacks are one command, `make rollback`" }
+	],
+	"corrections": [
+		{
+			"assistant": "I'll run npm install to add the dependency.",
+			"user": "No, use pnpm — this repo is a pnpm workspace."
+		},
+		{
+			"assistant": "Running the test suite with vitest in watch mode.",
+			"user": "no, watch mode hangs in CI. use --run"
+		},
+		{
+			"assistant": "I've added the config to package.json.",
+			"user": "Actually that belongs in vitest.config.ts, not package.json."
+		},
+		{
+			"assistant": "I'll create the file at src/utils/helpers.ts.",
+			"user": "Actually we don't have a utils directory, put it in src/lib."
+		},
+		{ "assistant": "I'll delete the old migration files.", "user": "Don't do that — migrations are append-only here." },
+		{ "assistant": "Let me force push to clean up the history.", "user": "Don't force push to shared branches." },
+		{
+			"assistant": "The tests are failing because of a missing import.",
+			"user": "That's wrong, the import is there. It's the DATABASE_URL that's unset."
+		},
+		{
+			"assistant": "I'll use the default export from the module.",
+			"user": "That's not right, the module only has named exports."
+		},
+		{
+			"assistant": "I've set the timeout to 5 seconds.",
+			"user": "Wrong, it needs to be 30 for the integration suite."
+		},
+		{
+			"assistant": "I'll bump the version to 2.0.0.",
+			"user": "Instead bump it to 1.5.0, this isn't a breaking change."
+		},
+		{
+			"assistant": "I've refactored the whole auth module.",
+			"user": "Undo that, I only wanted the token refresh fixed."
+		},
+		{
+			"assistant": "I renamed the columns in the schema.",
+			"user": "revert the rename, other services read those columns"
+		},
+		{
+			"assistant": "I'll add the API key to the .env file so tests can read it.",
+			"user": "Wait, don't put the API key in a file that gets committed."
+		},
+		{
+			"assistant": "Setting up the Postgres connection on port 5432.",
+			"user": "nope, we run Postgres on 5433 locally to avoid a clash"
+		},
+		{
+			"assistant": "I'll write the tests using jest.",
+			"user": "not quite — this project uses vitest, the APIs are similar though"
+		},
+		{
+			"assistant": "The build output goes to dist/.",
+			"user": "It's not dist, the build writes to build/ in this package."
+		},
+		{
+			"assistant": "I'll install the types package as a runtime dependency.",
+			"user": "no that should be a devDependency"
+		},
+		{
+			"assistant": "I'll update the README with the new flag.",
+			"user": "Actually the docs live in docs/, the README just links there."
+		},
+		{
+			"assistant": "Let me run the full e2e suite to check.",
+			"user": "Don't run e2e locally, it needs the staging credentials."
+		},
+		{ "assistant": "I've made the function async.", "user": "no, that breaks every caller — keep it synchronous" }
+	],
+	"neither": [
+		{ "assistant": "I'll run the tests now.", "user": "Can you also check the type errors?" },
+		{ "assistant": "The build succeeded.", "user": "Great, thanks. Let's move on to the deploy script." },
+		{ "assistant": "Which database should I point it at?", "user": "The local one." },
+		{ "assistant": "Should I proceed with the refactor?", "user": "No." },
+		{ "assistant": "Do you want me to add tests?", "user": "no thanks" },
+		{
+			"assistant": "I've finished the migration.",
+			"user": "I'm not sure what's going on with the CI failures, can you look?"
+		},
+		{ "assistant": "Here's the diff.", "user": "Looks good to me." },
+		{ "assistant": "The function returns a promise.", "user": "What happens if it rejects?" },
+		{ "assistant": "I added logging to the handler.", "user": "Where does that log end up in production?" },
+		{ "assistant": "Tests pass locally.", "user": "Run them again with the coverage flag please." },
+		{ "assistant": "I'll start with the parser.", "user": "Sounds good." },
+		{ "assistant": "The config is loaded at startup.", "user": "How do I remember which env vars are required?" },
+		{ "assistant": "I've opened the PR.", "user": "I don't remember whether we squash or rebase merge here." },
+		{ "assistant": "The lock file changed.", "user": "Do you remember why we pinned that version?" },
+		{ "assistant": "Setting the retry count to 3.", "user": "Why 3?" },
+		{ "assistant": "I'll refactor the module.", "user": "Hold on, let me think about the API shape first." },
+		{ "assistant": "The endpoint returns 404.", "user": "That's expected, the route isn't registered yet." },
+		{ "assistant": "I'll write the migration.", "user": "Never mind, I already wrote it." },
+		{ "assistant": "Which approach do you prefer?", "user": "Whichever is simpler to test." },
+		{ "assistant": "I've updated the dependencies.", "user": "Always fun. Anyway, does the build still pass?" }
+	]
+}
