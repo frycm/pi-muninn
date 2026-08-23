@@ -167,3 +167,53 @@ describe("capture through a real pi session", () => {
 		expect(resumed?.continues ?? resumed?.task).toBe(priorTask);
 	}, 60_000);
 });
+
+describe("journal commits", () => {
+	it("leaves the store committed and clean after a session", async () => {
+		// The plan's first acceptance criterion. The shutdown commit is
+		// un-debounced, so a session's entries are durable in git by the time the
+		// process exits.
+		await pi("Remember that deploys need the VPN.");
+
+		const store = projectStore();
+		const { stdout: status } = await execFileAsync("git", ["status", "--porcelain"], { cwd: store });
+		expect(status.trim()).toBe("");
+
+		const { stdout: subject } = await execFileAsync("git", ["log", "-1", "--format=%s"], { cwd: store });
+		expect(subject.trim()).toMatch(/^journal: .+ \d+ entr(y|ies)$/);
+	}, 60_000);
+
+	it("commits only journal paths", async () => {
+		await pi("Remember that rollbacks are one command.");
+
+		const store = projectStore();
+		const { stdout } = await execFileAsync("git", ["show", "--name-only", "--format=", "HEAD"], { cwd: store });
+		const touched = stdout.trim().split("\n").filter(Boolean);
+		expect(touched.length).toBeGreaterThan(0);
+		for (const path of touched) expect(path.startsWith("journal/")).toBe(true);
+	}, 60_000);
+
+	it("leaves the project's own repository untouched", async () => {
+		// The plan's second acceptance criterion. A separate project store must
+		// not show up as changes in the repository the developer is working in.
+		const { stdout: before } = await execFileAsync("git", ["status", "--porcelain"], { cwd: project });
+		const { stdout: beforeLog } = await execFileAsync("git", ["log", "--format=%H"], { cwd: project });
+
+		await pi("Remember that the staging database resets nightly.");
+
+		const { stdout: after } = await execFileAsync("git", ["status", "--porcelain"], { cwd: project });
+		const { stdout: afterLog } = await execFileAsync("git", ["log", "--format=%H"], { cwd: project });
+		expect(after).toBe(before);
+		expect(afterLog).toBe(beforeLog);
+	}, 60_000);
+
+	it("makes one commit per session, not one per entry", async () => {
+		const store = projectStore();
+		const { stdout: before } = await execFileAsync("git", ["rev-list", "--count", "HEAD"], { cwd: store });
+
+		await pi("Remember this:\n- deploys need the VPN\n- rollbacks are one command");
+
+		const { stdout: after } = await execFileAsync("git", ["rev-list", "--count", "HEAD"], { cwd: store });
+		expect(Number.parseInt(after.trim(), 10)).toBe(Number.parseInt(before.trim(), 10) + 1);
+	}, 60_000);
+});

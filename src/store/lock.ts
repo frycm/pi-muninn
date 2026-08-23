@@ -19,7 +19,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
 
-export type LockOperation = "append" | "init" | "sync" | "dream" | "remember" | "erase" | "migrate";
+export type LockOperation = "append" | "commit" | "init" | "sync" | "dream" | "remember" | "erase" | "migrate";
 
 /**
  * How long a held lock may go without an mtime refresh before another process
@@ -28,6 +28,7 @@ export type LockOperation = "append" | "init" | "sync" | "dream" | "remember" | 
  */
 const STALE_MS: Record<LockOperation, number> = {
 	append: 30_000,
+	commit: 60_000,
 	init: 30_000,
 	sync: 120_000,
 	dream: 7_200_000,

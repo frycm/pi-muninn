@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { RunAccumulator } from "./capture/accumulate.ts";
 import { decideCapture } from "./capture/capture.ts";
+import { commitJournal } from "./capture/commit.ts";
 import { channelForMode } from "./capture/cues.ts";
 import { shouldWriteOutcome } from "./capture/outcome.ts";
 import { type OutcomeModel, runOutcome } from "./capture/outcome-run.ts";
@@ -68,6 +69,8 @@ export default function (pi: ExtensionAPI): void {
 	 * gap worth proposing.
 	 */
 	let runsWithoutAgentEnd = 0;
+	/** Entries appended since the last commit, for the commit message. */
+	let uncommittedEntries = 0;
 
 	const load = async (cwd: string, projectTrusted: boolean, createStores: boolean): Promise<SessionContext> => {
 		session ??= await buildSessionContext({
@@ -188,6 +191,7 @@ export default function (pi: ExtensionAPI): void {
 		queue.enqueue(`capture ${decision.kind}`, async () => {
 			const result = await appendEntry(decision.entry, { storePath, hostId: current.host.id });
 			currentState.written.push(result.id);
+			uncommittedEntries++;
 			pi.appendEntry(STATE_CUSTOM_TYPE, { kind: "written", ids: [result.id] } satisfies StateDelta);
 		});
 	});
@@ -263,7 +267,32 @@ export default function (pi: ExtensionAPI): void {
 		queue.enqueue("outcome", async () => {
 			const written = await appendEntry(result.entry, { storePath, hostId: current.host.id });
 			currentState.written.push(written.id);
+			uncommittedEntries++;
 			pi.appendEntry(STATE_CUSTOM_TYPE, { kind: "written", ids: [written.id] } satisfies StateDelta);
+		});
+	};
+
+	/**
+	 * Commit what has been journaled, on the queue so it lands after the appends
+	 * it is committing. Debounced except at shutdown, so a chatty session leaves
+	 * one commit rather than one per run.
+	 */
+	const commitPending = (force: boolean): void => {
+		const current = session;
+		if (!current) return;
+		const storePath = captureTargetPath(current);
+		if (!storePath) return;
+
+		queue.enqueue("commit", async () => {
+			if (uncommittedEntries === 0 && !force) return;
+			const result = await commitJournal({
+				storePath,
+				hostId: current.host.id,
+				hostName: current.host.name,
+				entries: uncommittedEntries,
+				force,
+			});
+			if (result.committed) uncommittedEntries = 0;
 		});
 	};
 
@@ -274,6 +303,7 @@ export default function (pi: ExtensionAPI): void {
 		const buffer = run.take();
 		await writeOutcome(ctx as never, buffer);
 		runAlreadyJournaled = false;
+		commitPending(false);
 	});
 
 	pi.on("session_before_compact", async (_event, ctx) => {
@@ -286,6 +316,9 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		// An outcome call still in flight is the session ending, not a failure.
 		outcomeAbort?.abort();
+		// Un-debounced: this is the last chance to make the session's entries
+		// durable in git before the process goes away.
+		commitPending(true);
 		// Closes the window where a queued entry could be lost to process exit.
 		await queue.flush();
 		const failures = queue.takeFailures();

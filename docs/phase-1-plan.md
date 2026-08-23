@@ -288,7 +288,7 @@ Notes from building it:
   fragile path a turn-summary on `agent_settled` would remove. `/muninn` reports the count;
   if it stays at zero in real use, the core change is an ergonomics ask, not a gap.
 
-### 7. Journal commits (0.5 d)
+### 7. Journal commits (0.5 d) — **done**
 
 - `git.ts`: `run(store, args)` with an allow-list of argument shapes (`add journal/`,
   `commit -m`, `fetch`, `rebase`, `push`, `rev-parse`, `status --porcelain`, `init`); any
@@ -303,6 +303,18 @@ Notes from building it:
 **Done when:** after a session, `git log` in the store shows one commit touching only
 `journal/`; a `git status` of the *project* repository is unchanged when the project store
 is separate.
+**Met**, in `test/integration/capture.test.ts`, against a real `pi` process.
+
+Two details worth keeping:
+
+- **The commit is taken under the store lock.** git reads the daily files while another
+  session could be appending to one, and the lock is what makes "one complete entry per
+  write" true for readers as well as writers.
+- **A backlog is committed even when this session wrote nothing.** The entries are on disk
+  either way; refusing them because this process's counter is zero would strand a crashed
+  session's work outside git permanently. The consequence is that the entry count in a
+  commit message can understate what the commit contains — it is a description, not a
+  number anything depends on.
 
 ### 8. Tier 0 index (1.5 d)
 
