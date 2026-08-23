@@ -15,15 +15,17 @@ path.
 > evening. Odin fears losing him more than losing thought.
 
 > [!IMPORTANT]
-> **Status: design proposal (v0.2). No implementation yet.**
-> This README is the design document, published first so the architecture can be reviewed
-> and argued with before any code exists. Every section is a commitment to be tested, not a
-> description of working software. It will shrink into a normal project README as phases
-> land. v0.2 (revised after a second review pass) adds the contracts the v0.1 review asked
-> for: global claim identities and
-> active-only recall, the journal→dream git transaction, provenance channels that block
-> self-reinforcement, capture scope, a held-out evaluation, sync across hosts with
-> model-assisted merging of conflicting dreams, and schema versioning.
+> **Status: Phase 1 is implemented; Phases 2–5 are still design.**
+> This README began as a design document, published before any code existed so the
+> architecture could be argued with first. **Journal and recall now work** — see
+> [Using it today](#using-it-today) for what is built and how to run it. Everything about
+> *dreaming*, `topics/`, `rules.md`, Tier 1 retrieval, team scope and erasure is still
+> design text: a commitment to be tested, not a description of working software. Each
+> section below says which it is where the distinction matters, and the
+> [delivery plan](#delivery-plan) is the map. The normative file format lives in
+> [docs/journal-format.md](docs/journal-format.md); the step-by-step Phase 1 record, with
+> what each step actually cost and what it turned up, is in
+> [docs/phase-1-plan.md](docs/phase-1-plan.md).
 
 ### API baseline
 
@@ -37,6 +39,7 @@ Every integration claim below is made against a specific pi:
 | Reference tag | [`v0.84.2`](https://github.com/earendil-works/pi/tree/v0.84.2) (`914cf14`) — all file and doc links in this README are pinned to it |
 | Runtime | Node `>=22.19.0` (pi's own floor); Bun where the optional native tier is not enabled |
 | Fork for core changes | [`frycm/pi`](https://github.com/frycm/pi) — always rebased onto the **latest stable upstream release**; carries only the patches listed under [core changes](#core-changes-to-propose-to-pi) |
+| Local reference | the fork checked out as a sibling directory (`../pi`, at `v0.84.2` / `914cf14`) — every API claim in this README was verified by reading that checkout; file references below are relative to `packages/coding-agent/src/` in it |
 
 Sibling projects in the same family, same conventions, same baseline policy:
 [pi-palantir](https://github.com/frycm/pi-palantir) (remote sessions and voice) and
@@ -48,6 +51,7 @@ neither.
 
 ## Contents
 
+- [Using it today](#using-it-today)
 - [Why this exists](#why-this-exists)
 - [Goals and non-goals](#goals-and-non-goals)
 - [The memory model](#the-memory-model)
@@ -66,6 +70,106 @@ neither.
 - [Open questions and risks](#open-questions-and-risks)
 - [Why this name](#why-this-name)
 - [License](#license)
+
+---
+
+## Using it today
+
+Phase 1 — journal and recall — is built and tested. Nothing below this section's list is
+implemented yet.
+
+### Install
+
+```bash
+pi install git:github.com/frycm/pi-muninn          # or a local checkout: pi install ./pi-muninn
+```
+
+Or load a checkout directly for one session, which is how the tests run it:
+
+```bash
+pi -e /path/to/pi-muninn/src/index.ts
+```
+
+Node `>=22.19.0` or Bun; no native dependencies, nothing to compile. Two runtime packages
+(`minisearch` and `proper-lockfile`) and `git` on the PATH.
+
+### What happens without you doing anything
+
+- **Capture.** Asking for something to be remembered ("remember that…", "from now on…"),
+  correcting the agent, and the end of each run are journaled — the last as a short
+  outcome entry written by the session's own model. Nothing else is. Secrets are scrubbed
+  on the way in, and every entry records where it came from.
+- **Recall.** At session start `MEMORY.md` is merged into the system prompt, byte-identical
+  for the whole session so the prompt cache stays warm. On every turn, memories matching
+  the prompt are injected — at most `recall.factsPerTurn`, within `recall.tokenBudget`,
+  labelled as memories rather than as fact, and never repeating what `AGENTS.md` or your
+  own prompt already says.
+- **Commit.** The journal is committed to the store's git history when a run settles and at
+  shutdown — one commit per batch, touching only `journal/`.
+
+### What the model can do
+
+| Tool | Does |
+|---|---|
+| `memory_search` | Search the journal, topics and rules. Active-only unless `history: true`. |
+| `memory_read` | One entry with its context, one claim inside its entry, a store file, or the pi session transcript behind an entry. |
+| `memory_note` | Record one journal entry as `source: agent`. The only tool that writes. |
+
+### What you can do
+
+```
+/muninn                          status: scopes, journal, index, recall, sync
+/muninn note [--global] <text>   remember something, as source: user
+/muninn promote <id>             copy a project entry into the global journal
+/muninn search [--history] [--limit n] <query>
+/muninn scope                    which scopes are active here, and why
+/muninn reindex                  rebuild the index from the files
+/muninn sync [--no-push]         commit, fetch, rebase, push
+
+muninn sync [--scope global|project] [--no-push]   # headless, for cron
+muninn status [--scope global|project]
+```
+
+### Where memory lives
+
+```
+~/.pi/agent/muninn/                     global store
+~/.pi/agent/muninn-projects/<project>/  project store, keyed by the git toplevel
+```
+
+Both are git repositories of markdown, yours to read, grep, edit and delete. Project scope
+is on by default when the working directory is a trusted git repository; `scopes.project:
+"in-repo"` puts the store inside the repository instead, and `false` turns it off. The
+[journal format](docs/journal-format.md) is the contract; `.index/` is derived and
+disposable.
+
+### Syncing across machines
+
+Set `sync.remote` to a private git remote you own — any URL git accepts, including a path
+on a NAS. `muninn sync` (and, with `sync.onShutdown`, the end of every session) commits,
+fetches, rebases and pushes. Journal files are per host, so machines never collide; the one
+file two machines write concurrently is the host registry, and that is merged
+automatically. Any other conflict stops sync with the store untouched, and nothing is ever
+force-pushed. A second machine joins by cloning the remote into its store path.
+
+> `sync.remote` names the **global** store's remote. A separate project store syncs with
+> the `origin` it already has, and an in-repo store is never pushed by Muninn — that
+> repository belongs to the project.
+
+### Settings
+
+Under `muninn` in `~/.pi/agent/settings.json`, and — **tighten-only** — in a project's
+`.pi/settings.json`. A project may lower a budget, disable a capture kind or turn a scope
+off; it may never widen anything, and it may never name a remote or an endpoint. See
+[Commands and settings](#commands-and-settings) for the full block; the Phase 1 keys are
+`scopes`, `sync`, `capture` and `recall`.
+
+### Not built yet
+
+Dreaming and everything downstream of it: `topics/`, `rules.md`, consolidated facts,
+supersession *writing* (the reader is in, so recall is active-only from day one), the
+held-out evaluation, Tier 1 retrieval, team scope, erasure and skills. `MEMORY.md` is yours
+to write by hand until a dream writes it for you.
 
 ---
 
@@ -226,8 +330,20 @@ muninn/
 ├─ dreams/
 │  └─ 2026-08-22T03-00.md       # dream report: what was read, what changed, eval result
 ├─ .index/                      # gitignored, rebuildable: chunks, embeddings, links
-└─ .gitignore                   # .index/
+├─ host.json                    # global scope only: this machine's id — gitignored, never synced
+├─ .lock · .lock.json           # the store lock and its holder — gitignored
+└─ .gitignore                   # .index/, host.json, .lock, .lock.json
 ```
+
+`host.json` sits inside the global store because that is where the agent directory is, but it
+is **machine-local and gitignored**. It must never sync: a second machine that adopted this
+one's host id would write into the same `journal/<host id>/` directory, and the guarantee
+that sync never has to merge two hosts' writes to one file would be gone.
+
+The lock is `.lock` (a directory, taken atomically) with the holder recorded beside it in
+`.lock.json` — separate because the locking library removes its own directory with a
+non-recursive `rmdir`, so a file placed inside would make every release fail and wedge the
+store.
 
 ### Formats
 
@@ -393,7 +509,9 @@ What gets a journal entry, in priority order:
    them at the moment they happen rather than reconstructing them later.
 3. **Decisions and outcomes** at `agent_settled`: what the task was, what was tried, what
    worked, what failed and why — one entry, phase-tagged, written by the *session's* model
-   with a strict template. Failures are memory too.
+   with a strict template. Failures are memory too. The turn's messages and tool results
+   are accumulated from `turn_end` / `agent_end` as they happen; `agent_settled` (which
+   carries no payload) is only the signal that pi will not continue on its own.
 4. **Pre-compaction** — `session_before_compact` fires before context is summarised away;
    Muninn writes the outcome entry then, so nothing that compaction drops is lost to the
    journal. It does not alter pi's compaction.
@@ -511,8 +629,9 @@ than by assumption:
 
 - **Configuration.** `recall.embedding` and `recall.rerank` each name a pi provider entry
   plus a model id (`{ provider: "llama-server", model: "embeddinggemma-300m" }`). Muninn
-  reuses that provider's `baseUrl` and credential from pi's registry; it never stores its
-  own.
+  reuses that provider's `baseUrl` and credential from pi's registry via
+  `ctx.modelRegistry.getApiKeyAndHeaders(model)` (falling back to `model.baseUrl`); it
+  never stores its own.
 - **Discovery.** On index open Muninn probes each endpoint once (`GET /v1/models`, then a
   one-token `POST`) and caches `{ baseUrl, model, dims, ok, checkedAt }` in `.index/`. A
   dimension change invalidates every stored vector for that model.
@@ -691,8 +810,8 @@ So:
 | Store | Remote | What moves | Trust |
 |---|---|---|---|
 | **global** (personal, many hosts) | a private remote the operator owns (`sync.remote`) | everything: `journal/`, derived layers, `dream/*` branches | trusted — it is the operator's own |
-| **project**, separate store | same, keyed by project | same | same |
-| **project**, committed in the repo | the project's own remote | same, inside the product's history | trusted only when the project is trusted |
+| **project**, separate store | the `origin` that store already has, if any — a project `settings.json` travels with a repository anyone can clone, so it may not name one | same | same |
+| **project**, committed in the repo | the project's own remote, pushed by the project's own workflow — **never by Muninn** | same, inside the product's history | trusted only when the project is trusted |
 | **team** | a remote others write to | **derived layers only** — `topics/`, `rules.md`, `skills/`, `MEMORY.md`, `supersessions.md`; never a journal | untrusted input — see below |
 
 **`muninn sync`** (also run automatically at `session_shutdown` when a remote is
@@ -700,7 +819,9 @@ configured and reachable, and before every dream): commit this host's journal �
 rebase `main` onto the remote head, which is conflict-free because every host's journal
 files are its own and derived files change only through remembered dreams → `push`. If the
 rebase does conflict anyway — a hand-edited topic file, a remembered dream on each side —
-sync stops and reports; it never force-pushes `main`.
+sync stops and reports; it never force-pushes `main`. Before any of that it compares
+`store.md`'s store id against the remote's: a mistyped remote is refused rather than
+resolved by merging two unrelated memories into one history.
 
 **Dreams across hosts.** Any host may dream; its branch is `dream/<host>/<ts>` and is pushed
 on sync, so `/muninn dreams` on the laptop lists the server's overnight dream and can
@@ -840,12 +961,12 @@ Everything below uses APIs that exist in pi at the [baseline](#api-baseline).
 | Per-turn recall | `on("before_agent_start")` → `message: { customType: "muninn", … }` | Inject ≤ *N* recalled facts as a persistent, displayed message; `systemPromptOptions.contextFiles` tells Muninn what AGENTS.md already says so it does not repeat it |
 | Tools | `pi.registerTool()` for `memory_search`, `memory_read`, `memory_note` | Read-only except `memory_note`; custom renderers show ids and sources compactly |
 | Correction and explicit-remember detection | `on("input")`, `on("message_start")`, `on("turn_end")` | Only direct TUI/RPC user text counts as `source: user` — the same provenance rule pi-enclave uses for authorization |
-| Outcome entry | `on("agent_settled")` | The run is over and pi will not continue on its own; write one phase-tagged outcome entry using `ctx.modelRegistry.complete()` with the session model (or `dream.model` when configured) |
+| Outcome entry | `on("turn_end")` → `{ turnIndex, message, toolResults }`, `on("agent_end")` → `{ messages }`, `on("agent_settled")` | Accumulate the run's messages and tool results from `turn_end`/`agent_end`; at `agent_settled` (bare `{ type }`, fired once no retry, compaction or queued continuation will run) write one phase-tagged outcome entry using `ctx.modelRegistry.complete()` with the session model (or `dream.model` when configured). `ctx.sessionManager.getBranch()` is a cross-check for the turn's boundaries, not the primary source |
 | Journal before compaction | `on("session_before_compact")` | Write the outcome entry *before* the summary is produced; return nothing so pi's compaction proceeds unchanged |
 | Evidence pointers | `ctx.sessionManager.getSessionFile()`, entry ids | `session:` field in journal entries; `memory_read` follows it |
 | Skills produced by dreams | `on("resources_discover")` → `skillPaths` | `skills/` of every active scope is offered as a skill path, so a dreamed skill is a first-class pi skill |
 | Session-local state | `pi.appendEntry()` | Which facts were injected this session (becomes the outcome entry's `recalled:` / `used:`), ids of journal entries already written — survives resume, never duplicates |
-| Capture input | `ctx.sessionManager` entries filtered by `customType !== "muninn"` | The outcome-entry model never sees Muninn's own injected messages; their ids go to `recalled:` instead |
+| Capture input | `turn_end`/`agent_end` messages and `ctx.sessionManager.getBranch()` entries filtered by `customType !== "muninn"` | The outcome-entry model never sees Muninn's own injected messages; their ids go to `recalled:` instead |
 | Commands and status | `pi.registerCommand()`, status line | `/muninn …`; footer shows scope(s), index tier, and "dream ready" |
 | Dreamer model | `ctx.modelRegistry`, `pi.registerProvider()` | Any registered model; offline deployments point `dream.model` at pi's llama-server provider |
 | Headless dreams | SDK `createAgentSession()` | `muninn dream` runs the evaluate phase as short, read-only, tool-restricted sessions |
@@ -857,9 +978,29 @@ Everything below uses APIs that exist in pi at the [baseline](#api-baseline).
 > system-prompt path above is the supported route. A `contextFilePaths` contribution is the
 > first item under [core changes](#core-changes-to-propose-to-pi).
 
+### Verified at the baseline
+
+The claim that Muninn needs **no pi modification** was checked against the `v0.84.2` source
+(sibling checkout `../pi`, commit `914cf14`). For each proposed core change, the gap is real
+and the extension-only fallback exists:
+
+| Gap (as proposed below) | What `v0.84.2` actually has | Fallback used by Muninn |
+|---|---|---|
+| No context-file contribution | `ResourcesDiscoverResult` is exactly `{ skillPaths?, promptPaths?, themePaths? }` (`core/extensions/types.ts:551`) | `before_agent_start` exposes `systemPrompt` and `systemPromptOptions` and accepts a replacement `systemPrompt`, chained across extensions (`types.ts:1102`, applied in `core/agent-session.ts:1254`); re-evaluated every turn |
+| No turn summary on `agent_settled` | The event is literally `{ type: "agent_settled" }` (`types.ts:724`, emitted `agent-session.ts:599`) | `turn_end` carries `{ turnIndex, message, toolResults }` and `agent_end` is forwarded to extensions with `messages` (`agent-session.ts:731`); `ctx.sessionManager` is a `ReadonlySessionManager` with `getBranch`, `getLeafId`, `getEntry`, `getEntries`, `getTree`, `getSessionFile` (`core/session-manager.ts:190`) |
+| No `embed()` / `rerank()` | Neither operation, nor `/v1/embeddings`, exists anywhere in the monorepo | `ctx.modelRegistry.getApiKeyAndHeaders(model)` returns `{ apiKey, headers, baseUrl?, env }` (`core/model-registry.ts:64`); `baseUrl` falls back to `model.baseUrl` when auth resolution does not supply one |
+| No idle hook | The only "idle" in pi is the HTTP dispatcher timeout; nothing in `packages/server` either | Cron / `muninn dream`; polling if ever needed |
+
+Also confirmed: `session_before_compact` (`types.ts:593`) and `session_shutdown`
+(`types.ts:616`) exist with the semantics this README assumes, and
+`ctx.isProjectTrusted()` (`types.ts:332`) is available for the capture-target decision.
+
 ---
 
 ## Commands and settings
+
+The full surface, across all phases. What exists today is the shorter list under
+[Using it today](#using-it-today); the rest arrives with the phase that needs it.
 
 ```
 /muninn                     status: scopes, entries since last dream, index tier, pending dreams
@@ -880,21 +1021,23 @@ muninn serve-cron                                 # prints a crontab / launchd /
 ```
 
 Settings live in pi's settings under `muninn` (global) and `.pi/settings.json` (project,
-tighten-only):
+tighten-only). `capture.toolFacts` defaults to **off** and nothing reads it yet — tool-derived
+facts are deferred until the classifier budget is understood, and `/muninn` says so if you
+switch it on:
 
-```jsonc
+```json
 {
   "muninn": {
     "scopes": { "global": true, "project": "auto", "team": { "remote": null, "pin": null } },
     "sync": { "remote": null, "onShutdown": true },
-    "capture": { "corrections": true, "outcomes": true, "toolFacts": true, "externalPerSession": 10 },
+    "capture": { "corrections": true, "outcomes": true, "toolFacts": false, "externalPerSession": 10 },
     "recall": {
       "factsPerTurn": 8, "tokenBudget": 1500, "indexTier": "auto",
       "snapshotLines": { "total": 200, "global": 120, "project": 60, "team": 20 },
-      "embedding": null, "rerank": null   // { provider, model } — Tier 1 only
+      "embedding": null, "rerank": null
     },
     "dream": {
-      "model": null,                  // provider/model id; null = session model
+      "model": null,
       "auto": false, "autoRemember": false,
       "minHours": 24, "minEntries": 5, "maxEntriesBeforeForce": 50,
       "evalSessions": 5, "canaries": "eval/canaries.md",
@@ -903,6 +1046,19 @@ tighten-only):
   }
 }
 ```
+
+`recall.embedding` and `recall.rerank` take `{ provider, model }` and are Tier 1 only;
+`dream.model` is a provider/model id, `null` meaning the session model. Strict JSON only —
+pi parses `settings.json` with plain `JSON.parse`, so a comment breaks the file for pi as
+well as for Muninn.
+
+**Project settings are tighten-only.** A `.pi/settings.json` travels with the repository, so
+a project may lower a budget, disable a capture kind, pin a lower index tier or turn a scope
+off — never the reverse. Fields where a project value would widen behaviour in a way no
+ordering captures are **global-only** and ignored with a warning when a project sets them:
+`sync.remote` (where memory is pushed), `recall.embedding` / `recall.rerank` (where memory
+is sent), `scopes.team.*`, and every `dream` field (which model reads the whole store).
+Violations are reported in `/muninn` and on stderr, never applied silently.
 
 ---
 
@@ -992,9 +1148,12 @@ small models: 2605.26128, 2605.02363.
 Phases are ordered so each is independently useful and the riskiest assumption — that a
 small local model can dream well enough — is validated before anything depends on it.
 
-### Phase 1 — Journal and recall
+### Phase 1 — Journal and recall — **done**
 
 *Outcome: pi sessions leave a journal, and the next session can find it.*
+Built and tested; see [Using it today](#using-it-today) for what that means in practice, and
+[docs/phase-1-plan.md](docs/phase-1-plan.md) for the step-by-step record — each step's
+"done when", how it was met, and what it turned up.
 
 Capture (explicit, corrections, outcomes, pre-compaction), secret redaction, per-host journal
 directories with locked appends, UUIDv7 ids and claim bullets, `task`/`continues`
@@ -1004,7 +1163,9 @@ grouping, capture-target scope, journal commits,
 `/muninn note|promote|search|scope|reindex|sync`. Done when: a correction made on Monday on
 one laptop is surfaced by `memory_search` on Tuesday on another laptop in a different
 project directory, nothing outside `journal/` was written, and two concurrent sessions on
-one host produce a well-formed daily file.
+one host produce a well-formed daily file. **All three met**, in
+`test/integration/acceptance.test.ts`, `test/integration/capture.test.ts` and
+`test/unit/journal-append.test.ts` respectively.
 
 ### Phase 2 — Dreaming, manual
 
@@ -1062,8 +1223,9 @@ cron and manual operation have shown it is needed.
 
 ## Core changes to propose to pi
 
-All of the above works as an extension. Four small core changes would make it cleaner, and
-would help every memory extension, not only this one:
+All of the above works as an extension — [verified](#verified-at-the-baseline) against
+`v0.84.2`. Four small core changes would make it cleaner, and would help every memory
+extension, not only this one:
 
 1. **`contextFilePaths` in `resources_discover`.** Today an extension can contribute skills,
    prompts and themes but not context files, so a memory index has to be spliced into the
@@ -1071,9 +1233,11 @@ would help every memory extension, not only this one:
    Letting an extension offer an AGENTS.md-style file (with its own budget and provenance
    label) would make memory visible and inspectable like any other context.
 2. **A stable turn-summary payload on `agent_settled`.** Extensions that want an outcome
-   record currently re-walk `ctx.sessionManager` to find the turn's boundaries. A
-   `{ firstEntryId, lastEntryId, toolCalls, usage }` on the event would remove a class of
-   off-by-one bugs across memory and telemetry extensions.
+   record currently accumulate `turn_end` / `agent_end` payloads themselves and reconcile
+   them against `ctx.sessionManager` to find the run's boundaries. A
+   `{ firstEntryId, lastEntryId, toolCalls, usage }` on the event would let every memory
+   and telemetry extension skip that bookkeeping. Lowest priority of the four: the
+   accumulation approach is adequate, and this is an ergonomics ask rather than a gap.
 3. **`embed()` and `rerank()` on providers.** The llama-server and OpenAI-compatible
    providers already hold the base URL and credential for endpoints that serve
    `/v1/embeddings` and `/v1/rerank`; exposing those two operations through `ModelRegistry`
@@ -1118,7 +1282,13 @@ deleted as they land.
   facts from the snapshot, which stay searchable.
 - **Where the project store lives.** Separate store by default, keyed by git toplevel and
   synced on its own remote; committed stores remain an opt-in for projects that want memory
-  in their history. Migration command in Phase 5.
+  in their history. Migration command in Phase 5. The key is the toplevel *path*, so two
+  checkouts of one repository are deliberately separate stores — they may be worktrees of
+  different branches, and silently sharing memory between them would surprise.
+- **Committing into a repository Muninn does not own.** An in-repo store lives inside the
+  user's project, where a bare `git commit` would sweep up whatever they had staged for
+  their own work. Every Muninn commit is therefore limited to its own pathspec, and an
+  in-repo store never has the project's git identity reconfigured.
 - **Evaluate-phase cost.** Chronological held-out sample of *k* recent tasks plus a fixed
   canary set, not a replay of everything; the canaries are cheap and run every dream, the
   sample size is a setting.
