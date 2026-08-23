@@ -60,7 +60,7 @@ describe("a dream is a branch, and the store is untouched", () => {
 
 		expect(result.ok).toBe(true);
 		expect(result.branch).toBe("dream/mbp/2026-08-23T03-00");
-		expect(phases).toEqual(["orient", "gather", "consolidate", "commit"]);
+		expect(phases).toEqual(["orient", "gather", "consolidate", "lint", "commit"]);
 
 		// `input_head` names the commit the worktree was cut from — and the
 		// pending entry was committed *inside* the lock, so it is in it.

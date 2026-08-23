@@ -21,10 +21,11 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
+import { jaccard } from "../capture/outcome.ts";
 import { DERIVED_PATHS, GitError, type GitIdentity, git } from "../git.ts";
 import { claimsOf } from "../journal/format.ts";
 import { type JournalEntryWithContext, readStoreJournal } from "../journal/read.ts";
-import { appendSupersessions } from "../journal/supersessions.ts";
+import { appendSupersessions, readSupersessions } from "../journal/supersessions.ts";
 import type { MuninnSettings } from "../settings.ts";
 import type { HostIdentity } from "../store/host.ts";
 import { storeIdentity } from "../store/init.ts";
@@ -32,9 +33,10 @@ import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import type { ActiveScope } from "../store/scopes.ts";
 import { emptyTopic, formatTopic } from "../topics/format.ts";
 import { type ConsolidateJob, consolidate } from "./consolidate.ts";
-import { type GatherResult, gather } from "./gather.ts";
+import { ECHO_THRESHOLD, type GatherResult, gather } from "./gather.ts";
+import { lint } from "./lint.ts";
 import type { DreamModel } from "./model.ts";
-import { type Orientation, orient } from "./orient.ts";
+import { type Orientation, orient, readTopics } from "./orient.ts";
 import { type DreamReport, emptyReport, formatReport, reportPath, reportTotals } from "./report.ts";
 import { collectWorktrees, createWorktree, dreamBranch, dreamStamp, repositoryFor } from "./worktree.ts";
 
@@ -50,6 +52,8 @@ export interface DreamOptions {
 	signal?: AbortSignal;
 	/** Called as each phase starts, for the status line and for `--print`. */
 	progress?: (phase: string) => void;
+	/** The global store's `rules.md`, when dreaming a project scope. */
+	globalRules?: string;
 	/** Test seam: the lock's staleness window. */
 	staleMs?: number;
 }
@@ -192,6 +196,36 @@ async function runLocked(options: DreamOptions, context: LockedContext): Promise
 			await consolidateAll(worktree.storePath, gathered, orientation, options, report);
 		} else if (gathered.jobs.length > 0) {
 			report.notes.push(`${gathered.jobs.length} topic(s) had new evidence but no dreamer model was configured`);
+		}
+
+		progress?.("lint");
+		const linted = lint({
+			topics: readTopics(worktree.storePath),
+			claims: allClaimIds(worktree.storePath),
+			superseded: readSupersessions(worktree.storePath).superseded,
+			erased: orientation.erased,
+			echoes: echoClaims(worktree.storePath, orientation),
+			rules: orientation.rules,
+			memory: orientation.memory,
+			usage: orientation.usage,
+			rulesCap: options.settings.dream.rulesCap,
+			retireAfterDays: options.settings.dream.retireAfterDays,
+			now,
+			...(options.globalRules !== undefined ? { globalRules: options.globalRules } : {}),
+		});
+		report.lint.push(...linted.findings);
+		for (const pair of linted.candidates) {
+			report.lint.push({
+				blocking: false,
+				rule: "contradiction-candidate",
+				message: `${pair.topic}: ${pair.a.id} and ${pair.b.id} say nearly the same thing`,
+			});
+		}
+		if (linted.blocking > 0) {
+			// The branch and the report are kept: a blocked dream is evidence,
+			// and deleting it would leave nobody able to see what it did wrong.
+			report.status = "lint-blocked";
+			problems.push(`${linted.blocking} blocking lint finding(s); this dream will not be offered for remember`);
 		}
 
 		progress?.("commit");
@@ -338,6 +372,37 @@ function entriesInRange(storePath: string, orientation: Orientation): JournalEnt
 		const last = through[entry.host];
 		return last === undefined || entry.id > last;
 	});
+}
+
+/** Every journal claim id in the store, for lint's "does this evidence exist" check. */
+function allClaimIds(storePath: string): Set<string> {
+	const ids = new Set<string>();
+	for (const entry of readStoreJournal(storePath).entries) for (const claim of claimsOf(entry)) ids.add(claim.id);
+	return ids;
+}
+
+/**
+ * Journal claims that merely restate a memory the model was shown.
+ *
+ * `echo:` on an entry names the *recalled memory* it echoed, not which of its
+ * claims did the echoing, so the claim is identified the same way capture
+ * identified the echo in the first place: by overlap against that memory's text.
+ * Recomputing rather than storing it means the two can never disagree about
+ * what an echo is.
+ */
+function echoClaims(storePath: string, orientation: Orientation): Set<string> {
+	const echoes = new Set<string>();
+	for (const entry of readStoreJournal(storePath).entries) {
+		if (entry.echo === undefined || entry.echo.length === 0) continue;
+		const texts = entry.echo
+			.map((id) => orientation.factsById.get(id)?.claim)
+			.filter((text): text is string => text !== undefined);
+		if (texts.length === 0) continue;
+		for (const claim of claimsOf(entry)) {
+			if (texts.some((text) => jaccard(claim.text, text) >= ECHO_THRESHOLD)) echoes.add(claim.id);
+		}
+	}
+	return echoes;
 }
 
 /** The last entry id per host in the store, which is where the next dream starts. */
