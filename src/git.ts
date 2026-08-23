@@ -123,7 +123,14 @@ export type GitCommand =
 	/** Check out a branch that already exists into its own worktree. */
 	| { kind: "worktree-add-existing"; path: string; branch: string }
 	/** Commits with their full message, for finding a dream's commit by its trailer. */
-	| { kind: "log-entries"; ref: string; limit: number };
+	| { kind: "log-entries"; ref: string; limit: number }
+	// --- erasure ----------------------------------------------------------
+	// The only two commands that can destroy history. Nothing but `dream/erase.ts`
+	// constructs them, and erasure is always a human action.
+	/** `git-filter-repo`, which is a separate program and not part of git. */
+	| { kind: "filter-repo"; replacements: string }
+	| { kind: "filter-repo-version" }
+	| { kind: "push-force"; remote: string; branch: string };
 
 /**
  * git itself is not on the PATH.
@@ -392,6 +399,19 @@ export function toArgv(command: GitCommand): string[] {
 			assertWorktreePath(command.path);
 			assertName("branch", command.branch);
 			return ["worktree", "add", "--quiet", command.path, command.branch];
+		case "filter-repo":
+			assertWorktreePath(command.replacements);
+			// `--force` because the repository is not a fresh clone; that is the
+			// normal state of a store and filter-repo refuses without it.
+			return ["filter-repo", "--replace-text", command.replacements, "--force"];
+		case "filter-repo-version":
+			return ["filter-repo", "--version"];
+		case "push-force":
+			assertName("remote", command.remote);
+			assertName("branch", command.branch);
+			// The one force push in the system. Erasure rewrites history, so the
+			// remote's copy of the old bytes has to go the same way.
+			return ["push", "--force", command.remote, `HEAD:${command.branch}`];
 		case "log-entries":
 			assertName("ref", command.ref);
 			if (!Number.isInteger(command.limit) || command.limit < 1) {

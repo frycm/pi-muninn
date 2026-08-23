@@ -179,6 +179,15 @@ async function transaction(options: SyncOptions, result: SyncResult): Promise<Sy
 			// two unrelated memories, merged, on a remote neither of them owns.
 			const mismatch = await storeMismatch(options.storePath, remoteRef);
 			if (mismatch) return stop(result, "rebase", mismatch);
+			if (await historyRewritten(options.storePath, remoteRef)) {
+				return stop(
+					result,
+					"rebase",
+					`${remoteRef} shares no history with this clone — someone ran an erasure and rewrote it. ` +
+						"Rebasing would put the erased text back. Re-clone the store instead: " +
+						`move this directory aside and \`git clone <remote> ${options.storePath}\`.`,
+				);
+			}
 			if (options.signal?.aborted) return stop(result, "rebase", "sync ran out of time before rebasing");
 			result.stoppedAt = "rebase";
 			const rebased = await rebaseOnto(options.storePath, remoteRef, result, options.identity);
@@ -362,6 +371,24 @@ async function currentBranch(storePath: string): Promise<string> {
  * The genuine first push has no `origin/<branch>` ref at all and never reaches
  * this function.
  */
+/**
+ * Whether the remote's history and ours have diverged with no common ancestor.
+ *
+ * That is what an erasure looks like from the other side: `filter-repo` rewrote
+ * every commit, so the remote shares no commit with this clone. Rebasing would
+ * replay this host's whole journal on top of the rewritten history and put the
+ * erased bytes straight back — which is precisely what erasure exists to
+ * prevent. So it is detected and refused, with the one command that fixes it.
+ */
+async function historyRewritten(storePath: string, remoteRef: string): Promise<boolean> {
+	try {
+		await git(storePath, { kind: "merge-base", a: "HEAD", b: remoteRef });
+		return false;
+	} catch {
+		return true;
+	}
+}
+
 async function storeMismatch(storePath: string, remoteRef: string): Promise<string | undefined> {
 	let ours: StoreMd | undefined;
 	try {
