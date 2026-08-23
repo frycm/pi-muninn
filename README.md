@@ -15,7 +15,7 @@ path.
 > evening. Odin fears losing him more than losing thought.
 
 > [!IMPORTANT]
-> **Status: design proposal (v0.2). No implementation yet.**
+> **Status: design proposal (v0.2.1). No implementation yet.**
 > This README is the design document, published first so the architecture can be reviewed
 > and argued with before any code exists. Every section is a commitment to be tested, not a
 > description of working software. It will shrink into a normal project README as phases
@@ -23,7 +23,10 @@ path.
 > for: global claim identities and
 > active-only recall, the journal→dream git transaction, provenance channels that block
 > self-reinforcement, capture scope, a held-out evaluation, sync across hosts with
-> model-assisted merging of conflicting dreams, and schema versioning.
+> model-assisted merging of conflicting dreams, and schema versioning. v0.2.1 verifies the
+> "works as an extension" claim against the pinned pi source — see
+> [verified at the baseline](#verified-at-the-baseline) — and adds a
+> [Phase 1 implementation plan](docs/phase-1-plan.md).
 
 ### API baseline
 
@@ -37,6 +40,7 @@ Every integration claim below is made against a specific pi:
 | Reference tag | [`v0.84.2`](https://github.com/earendil-works/pi/tree/v0.84.2) (`914cf14`) — all file and doc links in this README are pinned to it |
 | Runtime | Node `>=22.19.0` (pi's own floor); Bun where the optional native tier is not enabled |
 | Fork for core changes | [`frycm/pi`](https://github.com/frycm/pi) — always rebased onto the **latest stable upstream release**; carries only the patches listed under [core changes](#core-changes-to-propose-to-pi) |
+| Local reference | the fork checked out as a sibling directory (`../pi`, at `v0.84.2` / `914cf14`) — every API claim in this README was verified by reading that checkout; file references below are relative to `packages/coding-agent/src/` in it |
 
 Sibling projects in the same family, same conventions, same baseline policy:
 [pi-palantir](https://github.com/frycm/pi-palantir) (remote sessions and voice) and
@@ -393,7 +397,9 @@ What gets a journal entry, in priority order:
    them at the moment they happen rather than reconstructing them later.
 3. **Decisions and outcomes** at `agent_settled`: what the task was, what was tried, what
    worked, what failed and why — one entry, phase-tagged, written by the *session's* model
-   with a strict template. Failures are memory too.
+   with a strict template. Failures are memory too. The turn's messages and tool results
+   are accumulated from `turn_end` / `agent_end` as they happen; `agent_settled` (which
+   carries no payload) is only the signal that pi will not continue on its own.
 4. **Pre-compaction** — `session_before_compact` fires before context is summarised away;
    Muninn writes the outcome entry then, so nothing that compaction drops is lost to the
    journal. It does not alter pi's compaction.
@@ -511,8 +517,9 @@ than by assumption:
 
 - **Configuration.** `recall.embedding` and `recall.rerank` each name a pi provider entry
   plus a model id (`{ provider: "llama-server", model: "embeddinggemma-300m" }`). Muninn
-  reuses that provider's `baseUrl` and credential from pi's registry; it never stores its
-  own.
+  reuses that provider's `baseUrl` and credential from pi's registry via
+  `ctx.modelRegistry.getApiKeyAndHeaders(model)` (falling back to `model.baseUrl`); it
+  never stores its own.
 - **Discovery.** On index open Muninn probes each endpoint once (`GET /v1/models`, then a
   one-token `POST`) and caches `{ baseUrl, model, dims, ok, checkedAt }` in `.index/`. A
   dimension change invalidates every stored vector for that model.
@@ -840,12 +847,12 @@ Everything below uses APIs that exist in pi at the [baseline](#api-baseline).
 | Per-turn recall | `on("before_agent_start")` → `message: { customType: "muninn", … }` | Inject ≤ *N* recalled facts as a persistent, displayed message; `systemPromptOptions.contextFiles` tells Muninn what AGENTS.md already says so it does not repeat it |
 | Tools | `pi.registerTool()` for `memory_search`, `memory_read`, `memory_note` | Read-only except `memory_note`; custom renderers show ids and sources compactly |
 | Correction and explicit-remember detection | `on("input")`, `on("message_start")`, `on("turn_end")` | Only direct TUI/RPC user text counts as `source: user` — the same provenance rule pi-enclave uses for authorization |
-| Outcome entry | `on("agent_settled")` | The run is over and pi will not continue on its own; write one phase-tagged outcome entry using `ctx.modelRegistry.complete()` with the session model (or `dream.model` when configured) |
+| Outcome entry | `on("turn_end")` → `{ turnIndex, message, toolResults }`, `on("agent_end")` → `{ messages }`, `on("agent_settled")` | Accumulate the run's messages and tool results from `turn_end`/`agent_end`; at `agent_settled` (bare `{ type }`, fired once no retry, compaction or queued continuation will run) write one phase-tagged outcome entry using `ctx.modelRegistry.complete()` with the session model (or `dream.model` when configured). `ctx.sessionManager.getBranch()` is a cross-check for the turn's boundaries, not the primary source |
 | Journal before compaction | `on("session_before_compact")` | Write the outcome entry *before* the summary is produced; return nothing so pi's compaction proceeds unchanged |
 | Evidence pointers | `ctx.sessionManager.getSessionFile()`, entry ids | `session:` field in journal entries; `memory_read` follows it |
 | Skills produced by dreams | `on("resources_discover")` → `skillPaths` | `skills/` of every active scope is offered as a skill path, so a dreamed skill is a first-class pi skill |
 | Session-local state | `pi.appendEntry()` | Which facts were injected this session (becomes the outcome entry's `recalled:` / `used:`), ids of journal entries already written — survives resume, never duplicates |
-| Capture input | `ctx.sessionManager` entries filtered by `customType !== "muninn"` | The outcome-entry model never sees Muninn's own injected messages; their ids go to `recalled:` instead |
+| Capture input | `turn_end`/`agent_end` messages and `ctx.sessionManager.getBranch()` entries filtered by `customType !== "muninn"` | The outcome-entry model never sees Muninn's own injected messages; their ids go to `recalled:` instead |
 | Commands and status | `pi.registerCommand()`, status line | `/muninn …`; footer shows scope(s), index tier, and "dream ready" |
 | Dreamer model | `ctx.modelRegistry`, `pi.registerProvider()` | Any registered model; offline deployments point `dream.model` at pi's llama-server provider |
 | Headless dreams | SDK `createAgentSession()` | `muninn dream` runs the evaluate phase as short, read-only, tool-restricted sessions |
@@ -856,6 +863,23 @@ Everything below uses APIs that exist in pi at the [baseline](#api-baseline).
 > so `MEMORY.md` cannot be offered as an AGENTS.md-style context file today; the
 > system-prompt path above is the supported route. A `contextFilePaths` contribution is the
 > first item under [core changes](#core-changes-to-propose-to-pi).
+
+### Verified at the baseline
+
+The claim that Muninn needs **no pi modification** was checked against the `v0.84.2` source
+(sibling checkout `../pi`, commit `914cf14`). For each proposed core change, the gap is real
+and the extension-only fallback exists:
+
+| Gap (as proposed below) | What `v0.84.2` actually has | Fallback used by Muninn |
+|---|---|---|
+| No context-file contribution | `ResourcesDiscoverResult` is exactly `{ skillPaths?, promptPaths?, themePaths? }` (`core/extensions/types.ts:551`) | `before_agent_start` exposes `systemPrompt` and `systemPromptOptions` and accepts a replacement `systemPrompt`, chained across extensions (`types.ts:1102`, applied in `core/agent-session.ts:1254`); re-evaluated every turn |
+| No turn summary on `agent_settled` | The event is literally `{ type: "agent_settled" }` (`types.ts:724`, emitted `agent-session.ts:599`) | `turn_end` carries `{ turnIndex, message, toolResults }` and `agent_end` is forwarded to extensions with `messages` (`agent-session.ts:731`); `ctx.sessionManager` is a `ReadonlySessionManager` with `getBranch`, `getLeafId`, `getEntry`, `getEntries`, `getTree`, `getSessionFile` (`core/session-manager.ts:190`) |
+| No `embed()` / `rerank()` | Neither operation, nor `/v1/embeddings`, exists anywhere in the monorepo | `ctx.modelRegistry.getApiKeyAndHeaders(model)` returns `{ apiKey, headers, baseUrl?, env }` (`core/model-registry.ts:64`); `baseUrl` falls back to `model.baseUrl` when auth resolution does not supply one |
+| No idle hook | The only "idle" in pi is the HTTP dispatcher timeout; nothing in `packages/server` either | Cron / `muninn dream`; polling if ever needed |
+
+Also confirmed: `session_before_compact` (`types.ts:593`) and `session_shutdown`
+(`types.ts:616`) exist with the semantics this README assumes, and
+`ctx.isProjectTrusted()` (`types.ts:332`) is available for the capture-target decision.
 
 ---
 
@@ -995,6 +1019,7 @@ small local model can dream well enough — is validated before anything depends
 ### Phase 1 — Journal and recall
 
 *Outcome: pi sessions leave a journal, and the next session can find it.*
+Implementation plan: [docs/phase-1-plan.md](docs/phase-1-plan.md).
 
 Capture (explicit, corrections, outcomes, pre-compaction), secret redaction, per-host journal
 directories with locked appends, UUIDv7 ids and claim bullets, `task`/`continues`
@@ -1062,8 +1087,9 @@ cron and manual operation have shown it is needed.
 
 ## Core changes to propose to pi
 
-All of the above works as an extension. Four small core changes would make it cleaner, and
-would help every memory extension, not only this one:
+All of the above works as an extension — [verified](#verified-at-the-baseline) against
+`v0.84.2`. Four small core changes would make it cleaner, and would help every memory
+extension, not only this one:
 
 1. **`contextFilePaths` in `resources_discover`.** Today an extension can contribute skills,
    prompts and themes but not context files, so a memory index has to be spliced into the
@@ -1071,9 +1097,11 @@ would help every memory extension, not only this one:
    Letting an extension offer an AGENTS.md-style file (with its own budget and provenance
    label) would make memory visible and inspectable like any other context.
 2. **A stable turn-summary payload on `agent_settled`.** Extensions that want an outcome
-   record currently re-walk `ctx.sessionManager` to find the turn's boundaries. A
-   `{ firstEntryId, lastEntryId, toolCalls, usage }` on the event would remove a class of
-   off-by-one bugs across memory and telemetry extensions.
+   record currently accumulate `turn_end` / `agent_end` payloads themselves and reconcile
+   them against `ctx.sessionManager` to find the run's boundaries. A
+   `{ firstEntryId, lastEntryId, toolCalls, usage }` on the event would let every memory
+   and telemetry extension skip that bookkeeping. Lowest priority of the four: the
+   accumulation approach is adequate, and this is an ergonomics ask rather than a gap.
 3. **`embed()` and `rerank()` on providers.** The llama-server and OpenAI-compatible
    providers already hold the base URL and credential for endpoints that serve
    `/v1/embeddings` and `/v1/rerank`; exposing those two operations through `ModelRegistry`
