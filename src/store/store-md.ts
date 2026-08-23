@@ -144,3 +144,49 @@ export function hostDisplayName(store: StoreMd, hostId: string): string {
 	const position = sameName.findIndex((candidate) => candidate.id === hostId);
 	return position === 0 ? host.name : `${host.name} (${position + 1})`;
 }
+
+/**
+ * Union-merge two host registries.
+ *
+ * The one merge Phase 1 knows how to do, and the only conflict sync can
+ * normally hit: journal files are per host, derived files change only through
+ * a remembered dream, so the single file two hosts write concurrently is the
+ * registry they both add themselves to. Union is the right resolution because
+ * a host registration is an *addition* — neither side is asserting anything
+ * about the other's hosts.
+ *
+ * Identity and creation date come from `ours`; where both sides know a host,
+ * the earlier registration date wins, because that is the one that is true.
+ */
+export function mergeStoreMd(ours: StoreMd, theirs: StoreMd): StoreMd {
+	const hosts = new Map<string, HostRecord>();
+	for (const host of [...theirs.hosts, ...ours.hosts]) {
+		const existing = hosts.get(host.id);
+		if (!existing) {
+			hosts.set(host.id, host);
+			continue;
+		}
+		hosts.set(host.id, {
+			id: host.id,
+			// A rename is a local fact about a machine; the side that has a name
+			// keeps it, and ours wins when both do.
+			name: host.name || existing.name,
+			registered: earliest(existing.registered, host.registered),
+		});
+	}
+
+	return {
+		schema: Math.max(ours.schema, theirs.schema),
+		store: ours.store,
+		created: earliest(ours.created, theirs.created),
+		// Sorted by registration date then id, so two hosts merging the same two
+		// registrations in opposite orders produce the same bytes.
+		hosts: [...hosts.values()].sort((a, b) => a.registered.localeCompare(b.registered) || a.id.localeCompare(b.id)),
+	};
+}
+
+function earliest(a: string, b: string): string {
+	if (a === "") return b;
+	if (b === "") return a;
+	return a <= b ? a : b;
+}

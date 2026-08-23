@@ -5,6 +5,9 @@
 	"type": "module",
 	"license": "MIT",
 	"main": "./src/index.ts",
+	"bin": {
+		"muninn": "./src/cli.ts"
+	},
 	"pi": {
 		"extensions": [
 			"./src/index.ts"

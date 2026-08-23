@@ -26,6 +26,7 @@ import { findEntry } from "../journal/lookup.ts";
 import type { SessionContext } from "../session.ts";
 import { formatScopes } from "../status.ts";
 import type { CaptureTarget } from "../store/scopes.ts";
+import { describeSync, type SyncResult } from "../sync/sync.ts";
 import { renderHitLine } from "../tools/render.ts";
 
 export type CommandLevel = "info" | "warning" | "error";
@@ -52,6 +53,8 @@ export interface CommandRuntime {
 	append(scope: CaptureTarget, entry: NewJournalEntry): Promise<AppendResult>;
 	/** Throw away `.index/` and rebuild it. Returns the chunk count. */
 	reindex(): Promise<number>;
+	/** Commit, fetch, rebase and push every active store. */
+	sync(options: { noPush?: boolean }): Promise<Array<{ scope: CaptureTarget; result: SyncResult }>>;
 	/** The multi-line `/muninn` report, assembled by the extension entry. */
 	statusReport(session: SessionContext): string;
 	channel(): Channel;
@@ -70,7 +73,7 @@ export const USAGE = [
 	"  /muninn search [--history] [--limit n] <query>",
 	"  /muninn scope                    which scopes are active here, and why",
 	"  /muninn reindex                  rebuild the index from the files",
-	"  /muninn sync                     commit, fetch, rebase, push",
+	"  /muninn sync [--no-push]         commit, fetch, rebase, push",
 ].join("\n");
 
 /**
@@ -126,9 +129,7 @@ export async function runMuninnCommand(args: string, runtime: CommandRuntime): P
 		case "search":
 			return search(rest, runtime);
 		case "sync":
-			// Named here so it is a known command with a known answer rather than
-			// a typo; the journal is committed at shutdown meanwhile.
-			return { level: "warning", text: "muninn: /muninn sync is not implemented yet" };
+			return runSync(rest, runtime);
 		case "help":
 		case "--help":
 			return { level: "info", text: USAGE };
@@ -249,6 +250,33 @@ async function promote(args: string, runtime: CommandRuntime): Promise<CommandOu
 		level: "info",
 		text: `muninn: promoted ${entryId} into the global journal as ${written.id} (from ${origin})`,
 	};
+}
+
+/**
+ * Commit, fetch, rebase and push every active store.
+ *
+ * Reports per scope and in full: sync is the one operation whose failure a
+ * user has to be able to act on — an unreachable remote, a conflict it will
+ * not resolve, a rejected push — so every note it produced is shown rather
+ * than summarised away.
+ */
+async function runSync(args: string, runtime: CommandRuntime): Promise<CommandOutput> {
+	const { flags } = parseFlags(args);
+	await runtime.load({ createStores: true });
+	await runtime.settle();
+
+	const outcomes = await runtime.sync(flags.has("no-push") ? { noPush: true } : {});
+	if (outcomes.length === 0)
+		return { level: "warning", text: "muninn: no store is active here, so there is nothing to sync" };
+
+	const lines: string[] = [];
+	let level: CommandLevel = "info";
+	for (const { scope, result } of outcomes) {
+		lines.push(`${scope}: ${describeSync(result)}`);
+		for (const note of result.notes) lines.push(`  ${note}`);
+		if (result.problem) level = result.offline ? "warning" : "error";
+	}
+	return { level, text: lines.join("\n") };
 }
 
 async function search(args: string, runtime: CommandRuntime): Promise<CommandOutput> {

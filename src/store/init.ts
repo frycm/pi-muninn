@@ -79,11 +79,15 @@ export async function ensureStore(
 		const existed = existsSync(storeMdPath);
 		const staged = new Set<string>();
 
-		if (!inRepo && !(await isGitRepository(storePath))) {
-			await git(storePath, { kind: "init" });
-			// Only for a repository Muninn created. An in-repo store must keep the
-			// project's own author, and reconfiguring it would rewrite the user's
-			// git config as a side effect of turning memory on.
+		if (!inRepo) {
+			if (!(await isGitRepository(storePath))) await git(storePath, { kind: "init" });
+			// Set on every open, not only on creation: a store this host *cloned*
+			// from its own remote is just as much Muninn's, and would otherwise
+			// commit under whatever identity the machine's git config happens to
+			// carry — or fail outright on a machine that has none. An in-repo
+			// store is the exception: it keeps the project's own author, because
+			// reconfiguring it would rewrite the user's git config as a side
+			// effect of turning memory on.
 			await git(storePath, { kind: "config", key: "user.name", value: `muninn ${options.host.name}` });
 			await git(storePath, { kind: "config", key: "user.email", value: `muninn@${options.host.id}` });
 		}

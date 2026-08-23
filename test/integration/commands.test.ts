@@ -28,6 +28,7 @@ let home: string;
 let agentDir: string;
 let project: string;
 let mock: MockProvider;
+let remote: string;
 
 async function git(cwd: string, args: string[]): Promise<void> {
 	await execFileAsync("git", args, { cwd });
@@ -89,6 +90,16 @@ beforeAll(async () => {
 	writeFileSync(join(project, "README.md"), "# Project\n");
 	await git(project, ["add", "README.md"]);
 	await git(project, ["commit", "--quiet", "-m", "initial"]);
+
+	// A bare remote and a `sync.remote` setting, so `/muninn sync` has somewhere
+	// to push in the same way an operator's private remote would.
+	remote = join(home, "remote.git");
+	mkdirSync(remote, { recursive: true });
+	await git(remote, ["init", "--bare", "--quiet", "--initial-branch=main"]);
+	writeFileSync(
+		join(agentDir, "settings.json"),
+		JSON.stringify({ muninn: { sync: { remote, onShutdown: false } } }, null, "\t"),
+	);
 
 	mock = await startMockProvider(["Understood."]);
 }, 60_000);
@@ -164,8 +175,36 @@ describe("/muninn reindex and sync", () => {
 		expect(stderr).toMatch(/index rebuilt — \d+ chunks?/);
 	}, 60_000);
 
-	it("says sync has not landed yet rather than failing as a typo", async () => {
+	it("commits, fetches and pushes the global store", async () => {
+		await pi("/muninn note --global Sync me to the remote.");
 		const { stderr } = await pi("/muninn sync");
-		expect(stderr).toContain("not implemented yet");
-	}, 60_000);
+
+		expect(stderr).toContain("global: sync:");
+		expect(stderr).toContain("pushed to origin/");
+		const { stdout } = await execFileAsync("git", ["log", "-1", "--format=%s", "main"], { cwd: remote });
+		expect(stdout).toMatch(/^(journal|store):/);
+
+		// The project store has no remote of its own, and says so rather than
+		// pushing project memory to the operator's personal remote.
+		expect(stderr).toContain("no remote configured — committed locally only");
+	}, 90_000);
+});
+
+describe("sync at shutdown", () => {
+	it("pushes what the session captured, when sync.onShutdown is on", async () => {
+		// The laptop case the design is built around: nobody types `/muninn
+		// sync`, the session ends, and the journal is on the remote.
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ muninn: { sync: { remote, onShutdown: true } } }, null, "\t"),
+		);
+
+		const { stdout: before } = await execFileAsync("git", ["rev-list", "--count", "main"], { cwd: remote });
+		await pi("/muninn note --global The shutdown sync carried this.");
+		const { stdout: after } = await execFileAsync("git", ["rev-list", "--count", "main"], { cwd: remote });
+
+		expect(Number.parseInt(after.trim(), 10)).toBeGreaterThan(Number.parseInt(before.trim(), 10));
+		const { stdout: pushed } = await execFileAsync("git", ["log", "--format=%s", "main"], { cwd: remote });
+		expect(pushed).toContain("journal:");
+	}, 90_000);
 });

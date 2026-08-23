@@ -17,6 +17,7 @@ let project: string;
 let host: string;
 let state: MuninnSessionState;
 let created: number;
+let synced: number;
 
 const SESSION_POINTER = "/sessions/2026-08-22_0198f2b0.jsonl#e5f6g7h8";
 
@@ -26,6 +27,7 @@ beforeEach(() => {
 	host = newHostId();
 	state = { task: "0198f2b0-1111-7000-8000-000000000001", recalled: [], written: [] };
 	created = 0;
+	synced = 0;
 });
 
 afterEach(() => {
@@ -79,6 +81,22 @@ function runtimeFor(session: SessionContext): CommandRuntime {
 			indexes = SessionIndexes.open(session.scopes.active, { force: true }).indexes;
 			return indexes.size;
 		},
+		async sync() {
+			synced++;
+			return [
+				{
+					scope: "project" as const,
+					result: {
+						committed: true,
+						fetched: false,
+						rebased: false,
+						pushed: false,
+						mergedRegistry: false,
+						notes: ["no sync.remote configured — committed locally only"],
+					},
+				},
+			];
+		},
 		statusReport: () => "⟡ muninn 0.1.0 · status report",
 		channel: () => "tui",
 		sessionPointer: () => SESSION_POINTER,
@@ -121,10 +139,12 @@ describe("/muninn", () => {
 		expect((await runMuninnCommand("help", runtimeFor(sessionContext()))).text).toBe(USAGE);
 	});
 
-	it("says plainly that sync has not landed yet", async () => {
+	it("syncs, and reports every note the transaction produced", async () => {
 		const output = await runMuninnCommand("sync", runtimeFor(sessionContext()));
-		expect(output.level).toBe("warning");
-		expect(output.text).toContain("not implemented yet");
+		expect(synced).toBe(1);
+		expect(output.level).toBe("info");
+		expect(output.text).toContain("project: sync: committed");
+		expect(output.text).toContain("no sync.remote configured");
 	});
 });
 

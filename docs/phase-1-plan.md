@@ -511,7 +511,7 @@ Four details worth keeping:
 Deferred to step 12 with sync itself: the "last sync" line in the status report, and the
 `sync failed` footer warning.
 
-### 12. Sync and CLI (1 d)
+### 12. Sync and CLI (1 d) — **done**
 
 - `sync.ts`: under the store lock for the whole duration: commit pending journal, `fetch`,
   `rebase` onto the remote branch, `push`. Because journal files are per host, a rebase
@@ -525,6 +525,49 @@ Deferred to step 12 with sync itself: the "last sync" line in the status report,
 
 **Done when:** the two-`HOME` acceptance test from step 8 runs through `muninn sync` on
 both sides, including a concurrent-registration conflict in `store.md`.
+**Met**: `test/integration/acceptance.test.ts` now moves memory between the two laptops
+with `sync()` — the same transaction `/muninn sync` and the CLI run — and
+`test/unit/sync.test.ts` covers the concurrent `store.md` registration, the conflict sync
+refuses to resolve, offline, and the shutdown deadline. `test/integration/commands.test.ts`
+drives `/muninn sync` and the `sync.onShutdown` path through a real pi against a bare
+remote, and `test/unit/cli.test.ts` covers `muninn sync|status` including running the bin
+from source.
+
+Six details worth keeping:
+
+- **`sync.remote` is the *global* store's remote.** The README leaves a project store's
+  remote as "the same, keyed by project", which is not a rule an implementation can follow:
+  a project settings file may not name a remote (it travels with a repository anyone can
+  clone), and pushing a project store to the operator's personal remote would put two
+  unrelated histories on one branch. So a project store syncs with the `origin` it already
+  has and otherwise commits locally, and an **in-repo store is never pushed by Muninn** —
+  that repository belongs to the project, and pushing it would push the user's own code.
+- **The one conflict sync resolves is `store.md`.** Journal files are per host, derived
+  files change only through a remembered dream, so the single file two machines write
+  concurrently is the host registry — and a registration is an addition, which is why a
+  union merge is right. The merge is order-independent and keeps the earlier registration
+  date, so both sides produce the same bytes. Any other conflict aborts the rebase, leaves
+  the store on its pre-sync commit, and reports; sync never force-pushes.
+- **Offline is an outcome, not a failure.** A fetch that cannot reach the remote leaves the
+  journal committed and says so once; the CLI exits 0, because a laptop syncing from cron
+  must not fill a mailbox with failures for being on a train.
+- **The shutdown cap kills the network, never a rebase.** The 10 s deadline stops the
+  transaction between steps and aborts a hanging `fetch` or `push` — both leave nothing
+  half-applied — but a rebase, once started, always finishes. A killed rebase would leave a
+  repository the next run has to clean up, which is the thing the cap exists to avoid.
+- **A store's branch is pinned to `main` at `git init`.** Two machines whose
+  `init.defaultBranch` differ would otherwise create stores on different branches and push
+  both to one remote.
+- **"The store exists" now means `store.md` exists.** The global store's directory also
+  holds `host.json`, which is minted the first time anything asks this machine who it is —
+  so the directory can exist on a machine that has never had a store, and the CLI would have
+  tried to sync it. Related: `ensureStore` now sets the muninn git identity on every open,
+  not only at creation, so a *cloned* store does not commit under whatever identity the
+  machine happens to carry — or fail outright on a machine with none.
+
+`muninn` runs the TypeScript directly (`bin: ./src/cli.ts`): Node ≥ 22.19 strips types, and
+resolving pi's agent directory locally rather than importing pi keeps `muninn sync` in cron
+working — and starting about a second faster — even when a pi install is half-upgraded.
 
 ### 13. Hardening and docs (1 d)
 

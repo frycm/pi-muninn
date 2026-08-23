@@ -8,6 +8,7 @@
  * history, chosen with `scopes.project: "in-repo"`.
  */
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 
 export type ScopeName = "global" | "project" | "team";
@@ -48,4 +49,16 @@ export function separateProjectStorePath(agentDir: string, toplevel: string): st
 /** The in-repo project store for a git toplevel. */
 export function inRepoProjectStorePath(toplevel: string, configDirName: string): string {
 	return join(toplevel, configDirName, "muninn");
+}
+
+/**
+ * Whether a store exists at this path.
+ *
+ * The test is `store.md`, not the directory: the global store's directory also
+ * holds `host.json`, which is minted the first time anything asks this machine
+ * who it is — so the directory can exist on a machine that has never had a
+ * store, and a caller that trusted the directory would try to sync one.
+ */
+export function storeExistsAt(path: string): boolean {
+	return existsSync(join(path, "store.md"));
 }

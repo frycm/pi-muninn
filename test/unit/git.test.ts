@@ -3,7 +3,9 @@ import { toArgv } from "../../src/git.ts";
 
 describe("toArgv — the allow-list is the promise", () => {
 	it("maps each command to a fixed argv", () => {
-		expect(toArgv({ kind: "init" })).toEqual(["init", "--quiet"]);
+		// The branch is pinned so two machines with different git defaults do not
+		// create stores on different branches.
+		expect(toArgv({ kind: "init" })).toEqual(["init", "--quiet", "--initial-branch=main"]);
 		expect(toArgv({ kind: "config", key: "user.name", value: "muninn mbp" })).toEqual([
 			"config",
 			"user.name",

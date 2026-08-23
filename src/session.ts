@@ -5,13 +5,13 @@
  * handlers and (from step 5) the capture path all see the same answer, and so
  * the expensive parts happen once per session rather than once per turn.
  */
-import { existsSync } from "node:fs";
 import { gitToplevel } from "./git.ts";
 import { claimsOf } from "./journal/format.ts";
 import { readStoreJournal } from "./journal/read.ts";
 import { type LoadedSettingsWithSources, loadSettings } from "./settings-io.ts";
 import { type HostIdentity, loadHostIdentity } from "./store/host.ts";
 import { ensureStore } from "./store/init.ts";
+import { storeExistsAt } from "./store/paths.ts";
 import { resolveScopes, type ScopeDecision } from "./store/scopes.ts";
 
 export interface SessionContext {
@@ -51,7 +51,7 @@ export async function buildSessionContext(options: BuildSessionContextOptions): 
 		configDirName: options.configDirName,
 		toplevel,
 		projectTrusted: options.projectTrusted,
-		storeExists: (path) => existsSync(path),
+		storeExists: storeExistsAt,
 	});
 
 	if (options.createStores) {

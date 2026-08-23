@@ -5,12 +5,11 @@
  * > on Tuesday on another laptop in a different project directory.
  *
  * Two scratch agent directories stand in for two laptops, and a bare
- * repository for the remote they share. Two things are still ahead of this
- * step: `muninn sync` (step 12) and the `memory_search` tool (step 10). So the
- * transport here is plain `git push` / `git clone` in the harness, and the
- * query goes through `search()` — the same function the tool will call. Step
- * 12's "done when" is this test again, with `muninn sync` in place of the git
- * calls.
+ * repository for the remote they share. The transport is `sync()` — the same
+ * transaction `/muninn sync` and the `muninn` CLI run — and the query goes
+ * through `search()`, the function `memory_search` calls. The one git command
+ * left in the harness is the `clone` that provisions the second laptop, which
+ * is how a machine joins a store that already exists.
  */
 import { execFile } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -18,13 +17,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { commitJournal, resetCommitDebounce } from "../../src/capture/commit.ts";
+import { resetCommitDebounce } from "../../src/capture/commit.ts";
 import { resetSupersessionCache, SessionIndexes } from "../../src/index/search.ts";
 import { appendEntry } from "../../src/journal/append.ts";
 import { loadHostIdentity } from "../../src/store/host.ts";
 import { ensureStore } from "../../src/store/init.ts";
 import { globalStorePath } from "../../src/store/paths.ts";
 import type { ActiveScope } from "../../src/store/scopes.ts";
+import { sync } from "../../src/sync/sync.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -76,17 +76,11 @@ describe("cross-laptop acceptance", () => {
 			{ storePath: storeOne, hostId: hostOne.id, now: new Date("2026-08-24T14:32:00") },
 		);
 
-		const committed = await commitJournal({
-			storePath: storeOne,
-			hostId: hostOne.id,
-			hostName: hostOne.name,
-			entries: 1,
-			force: true,
-		});
-		expect(committed.committed).toBe(true);
-
-		await git(storeOne, ["remote", "add", "origin", remote]);
-		await git(storeOne, ["push", "--quiet", "origin", "HEAD:main"]);
+		await git(storeOne, ["branch", "-M", "main"]);
+		const pushed = await sync({ storePath: storeOne, hostId: hostOne.id, hostName: hostOne.name, remote });
+		expect(pushed.problem).toBeUndefined();
+		expect(pushed.committed).toBe(true);
+		expect(pushed.pushed).toBe(true);
 
 		// The commit that carried the correction touched `journal/` and nothing else.
 		const touched = await git(storeOne, ["show", "--name-only", "--format=", "HEAD"]);
@@ -102,6 +96,10 @@ describe("cross-laptop acceptance", () => {
 		await git(laptopTwo, ["clone", "--quiet", remote, storeTwo]);
 		const hostTwo = loadHostIdentity(laptopTwo);
 		await ensureStore(storeTwo, { host: hostTwo });
+		// Registering itself is a change, so laptop two syncs it back.
+		resetCommitDebounce();
+		const joined = await sync({ storePath: storeTwo, hostId: hostTwo.id, hostName: hostTwo.name, remote });
+		expect(joined.problem).toBeUndefined();
 
 		// A second laptop is a second host: its own id, its own journal directory.
 		expect(hostTwo.id).not.toBe(hostOne.id);
@@ -126,13 +124,12 @@ describe("cross-laptop acceptance", () => {
 		const hostOne = loadHostIdentity(laptopOne);
 		const storeOne = globalStorePath(laptopOne);
 		await ensureStore(storeOne, { host: hostOne });
+		await git(storeOne, ["branch", "-M", "main"]);
 		await appendEntry(
 			{ source: "user", prose: "", claims: ["Laptop one saw the CI job hang."] },
 			{ storePath: storeOne, hostId: hostOne.id },
 		);
-		await commitJournal({ storePath: storeOne, hostId: hostOne.id, hostName: hostOne.name, entries: 1, force: true });
-		await git(storeOne, ["remote", "add", "origin", remote]);
-		await git(storeOne, ["push", "--quiet", "origin", "HEAD:main"]);
+		await sync({ storePath: storeOne, hostId: hostOne.id, hostName: hostOne.name, remote });
 
 		const storeTwo = join(laptopTwo, "muninn");
 		await git(laptopTwo, ["clone", "--quiet", remote, storeTwo]);
@@ -143,12 +140,15 @@ describe("cross-laptop acceptance", () => {
 			{ storePath: storeTwo, hostId: hostTwo.id },
 		);
 		resetCommitDebounce();
-		await commitJournal({ storePath: storeTwo, hostId: hostTwo.id, hostName: hostTwo.name, entries: 1, force: true });
-		await git(storeTwo, ["push", "--quiet", "origin", "HEAD:main"]);
+		const second = await sync({ storePath: storeTwo, hostId: hostTwo.id, hostName: hostTwo.name, remote });
+		expect(second.problem).toBeUndefined();
 
-		// Laptop one pulls: a fast-forward, because the two hosts wrote to
-		// different files. Both entries are then in one index.
-		await git(storeOne, ["pull", "--quiet", "--ff-only", "origin", "main"]);
+		// Laptop one syncs again and picks the other host's entry up by rebase —
+		// no merge, because the two hosts wrote to different files.
+		resetCommitDebounce();
+		const back = await sync({ storePath: storeOne, hostId: hostOne.id, hostName: hostOne.name, remote });
+		expect(back.rebased).toBe(true);
+		expect(back.problem).toBeUndefined();
 		const opened = SessionIndexes.open(activeGlobal(storeOne));
 		expect(opened.indexes.search({ query: "database URL" })[0]?.body).toContain("Laptop two");
 		expect(opened.indexes.search({ query: "CI job hang" })[0]?.body).toContain("Laptop one");

@@ -26,6 +26,14 @@ export interface StatusInput {
 	index?: ScopeIndexStats[];
 	/** What recall has actually put in front of the model this session. */
 	recall?: RecallStats;
+	/** Where memory is pushed, and what the last sync in this session did. */
+	sync?: SyncStats;
+}
+
+export interface SyncStats {
+	remote: string | null;
+	/** Absent until a sync has run in this session. */
+	last?: string;
 }
 
 export interface RecallStats {
@@ -130,6 +138,13 @@ export function formatStatus(input: StatusInput): string {
 		lines.push(
 			`          ${snapshot} · ${input.recall.recalled} memor${input.recall.recalled === 1 ? "y" : "ies"} recalled`,
 		);
+	}
+
+	if (input.sync) {
+		lines.push(`sync      ${input.sync.remote ?? "no remote (sync.remote is unset)"}`);
+		// In-session only: a timestamp that survived a restart would have to live
+		// in a file, and a status line is not worth a file format.
+		lines.push(`          ${input.sync.last ?? "no sync in this session"}`);
 	}
 
 	lines.push(`settings  ${describeSource(sources.global)}`);

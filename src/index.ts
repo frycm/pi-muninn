@@ -37,11 +37,16 @@ import { buildRecallMessage, contextFileLines, RECALL_KINDS } from "./recall/per
 import { appendSnapshot, readSnapshot, type Snapshot } from "./recall/snapshot.ts";
 import { buildSessionContext, journalStats, type SessionContext } from "./session.ts";
 import { formatStatus, formatStatusLine, formatWarning } from "./status.ts";
+import type { CaptureTarget } from "./store/scopes.ts";
+import { describeSync, type SyncResult, sync } from "./sync/sync.ts";
 import { memoryNoteTool } from "./tools/memory-note.ts";
 import { memoryReadTool } from "./tools/memory-read.ts";
 import { memorySearchTool } from "./tools/memory-search.ts";
 import type { ToolRuntime } from "./tools/runtime.ts";
 import { MUNINN_VERSION } from "./version.ts";
+
+/** How long a shutdown will wait for sync before giving up on the network. */
+const SHUTDOWN_SYNC_MS = 10_000;
 
 function describeRuntime(): string {
 	const bunVersion = (globalThis as { Bun?: { version: string } }).Bun?.version;
@@ -84,6 +89,8 @@ export default function (pi: ExtensionAPI): void {
 	let contextLines: string[] | undefined;
 	/** Texts of what was recalled this session, by id — the input to echo detection. */
 	const recalledTexts = new Map<string, string>();
+	/** What sync did this session, for the status report's "last sync" line. */
+	let lastSync: string | undefined;
 	/**
 	 * The footer writer, captured from the last event that carried a context.
 	 *
@@ -216,6 +223,7 @@ export default function (pi: ExtensionAPI): void {
 			captureFailures: queue.peekFailures().map((failure) => `${failure.label}: ${failure.message}`),
 			runsWithoutAgentEnd,
 			uncommitted: uncommittedEntries,
+			sync: { remote: current.loaded.settings.sync.remote, ...(lastSync ? { last: lastSync } : {}) },
 			...(indexStats ? { index: indexStats } : {}),
 			recall: {
 				snapshotLines: snapshot?.lines ?? 0,
@@ -236,6 +244,7 @@ export default function (pi: ExtensionAPI): void {
 					await queue.flush();
 					return indexes?.size ?? 0;
 				},
+				sync: (options) => runSync(options),
 				statusReport,
 				channel: () => channelForMode(ctx.mode),
 				sessionPointer: () => sessionPointer(ctx.sessionManager),
@@ -507,6 +516,48 @@ export default function (pi: ExtensionAPI): void {
 		});
 	};
 
+	/**
+	 * Sync every active store.
+	 *
+	 * `signal` is the shutdown deadline: it stops the transaction between steps
+	 * and kills a hanging fetch or push, but never interrupts a rebase — see
+	 * `git.ts` for why that distinction is load-bearing.
+	 */
+	const runSync = async (
+		options: { noPush?: boolean; signal?: AbortSignal } = {},
+	): Promise<Array<{ scope: CaptureTarget; result: SyncResult }>> => {
+		const current = session;
+		if (!current) return [];
+
+		const outcomes: Array<{ scope: CaptureTarget; result: SyncResult }> = [];
+		for (const scope of current.scopes.active) {
+			if (!scope.exists) continue;
+			const result = await sync({
+				storePath: scope.path,
+				hostId: current.host.id,
+				hostName: current.host.name,
+				// `sync.remote` is the global store's remote. A project store has
+				// no setting of its own — a project file may not name one — so it
+				// syncs with the `origin` it already has, and an in-repo store is
+				// never pushed by Muninn at all.
+				remote: scope.scope === "global" ? current.loaded.settings.sync.remote : null,
+				useExistingRemote: !scope.inRepo,
+				entries: uncommittedEntries,
+				...(options.noPush ? { noPush: true } : {}),
+				...(options.signal ? { signal: options.signal } : {}),
+			});
+			// Sync commits on its way out, so the footer's pending count is stale
+			// the moment it succeeds.
+			if (result.committed) {
+				uncommittedEntries = 0;
+				refreshStatus();
+			}
+			outcomes.push({ scope: scope.scope, result });
+			lastSync = `${scope.scope}: ${describeSync(result)}`;
+		}
+		return outcomes;
+	};
+
 	pi.on("agent_settled", async (_event, ctx) => {
 		// The run is over and pi will not continue on its own: no retry, no
 		// compaction, no queued continuation.
@@ -530,6 +581,31 @@ export default function (pi: ExtensionAPI): void {
 		// Un-debounced: this is the last chance to make the session's entries
 		// durable in git before the process goes away.
 		commitPending(true);
+		// Sync last, and only when the operator asked for it: it is the only step
+		// that reaches the network, and a shutdown must not hang on one. The cap
+		// stops the transaction between steps and kills a hanging fetch or push;
+		// a rebase, once started, always finishes.
+		const settings = session?.loaded.settings;
+		if (settings?.sync.onShutdown && settings.sync.remote) {
+			queue.enqueue("sync", async () => {
+				const deadline = new AbortController();
+				const timer = setTimeout(() => deadline.abort(), SHUTDOWN_SYNC_MS);
+				try {
+					for (const { scope, result } of await runSync({ signal: deadline.signal })) {
+						if (!result.problem) continue;
+						// Offline is a normal end to a laptop's day: the journal is
+						// committed and the next sync carries it. Anything else is a
+						// failure the operator has to know about.
+						const line = `muninn: ${scope} ${describeSync(result)}`;
+						process.stderr.write(`${line}\n`);
+						if (!result.offline) ctx.ui.notify(line, "warning");
+					}
+				} finally {
+					clearTimeout(timer);
+				}
+			});
+		}
+
 		// After the commit, so the index reflects every entry this session wrote.
 		queue.enqueue("index save", async () => {
 			for (const problem of indexes?.save() ?? []) process.stderr.write(`muninn: ${problem}\n`);

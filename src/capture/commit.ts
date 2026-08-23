@@ -80,27 +80,37 @@ export async function commitJournal(options: CommitOptions): Promise<CommitResul
 		return { committed: false, reason: "store is not a git repository" };
 	}
 
-	return withStoreLock(options.storePath, "commit", { host: options.hostId }, async () => {
-		if (!(await hasChanges(options.storePath, JOURNAL_PATHS))) {
-			// Record the check so an idle session does not re-run git every turn.
-			lastCommitAt.set(options.storePath, now);
-			return { committed: false, reason: "nothing to commit" };
-		}
+	return withStoreLock(options.storePath, "commit", { host: options.hostId }, () => commitJournalLocked(options, now));
+}
 
-		await git(options.storePath, { kind: "add", paths: JOURNAL_PATHS });
-		try {
-			await git(options.storePath, { kind: "commit", message: message(options), paths: JOURNAL_PATHS });
-		} catch (error) {
-			// Another process may have committed the same entries between the
-			// change check and here. An empty commit is not a failure.
-			if (error instanceof GitError && /nothing to commit|no changes added/i.test(error.stderr)) {
-				lastCommitAt.set(options.storePath, now);
-				return { committed: false, reason: "already committed by another session" };
-			}
-			throw error;
-		}
-
+/**
+ * The commit itself, with the lock already held.
+ *
+ * Sync needs this: it holds the store lock for its whole transaction, and
+ * `proper-lockfile` is not reentrant — calling `commitJournal` from inside a
+ * sync would deadlock the store against itself.
+ */
+export async function commitJournalLocked(options: CommitOptions, at?: number): Promise<CommitResult> {
+	const now = at ?? options.now ?? Date.now();
+	if (!(await hasChanges(options.storePath, JOURNAL_PATHS))) {
+		// Record the check so an idle session does not re-run git every turn.
 		lastCommitAt.set(options.storePath, now);
-		return { committed: true };
-	});
+		return { committed: false, reason: "nothing to commit" };
+	}
+
+	await git(options.storePath, { kind: "add", paths: JOURNAL_PATHS });
+	try {
+		await git(options.storePath, { kind: "commit", message: message(options), paths: JOURNAL_PATHS });
+	} catch (error) {
+		// Another process may have committed the same entries between the
+		// change check and here. An empty commit is not a failure.
+		if (error instanceof GitError && /nothing to commit|no changes added/i.test(error.stderr)) {
+			lastCommitAt.set(options.storePath, now);
+			return { committed: false, reason: "already committed by another session" };
+		}
+		throw error;
+	}
+
+	lastCommitAt.set(options.storePath, now);
+	return { committed: true };
 }
