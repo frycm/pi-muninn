@@ -586,6 +586,54 @@ session writing nothing outside `journal/` and leaving the project repository un
 `test/unit/journal-append.test.ts` runs eight processes × fifty appends into one daily file.
 535 tests, on Node and on Bun.
 
+## Review follow-ups
+
+A review of the finished phase (PR #2, against `390f5c4`) found eight issues, four of them
+security-relevant. All are fixed; each is worth keeping because each is a boundary that
+looked closed and was not.
+
+**Four ways in, closed.**
+
+- **`memory_read` would open any `.jsonl` on the machine.** Tool arguments are
+  model-controlled and a model reads text other people wrote, so `session:/tmp/anything`
+  was a local-file read primitive for anything that could get a sentence in front of it.
+  Only files the journal already points at are opened now. The allow-list is closed by
+  construction: capture is the only writer of a `session:` field, and `memory_note` takes
+  its pointer from the runtime rather than from its parameters.
+- **The store boundary was lexical, so a symlink walked straight through it.**
+  `resolve()` normalises `..` and knows nothing about links; `<store>/escape.md ->
+  /etc/passwd` passed the prefix test and was read. Both sides are canonicalised now, and
+  the comment that claimed this already worked is gone.
+- **A store nested under an unrelated repository was adopted by it.**
+  `isGitRepository()` answers "is this anywhere inside a work tree", which is not the
+  question: an agent directory inside a dotfiles repository would have had memory committed
+  into that repository's history, its git identity rewritten, and its remote used to publish.
+  An owned store must now *be* the toplevel, or it gets its own repository nested there —
+  failing closed would have broken a legitimate and common setup.
+- **Sync trusted any remote that parsed.** A mistyped remote was resolved by rebasing one
+  store's history onto another's and pushing the result. The store id has been the identity
+  guard all along; sync now checks it after the fetch and before the rebase, and the
+  registry merge refuses a foreign store as well.
+
+**Four ways to be quietly wrong, closed.**
+
+- **The session's index went stale the moment sync pulled entries in**, so `/muninn sync`
+  followed by a search missed exactly the memory the sync had just fetched.
+- **Shutdown sync was gated on the *global* remote**, which silently excluded a project
+  store syncing with its own `origin` — a configuration this plan had itself introduced two
+  steps earlier.
+- **Every fetch failure was called "offline"**, so an expired credential or a typo in a
+  remote exited 0 from cron. Only a narrow list of transient network conditions counts as
+  offline now; everything else is a failure someone has to see.
+- **`capture.toolFacts` defaulted to on while nothing read it**, and `/muninn` listed tool
+  facts among the capture kinds. It defaults off, is not listed, and warns if switched on.
+
+The pattern worth naming: every one of the four security findings was a check that existed
+and was one abstraction short — a prefix test that was not canonical, a repository test that
+answered a neighbouring question, a parse that was mistaken for an identity check, an
+allow-list that was never built because the value looked like it came from us. Comments
+asserting a boundary is enforced are not enforcement, and three of these had one.
+
 ## Test strategy
 
 | Layer | Runs | Covers |

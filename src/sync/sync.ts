@@ -27,7 +27,7 @@ import { join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
 import { GitError, GitMissingError, git, isGitRepository } from "../git.ts";
 import { withStoreLock } from "../store/lock.ts";
-import { formatStoreMd, mergeStoreMd, parseStoreMd } from "../store/store-md.ts";
+import { formatStoreMd, mergeStoreMd, parseStoreMd, type StoreMd } from "../store/store-md.ts";
 
 /** The remote Muninn keeps pointed at `sync.remote`. */
 export const REMOTE_NAME = "origin";
@@ -137,18 +137,34 @@ export async function sync(options: SyncOptions): Promise<SyncResult> {
 			result.fetched = true;
 			result.notes.push(`fetched ${REMOTE_NAME}`);
 		} catch (error) {
-			// Offline is the common case and not an error: the entries are
-			// committed, and the next sync will carry them.
-			result.offline = true;
 			result.stoppedAt = "fetch";
 			result.problem = `could not reach ${remote}: ${describe(error)}`;
-			result.notes.push("offline — journal committed locally, nothing pushed");
+			// Only a transient network failure is "offline". An authentication
+			// failure, a remote that does not exist, a malformed URL: those do not
+			// fix themselves overnight, and reporting them as offline is how a
+			// cron job fails silently for a month while exiting 0.
+			if (isTransient(error)) {
+				result.offline = true;
+				result.notes.push("offline — journal committed locally, nothing pushed");
+			} else {
+				result.notes.push(`fetch failed, and will keep failing until it is fixed: ${describe(error)}`);
+			}
 			return result;
 		}
 
 		// --- rebase --------------------------------------------------------
 		const remoteRef = `${REMOTE_NAME}/${branch}`;
 		if (await refExists(options.storePath, remoteRef)) {
+			// Whose store is that? A mistyped remote is otherwise resolved by
+			// rebasing one store's history onto another's and pushing the result:
+			// two unrelated memories, merged, on a remote neither of them owns.
+			const mismatch = await storeMismatch(options.storePath, remoteRef);
+			if (mismatch) {
+				result.stoppedAt = "rebase";
+				result.problem = mismatch;
+				result.notes.push(mismatch);
+				return result;
+			}
 			if (options.signal?.aborted) return stop(result, "rebase", "sync ran out of time before rebasing");
 			const rebased = await rebaseOnto(options.storePath, remoteRef, result);
 			if (!rebased) return result;
@@ -187,6 +203,30 @@ function stop(result: SyncResult, step: SyncStep, problem: string): SyncResult {
 	result.problem = problem;
 	result.notes.push(problem);
 	return result;
+}
+
+/**
+ * Network conditions that mean "try again later", named narrowly.
+ *
+ * Anything not on this list is treated as a fault that needs a person, which
+ * is the safe direction to be wrong in: a transient failure reported as an
+ * error costs one confusing line, and a permanent failure reported as
+ * transient costs every sync until someone notices.
+ */
+const TRANSIENT = [
+	/could not resolve host/i,
+	/temporary failure in name resolution/i,
+	/connection refused/i,
+	/connection timed out/i,
+	/operation timed out/i,
+	/network is unreachable/i,
+	/no route to host/i,
+	/connection reset by peer/i,
+];
+
+function isTransient(error: unknown): boolean {
+	const text = error instanceof GitError ? error.stderr : error instanceof Error ? error.message : String(error);
+	return TRANSIENT.some((pattern) => pattern.test(text));
 }
 
 function describe(error: unknown): string {
@@ -244,6 +284,29 @@ async function currentBranch(storePath: string): Promise<string> {
 	return branch;
 }
 
+/**
+ * A message when the remote holds a *different* store, or nothing.
+ *
+ * The store id is the identity guard the format already has, and this is the
+ * one place it can be checked before anything is written: after the fetch,
+ * before the rebase. A remote with no `store.md` yet is not a mismatch — that
+ * is a remote waiting for its first push.
+ */
+async function storeMismatch(storePath: string, remoteRef: string): Promise<string | undefined> {
+	const ours = parseStoreMd(readFileSync(join(storePath, "store.md"), "utf-8")).store;
+	if (!ours) return undefined;
+
+	let theirs: StoreMd | undefined;
+	try {
+		theirs = parseStoreMd((await git(storePath, { kind: "show-file", ref: remoteRef, path: "store.md" })).stdout).store;
+	} catch {
+		return undefined;
+	}
+	if (!theirs || theirs.store === ours.store) return undefined;
+
+	return `${remoteRef} holds a different store (${theirs.store}, not ${ours.store}); refusing to merge two stores' histories`;
+}
+
 async function refExists(storePath: string, ref: string): Promise<boolean> {
 	try {
 		await git(storePath, { kind: "verify-ref", ref });
@@ -298,6 +361,13 @@ async function mergeRegistry(storePath: string, result: SyncResult): Promise<boo
 		const ours = parseStoreMd((await git(storePath, { kind: "show-stage", stage: 2, path: "store.md" })).stdout);
 		const theirs = parseStoreMd((await git(storePath, { kind: "show-stage", stage: 3, path: "store.md" })).stdout);
 		if (!ours.store || !theirs.store) return false;
+		// Belt and braces: the pre-rebase check should already have stopped this,
+		// but a union merge is exactly the wrong answer for two different stores
+		// and it must not be reachable by any route.
+		if (ours.store.store !== theirs.store.store) {
+			result.notes.push(`store.md belongs to a different store (${theirs.store.store}); refusing to merge`);
+			return false;
+		}
 
 		writeFileSync(join(storePath, "store.md"), formatStoreMd(mergeStoreMd(ours.store, theirs.store)));
 		await git(storePath, { kind: "add", paths: ["store.md"] });

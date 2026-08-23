@@ -1,12 +1,16 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { git } from "../../src/git.ts";
 import { newHostId } from "../../src/ids.ts";
 import type { HostIdentity } from "../../src/store/host.ts";
 import { ensureStore, SchemaTooNewError } from "../../src/store/init.ts";
 import { parseStoreMd } from "../../src/store/store-md.ts";
+
+const execFileAsync = promisify(execFile);
 
 let root: string;
 let store: string;
@@ -176,5 +180,38 @@ describe("ensureStore — in-repo stores live in someone else's repository", () 
 		const before = await log(repo);
 		await ensureStore(join(repo, ".pi", "muninn"), { host, inRepo: true });
 		expect(Number.parseInt(await log(repo), 10)).toBe(Number.parseInt(before, 10) + 1);
+	});
+});
+
+describe("a store under someone else's repository", () => {
+	it("gets its own repository rather than being adopted by the outer one", async () => {
+		// An agent directory that lives inside a dotfiles repository is an
+		// ordinary setup. Adopting the outer repository would commit memory into
+		// someone else's history, rewrite that repository's git identity, and
+		// publish through its remote.
+		const outer = mkdtempSync(join(tmpdir(), "muninn-outer-repo-"));
+		try {
+			await execFileAsync("git", ["init", "--quiet"], { cwd: outer });
+			await execFileAsync("git", ["config", "user.email", "dev@example.com"], { cwd: outer });
+			await execFileAsync("git", ["config", "user.name", "Dev"], { cwd: outer });
+			writeFileSync(join(outer, "README.md"), "# dotfiles\n");
+			await execFileAsync("git", ["add", "README.md"], { cwd: outer });
+			await execFileAsync("git", ["commit", "--quiet", "-m", "initial"], { cwd: outer });
+
+			const nested = join(outer, "agent", "muninn");
+			await ensureStore(nested, { host });
+
+			// Its own toplevel, its own identity, and the outer repository is
+			// untouched but for an untracked directory.
+			const { stdout: toplevel } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd: nested });
+			expect(realpathSync(toplevel.trim())).toBe(realpathSync(nested));
+
+			const { stdout: name } = await execFileAsync("git", ["config", "user.name"], { cwd: outer });
+			expect(name.trim()).toBe("Dev");
+			const { stdout: log } = await execFileAsync("git", ["log", "--format=%s"], { cwd: outer });
+			expect(log.trim()).toBe("initial");
+		} finally {
+			rmSync(outer, { recursive: true, force: true });
+		}
 	});
 });

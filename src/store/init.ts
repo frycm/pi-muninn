@@ -8,10 +8,11 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { git, isGitRepository } from "../git.ts";
+import { git, gitToplevel } from "../git.ts";
 import { newStoreId } from "../ids.ts";
 import type { HostIdentity } from "./host.ts";
 import { withStoreLock } from "./lock.ts";
+import { canonicalPath } from "./paths.ts";
 import { formatStoreMd, parseStoreMd, registerHost, SCHEMA_VERSION, type StoreMd } from "./store-md.ts";
 
 /**
@@ -80,7 +81,17 @@ export async function ensureStore(
 		const staged = new Set<string>();
 
 		if (!inRepo) {
-			if (!(await isGitRepository(storePath))) await git(storePath, { kind: "init" });
+			// "Inside a work tree" is not the same question as "is this store its
+			// own repository": an agent directory that happens to live under a
+			// dotfiles repository would otherwise be adopted by it — committing
+			// memory into someone else's history, rewriting that repository's
+			// git identity, and publishing through its remote. The store must be
+			// the toplevel, or it gets its own repository nested here.
+			const toplevel = await gitToplevel(storePath);
+			const canonical = canonicalPath(storePath);
+			if (toplevel === undefined || canonicalPath(toplevel) !== canonical) {
+				await git(storePath, { kind: "init" });
+			}
 			// Set on every open, not only on creation: a store this host *cloned*
 			// from its own remote is just as much Muninn's, and would otherwise
 			// commit under whatever identity the machine's git config happens to

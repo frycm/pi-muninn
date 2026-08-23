@@ -85,9 +85,13 @@ export function formatStatus(input: StatusInput): string {
 	const captureKinds = [
 		settings.capture.corrections ? "corrections" : null,
 		settings.capture.outcomes ? "outcomes" : null,
-		settings.capture.toolFacts ? "tool facts" : null,
 	].filter((kind): kind is string => kind !== null);
 	lines.push(`capture   ${captureKinds.length > 0 ? captureKinds.join(", ") : "nothing (all kinds disabled)"}`);
+	if (settings.capture.toolFacts) {
+		// Listing it as a capture kind would say environment discoveries are being
+		// remembered. They are not: nothing reads this flag yet.
+		lines.push("          ! capture.toolFacts is on, but tool-derived facts are not implemented yet");
+	}
 	if (input.uncommitted) {
 		lines.push(
 			`          ${input.uncommitted} ${input.uncommitted === 1 ? "entry" : "entries"} written, not yet committed`,

@@ -284,3 +284,19 @@ describe("formatStatus — uncommitted entries", () => {
 		expect(text).toContain("2 entries written, not yet committed");
 	});
 });
+
+describe("formatStatus — a setting nothing honours yet", () => {
+	it("does not list tool facts among the capture kinds", () => {
+		// Nothing reads `capture.toolFacts`. Listing it would tell the operator
+		// that environment discoveries are being remembered when they are not.
+		expect(status()).toContain("capture   corrections, outcomes");
+	});
+
+	it("warns when it is switched on", () => {
+		const settings = structuredClone(DEFAULT_SETTINGS);
+		settings.capture.toolFacts = true;
+		expect(status({ loaded: loaded({ settings }) })).toContain(
+			"! capture.toolFacts is on, but tool-derived facts are not implemented yet",
+		);
+	});
+});

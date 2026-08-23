@@ -552,6 +552,10 @@ export default function (pi: ExtensionAPI): void {
 				uncommittedEntries = 0;
 				refreshStatus();
 			}
+			// A rebase can bring another host's entries into the store while this
+			// session holds its index open. Without this, `/muninn sync` followed
+			// by a search misses exactly the memory the sync just fetched.
+			if (result.rebased || result.fetched) indexes?.refresh(scope.path);
 			outcomes.push({ scope: scope.scope, result });
 			lastSync = `${scope.scope}: ${describeSync(result)}`;
 		}
@@ -585,8 +589,11 @@ export default function (pi: ExtensionAPI): void {
 		// that reaches the network, and a shutdown must not hang on one. The cap
 		// stops the transaction between steps and kills a hanging fetch or push;
 		// a rebase, once started, always finishes.
-		const settings = session?.loaded.settings;
-		if (settings?.sync.onShutdown && settings.sync.remote) {
+		// Gated on the setting alone: a separate project store syncs with the
+		// `origin` it already has, so requiring a *global* remote here would
+		// silently exclude it. Each scope decides for itself whether it has
+		// anywhere to push.
+		if (session?.loaded.settings.sync.onShutdown) {
 			queue.enqueue("sync", async () => {
 				const deadline = new AbortController();
 				const timer = setTimeout(() => deadline.abort(), SHUTDOWN_SYNC_MS);

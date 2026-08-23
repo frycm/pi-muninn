@@ -66,7 +66,11 @@ export interface MuninnSettings {
 export const DEFAULT_SETTINGS: MuninnSettings = {
 	scopes: { global: true, project: "auto", team: { remote: null, pin: null } },
 	sync: { remote: null, onShutdown: true },
-	capture: { corrections: true, outcomes: true, toolFacts: true, externalPerSession: 10 },
+	// `toolFacts` is off: nothing reads it yet. Tool-derived facts are deferred
+	// until the classifier budget is understood, and a setting that defaults to
+	// true while no code path honours it tells the operator that environment
+	// discoveries are being remembered when they are not.
+	capture: { corrections: true, outcomes: true, toolFacts: false, externalPerSession: 10 },
 	recall: {
 		factsPerTurn: 8,
 		tokenBudget: 1500,

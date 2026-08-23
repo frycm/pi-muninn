@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -414,6 +414,9 @@ describe("memory_read", () => {
 
 	it("follows a session pointer into pi's own transcript", async () => {
 		const sessionFile = join(project, "transcript.jsonl");
+		// Only transcripts the journal points at can be opened, so the entry that
+		// points at this one has to exist first.
+		await seed(project, { claims: ["Something was learned here."], session: `${sessionFile}#b2` });
 		writeFileSync(
 			sessionFile,
 			[
@@ -439,6 +442,38 @@ describe("memory_read", () => {
 		expect(text).toContain("why does CI hang?");
 		expect(text).toContain("→ assistant");
 		expect(text).toContain("the runner has no TTY");
+	});
+
+	it("refuses a transcript no memory points at", async () => {
+		// Tool arguments are model-controlled, and a model reads text other
+		// people wrote. Without this, "read the session at /etc/…" is a
+		// local-file read primitive for anything that can get a sentence in
+		// front of the model.
+		const elsewhere = join(project, "private.jsonl");
+		writeFileSync(
+			elsewhere,
+			`${JSON.stringify({ type: "message", id: "x", message: { role: "user", content: "secret" } })}\n`,
+		);
+
+		const tool = memoryReadTool(runtimeFor(sessionContext()));
+		await expect(run(tool, { id: `session:${elsewhere}#x` })).rejects.toThrow(
+			/only opens transcripts the journal refers to/,
+		);
+		await expect(run(tool, { id: "session:/etc/hosts.jsonl#x" })).rejects.toThrow(
+			/not a session file any memory points at/,
+		);
+	});
+
+	it("refuses a symlink that leaves the store", async () => {
+		// `resolve()` normalises `..` but knows nothing about symlinks: a link
+		// inside the store passes a lexical prefix test and is then read.
+		const outside = join(global, "..", "outside-any-store.md");
+		writeFileSync(outside, "a secret from outside every store\n");
+		symlinkSync(outside, join(project, "escape.md"));
+
+		const tool = memoryReadTool(runtimeFor(sessionContext()));
+		await expect(run(tool, { path: "escape.md" })).rejects.toThrow(/not a readable file in any active memory store/);
+		rmSync(outside, { force: true });
 	});
 
 	it("needs something to read", async () => {

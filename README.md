@@ -819,7 +819,9 @@ configured and reachable, and before every dream): commit this host's journal �
 rebase `main` onto the remote head, which is conflict-free because every host's journal
 files are its own and derived files change only through remembered dreams → `push`. If the
 rebase does conflict anyway — a hand-edited topic file, a remembered dream on each side —
-sync stops and reports; it never force-pushes `main`.
+sync stops and reports; it never force-pushes `main`. Before any of that it compares
+`store.md`'s store id against the remote's: a mistyped remote is refused rather than
+resolved by merging two unrelated memories into one history.
 
 **Dreams across hosts.** Any host may dream; its branch is `dream/<host>/<ts>` and is pushed
 on sync, so `/muninn dreams` on the laptop lists the server's overnight dream and can
@@ -1019,14 +1021,16 @@ muninn serve-cron                                 # prints a crontab / launchd /
 ```
 
 Settings live in pi's settings under `muninn` (global) and `.pi/settings.json` (project,
-tighten-only):
+tighten-only). `capture.toolFacts` defaults to **off** and nothing reads it yet — tool-derived
+facts are deferred until the classifier budget is understood, and `/muninn` says so if you
+switch it on:
 
 ```json
 {
   "muninn": {
     "scopes": { "global": true, "project": "auto", "team": { "remote": null, "pin": null } },
     "sync": { "remote": null, "onShutdown": true },
-    "capture": { "corrections": true, "outcomes": true, "toolFacts": true, "externalPerSession": 10 },
+    "capture": { "corrections": true, "outcomes": true, "toolFacts": false, "externalPerSession": 10 },
     "recall": {
       "factsPerTurn": 8, "tokenBudget": 1500, "indexTier": "auto",
       "snapshotLines": { "total": 200, "global": 120, "project": 60, "team": 20 },

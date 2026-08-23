@@ -125,3 +125,30 @@ describe("SessionIndexes", () => {
 		expect(opened.indexes.save()).toEqual([]);
 	});
 });
+
+describe("SessionIndexes.refresh", () => {
+	it("picks up entries that arrived in the store from outside the session", () => {
+		// What a sync does: another host's daily file is rebased into the store
+		// while this session holds its index open. Without a refresh the memory
+		// that just arrived is invisible until the next session.
+		const opened = SessionIndexes.open([{ scope: "global", path: global, exists: true, inRepo: false }]);
+		expect(opened.indexes.search({ query: "elsewhere" })).toEqual([]);
+
+		writeEntry(global, ENTRY_A, "A claim written elsewhere and synced in.");
+		expect(opened.indexes.search({ query: "elsewhere" })).toEqual([]);
+
+		opened.indexes.refresh(global);
+		expect(opened.indexes.search({ query: "elsewhere" })[0]?.id).toBe(`${ENTRY_A}.1`);
+	});
+
+	it("is cheap and harmless when nothing changed", () => {
+		writeEntry(global, ENTRY_A, "Already indexed.");
+		const opened = SessionIndexes.open([{ scope: "global", path: global, exists: true, inRepo: false }]);
+		const before = opened.indexes.size;
+
+		opened.indexes.refresh(global);
+		opened.indexes.refresh("/some/store/this/session/never/opened");
+
+		expect(opened.indexes.size).toBe(before);
+	});
+});

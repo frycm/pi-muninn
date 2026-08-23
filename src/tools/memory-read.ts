@@ -13,18 +13,22 @@
  *  - a `session:` pointer — pi's own transcript underneath an entry, which is
  *    the evidence the journal deliberately does not copy.
  *
- * Reads are confined to the active stores and to session files entries
- * actually point at. A path that escapes both is refused rather than resolved.
+ * Reads are confined to the active stores and to the session files that
+ * journal entries actually point at. Both boundaries are enforced on canonical
+ * paths, because tool arguments are model-controlled: text the model read
+ * somewhere else must not be able to turn `memory_read` into "open any file on
+ * this machine".
  */
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, resolve, sep } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { messageText } from "../capture/accumulate.ts";
 import { isEntryId, parseClaimId } from "../ids.ts";
-import { findEntry } from "../journal/lookup.ts";
+import { findEntry, referencedSessionFiles } from "../journal/lookup.ts";
 import { readSupersessions } from "../journal/supersessions.ts";
 import type { SessionContext } from "../session.ts";
+import { canonicalPath, isInside } from "../store/paths.ts";
 import { renderEntry, renderFile, TOOL_OUTPUT_CHARS, trailer, truncate } from "./render.ts";
 import { requireSession, type ToolRuntime } from "./runtime.ts";
 
@@ -76,7 +80,9 @@ export function memoryReadTool(runtime: ToolRuntime) {
 function read(runtime: ToolRuntime, session: SessionContext, params: MemoryReadParams): string {
 	if (params.id !== undefined && params.id.trim() !== "") {
 		const id = params.id.trim();
-		if (id.startsWith("session:") || /\.jsonl(#|$)/.test(id)) return readSession(id.replace(/^session:/, ""));
+		if (id.startsWith("session:") || /\.jsonl(#|$)/.test(id)) {
+			return readSession(id.replace(/^session:/, ""), session);
+		}
 		return readById(runtime, id);
 	}
 	if (params.path !== undefined && params.path.trim() !== "") {
@@ -144,17 +150,21 @@ function parseRange(range: string | undefined): { from: number; to: number } | u
 function readPath(session: SessionContext, path: string, range?: { from: number; to: number }): string {
 	const tried: string[] = [];
 	for (const scope of session.scopes.active) {
-		const root = resolve(scope.path);
-		const target = isAbsolute(path) ? resolve(path) : resolve(root, path);
-		if (target !== root && !target.startsWith(root + sep)) {
+		const root = canonicalPath(scope.path);
+		if (root === undefined) continue;
+		const target = canonicalPath(isAbsolute(path) ? path : resolve(scope.path, path));
+		// Canonical on both sides: `resolve()` normalises `..` but knows nothing
+		// about symlinks, so `<store>/escape.md -> /etc/passwd` would pass a
+		// lexical prefix test and then be read.
+		if (target === undefined || !isInside(root, target)) {
 			tried.push(scope.path);
 			continue;
 		}
-		if (!existsSync(target) || !statSync(target).isFile()) {
+		if (!statSync(target).isFile()) {
 			tried.push(scope.path);
 			continue;
 		}
-		const relative = target.slice(root.length + 1);
+		const relative = target === root ? "" : target.slice(root.length + 1);
 		return renderFile(`${scope.scope}:${relative}`, readFileSync(target, "utf-8"), range);
 	}
 
@@ -180,16 +190,31 @@ interface SessionLine {
  * The pi session entries an entry's `session:` pointer names.
  *
  * Muninn never copies transcripts into the journal — they are pi's, they are
- * large, and they are already on disk. The pointer is how an entry stays
- * one hop from its evidence, and this is the hop.
+ * large, and they are already on disk. The pointer is how an entry stays one
+ * hop from its evidence, and this is the hop.
+ *
+ * Only files the journal *already points at* are opened. The parameter is
+ * model-controlled and a model reads text other people wrote, so without this
+ * the tool would open any path a prompt-injected sentence asked for. Capture is
+ * the only writer of a `session:` field — `memory_note` takes its pointer from
+ * the runtime, never from its arguments — so the allow-list is closed by
+ * construction.
  */
-function readSession(pointer: string): string {
+function readSession(pointer: string, session: SessionContext): string {
 	const [file, wanted] = pointer.split("#");
 	if (!file) throw new Error("muninn: a session pointer needs a file, as session:<file>#<entry id>");
 
+	const target = canonicalPath(file);
+	const referenced = referencedSessionFiles(session.scopes.active.map((scope) => scope.path));
+	if (target === undefined || !referenced.has(target)) {
+		throw new Error(
+			`muninn: ${file} is not a session file any memory points at; memory_read only opens transcripts the journal refers to`,
+		);
+	}
+
 	let text: string;
 	try {
-		text = readFileSync(file, "utf-8");
+		text = readFileSync(target, "utf-8");
 	} catch (error) {
 		throw new Error(
 			`muninn: cannot read the session file ${file} (${error instanceof Error ? error.message : String(error)})`,

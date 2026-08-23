@@ -58,6 +58,8 @@ export type GitCommand =
 	| { kind: "push"; remote: string; branch: string }
 	/** Read one side of a conflicted file: 2 is ours, 3 is theirs. */
 	| { kind: "show-stage"; stage: 2 | 3; path: string }
+	/** Read a file as of a ref, without checking anything out. */
+	| { kind: "show-file"; ref: string; path: string }
 	/** Whether `ref` exists, for telling a first push from a rebase. */
 	| { kind: "verify-ref"; ref: string };
 
@@ -111,6 +113,12 @@ function assertName(kind: string, value: string): void {
 function assertRemoteUrl(url: string): void {
 	if (url.trim() === "" || url.startsWith("-") || /^ext::/i.test(url)) {
 		throw new Error(`refusing to use "${url}" as a git remote`);
+	}
+}
+
+function assertReadablePath(path: string): void {
+	if (path.startsWith("-") || path.startsWith("/") || path.includes("..")) {
+		throw new Error(`refusing to read "${path}" out of the repository`);
 	}
 }
 
@@ -191,10 +199,12 @@ export function toArgv(command: GitCommand): string[] {
 			// it reports. Losing another host's commits is not a thing Muninn does.
 			return ["push", "--quiet", command.remote, `HEAD:${command.branch}`];
 		case "show-stage":
-			if (command.path.startsWith("-") || command.path.includes("..")) {
-				throw new Error(`refusing to read "${command.path}" from the index`);
-			}
+			assertReadablePath(command.path);
 			return ["show", `:${command.stage}:${command.path}`];
+		case "show-file":
+			assertName("ref", command.ref);
+			assertReadablePath(command.path);
+			return ["show", `${command.ref}:${command.path}`];
 		case "verify-ref":
 			assertName("ref", command.ref);
 			return ["rev-parse", "--verify", "--quiet", command.ref];

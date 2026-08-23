@@ -124,6 +124,25 @@ describe("sync", () => {
 		expect(parseStoreMd(readFileSync(join(one, "store.md"), "utf-8")).store?.hosts).toHaveLength(3);
 	});
 
+	it("refuses a remote that holds a different store", async () => {
+		// A mistyped remote is otherwise resolved by rebasing one store's history
+		// onto another's and pushing the result: two unrelated memories, merged,
+		// on a remote neither of them owns.
+		await seedOne();
+
+		await ensureStore(two, { host: hostTwo });
+		await note(two, hostTwo, "A different store entirely.");
+		const result = await sync({ storePath: two, hostId: hostTwo.id, hostName: hostTwo.name, remote });
+
+		expect(result.problem).toContain("holds a different store");
+		expect(result.pushed).toBe(false);
+		expect(result.rebased).toBe(false);
+		// Laptop one's remote still has only laptop one's history.
+		const log = await git(remote, ["log", "--format=%s", "main"]);
+		expect(log).not.toContain("laptop-two");
+		expect(readStoreJournal(two).entries).toHaveLength(1);
+	});
+
 	it("stops on a conflict it does not understand, leaving the store where it was", async () => {
 		await seedOne();
 		await git(root, ["clone", "--quiet", remote, two]);
@@ -150,10 +169,34 @@ describe("sync", () => {
 		expect(readFileSync(join(two, "MEMORY.md"), "utf-8")).toContain("laptop two's line");
 	});
 
-	it("commits locally and says so when the remote cannot be reached", async () => {
+	it("commits locally and says so when the network is out", async () => {
 		await ensureStore(one, { host: hostOne });
 		await git(one, ["branch", "-M", "main"]);
 		await note(one, hostOne, "Written while offline.");
+
+		// `.invalid` never resolves (RFC 2606), which is the transient failure a
+		// laptop on a train actually produces.
+		const result = await sync({
+			storePath: one,
+			hostId: hostOne.id,
+			hostName: hostOne.name,
+			remote: "https://muninn.invalid/store.git",
+		});
+
+		expect(result.committed).toBe(true);
+		expect(result.offline).toBe(true);
+		expect(result.stoppedAt).toBe("fetch");
+		expect(result.notes.join("\n")).toContain("offline");
+		// The entry is durable either way; the next sync carries it.
+		expect(readStoreJournal(one).entries).toHaveLength(1);
+	});
+
+	it("does not call a broken remote 'offline'", async () => {
+		// A remote that does not exist, a typo, an expired credential: none of
+		// these fix themselves overnight. Reporting them as offline is how a
+		// cron job fails for a month while exiting 0.
+		await ensureStore(one, { host: hostOne });
+		await note(one, hostOne, "Written against a remote that is not there.");
 
 		const result = await sync({
 			storePath: one,
@@ -163,11 +206,9 @@ describe("sync", () => {
 		});
 
 		expect(result.committed).toBe(true);
-		expect(result.offline).toBe(true);
-		expect(result.stoppedAt).toBe("fetch");
-		expect(result.notes.join("\n")).toContain("offline");
-		// The entry is durable either way; the next sync carries it.
-		expect(readStoreJournal(one).entries).toHaveLength(1);
+		expect(result.problem).toBeDefined();
+		expect(result.offline).toBeFalsy();
+		expect(result.notes.join("\n")).toContain("will keep failing until it is fixed");
 	});
 
 	it("commits and stops when there is no remote at all", async () => {

@@ -137,15 +137,26 @@ describe("muninn (cli)", () => {
 		await expect(git(remote, ["log", "-1", "--format=%s", "main"])).rejects.toThrow();
 	});
 
-	it("reports an unreachable remote as a warning, not a failure", async () => {
+	it("treats being offline as a warning, not a failure", async () => {
 		// A laptop that syncs from cron while offline must not fill a mailbox
 		// with failures: the journal is committed, and the next run carries it.
 		await seedGlobalStore();
-		settings({ sync: { remote: join(root, "gone.git") } });
+		settings({ sync: { remote: "https://muninn.invalid/store.git" } });
 
 		const result = await runCli(["sync"], cwd);
 		expect(result.code).toBe(0);
 		expect(result.out.join("\n")).toContain("offline");
+	});
+
+	it("exits nonzero for a remote that will keep failing", async () => {
+		// The other half of the same rule: a cron job must be able to notice a
+		// broken remote, and a wrong path is not a network condition.
+		await seedGlobalStore();
+		settings({ sync: { remote: join(root, "gone.git") } });
+
+		const result = await runCli(["sync"], cwd);
+		expect(result.code).toBe(1);
+		expect(result.out.join("\n")).toContain("will keep failing");
 	});
 
 	it("rejects a scope it does not know", async () => {

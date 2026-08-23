@@ -8,8 +8,9 @@
  * history, chosen with `scopes.project: "in-repo"`.
  */
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { basename, join } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join, resolve } from "node:path";
 
 export type ScopeName = "global" | "project" | "team";
 
@@ -61,4 +62,34 @@ export function inRepoProjectStorePath(toplevel: string, configDirName: string):
  */
 export function storeExistsAt(path: string): boolean {
 	return existsSync(join(path, "store.md"));
+}
+
+/**
+ * The path the filesystem would actually open, or undefined when nothing is
+ * there.
+ *
+ * Every boundary check in Muninn compares canonical paths, not lexical ones:
+ * `resolve()` normalises `..` but knows nothing about symlinks, so a link
+ * inside a store pointing anywhere on the disk passes a prefix test on the
+ * resolved string and is then happily read. Only asking the filesystem catches
+ * it.
+ */
+export function canonicalPath(path: string): string | undefined {
+	try {
+		return realpathSync(expandTilde(path));
+	} catch {
+		return undefined;
+	}
+}
+
+/** `~/x` → `<home>/x`. Journal entries may carry a tilde path a human wrote. */
+export function expandTilde(path: string, home: string = homedir()): string {
+	if (path === "~") return home;
+	if (path.startsWith("~/")) return resolve(home, path.slice(2));
+	return path;
+}
+
+/** True when `target` is `root` itself or something inside it. Canonical paths only. */
+export function isInside(root: string, target: string): boolean {
+	return target === root || target.startsWith(root.endsWith("/") ? root : `${root}/`);
 }

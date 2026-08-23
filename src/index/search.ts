@@ -191,6 +191,18 @@ export class SessionIndexes {
 		return undefined;
 	}
 
+	/**
+	 * Re-read one store after something outside this session changed it.
+	 *
+	 * Sync rebases other hosts' journal files into the store while the session
+	 * holds its index open; without this the memory that just arrived is
+	 * invisible until the next session or a `/muninn reindex`. Cheap when
+	 * nothing changed — the manifest's content hashes answer that.
+	 */
+	refresh(storePath: string): void {
+		this.scoped.find((scoped) => scoped.storePath === storePath)?.index.refresh();
+	}
+
 	/** Index an entry the moment it is appended, so this turn's write is findable in the next. */
 	addEntry(storePath: string, entry: JournalEntryWithContext): void {
 		this.scoped.find((scoped) => scoped.storePath === storePath)?.index.addEntry(entry);
