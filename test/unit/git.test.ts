@@ -57,6 +57,110 @@ describe("toArgv — the allow-list is the promise", () => {
 		expect(() => toArgv({ kind: "add", paths: ["--all"] })).toThrow(/outside the store/);
 	});
 
+	it("maps every dream verb to a fixed argv", () => {
+		expect(
+			toArgv({ kind: "worktree-add", path: "/tmp/wt", branch: "dream/mbp/2026-08-23T03-00", startPoint: "abc123" }),
+		).toEqual(["worktree", "add", "--quiet", "-b", "dream/mbp/2026-08-23T03-00", "/tmp/wt", "abc123"]);
+		expect(
+			toArgv({ kind: "worktree-add", path: "/tmp/wt", branch: "dream/mbp/x", startPoint: "HEAD", noCheckout: true }),
+		).toEqual(["worktree", "add", "--quiet", "--no-checkout", "-b", "dream/mbp/x", "/tmp/wt", "HEAD"]);
+		expect(toArgv({ kind: "worktree-remove", path: "/tmp/wt", force: true })).toEqual([
+			"worktree",
+			"remove",
+			"--force",
+			"/tmp/wt",
+		]);
+		expect(toArgv({ kind: "worktree-prune" })).toEqual(["worktree", "prune"]);
+		expect(toArgv({ kind: "worktree-list" })).toEqual(["worktree", "list", "--porcelain"]);
+		// `--no-cone`: cone mode keeps every file at the repository root, and the
+		// point of narrowing an in-repo worktree is that only the store appears.
+		expect(toArgv({ kind: "sparse-checkout-set", paths: ["/.pi/muninn/"] })).toEqual([
+			"sparse-checkout",
+			"set",
+			"--no-cone",
+			"/.pi/muninn/",
+		]);
+		expect(toArgv({ kind: "checkout-head" })).toEqual(["checkout", "--quiet"]);
+		expect(toArgv({ kind: "branch-list", prefix: "dream/" })).toEqual([
+			"for-each-ref",
+			"--sort=-committerdate",
+			"--format=%(refname:short)",
+			"refs/heads/dream/*",
+		]);
+		expect(toArgv({ kind: "branch-delete", name: "dream/mbp/x", force: true })).toEqual([
+			"branch",
+			"-D",
+			"dream/mbp/x",
+		]);
+		expect(toArgv({ kind: "merge-ff-only", ref: "dream/mbp/x" })).toEqual([
+			"merge",
+			"--ff-only",
+			"--quiet",
+			"dream/mbp/x",
+		]);
+		expect(toArgv({ kind: "revert", sha: "abc123" })).toEqual(["revert", "--no-edit", "--no-gpg-sign", "abc123"]);
+		expect(toArgv({ kind: "merge-base", a: "main", b: "dream/mbp/x" })).toEqual(["merge-base", "main", "dream/mbp/x"]);
+		expect(toArgv({ kind: "log-oneline", ref: "main", limit: 5 })).toEqual([
+			"log",
+			"--max-count=5",
+			"--format=%H %s",
+			"main",
+		]);
+	});
+
+	it("takes a range only where a range belongs", () => {
+		// `..` is an escape attempt everywhere else in this module; it is legal in
+		// exactly this position, and still only in the shape of a range.
+		expect(toArgv({ kind: "diff-name-only", range: "abc..def", paths: ["journal/"] })).toEqual([
+			"diff",
+			"--name-only",
+			"abc..def",
+			"--",
+			"journal/",
+		]);
+		expect(toArgv({ kind: "rev-list-count", range: "abc...def", paths: ["journal/"] })).toEqual([
+			"rev-list",
+			"--count",
+			"abc...def",
+			"--",
+			"journal/",
+		]);
+		expect(() => toArgv({ kind: "diff-name-only", range: "../../etc", paths: ["journal/"] })).toThrow(/range/);
+		expect(() => toArgv({ kind: "diff-name-only", range: "--all", paths: ["journal/"] })).toThrow(/range/);
+		expect(() => toArgv({ kind: "rev-list-count", range: "main", paths: ["src/"] })).toThrow(/allow-list/);
+	});
+
+	it("restores derived paths only, so recovery can never lose a journal entry", () => {
+		expect(toArgv({ kind: "checkout-paths", ref: "HEAD", paths: ["MEMORY.md", "topics/"] })).toEqual([
+			"checkout",
+			"HEAD",
+			"--",
+			"MEMORY.md",
+			"topics/",
+		]);
+		// The whole safety argument for `checkout HEAD -- …` during a half-applied
+		// remember is that it cannot name the journal. It has to be enforced.
+		expect(() => toArgv({ kind: "checkout-paths", ref: "HEAD", paths: ["journal/"] })).toThrow(/derived/);
+		expect(() => toArgv({ kind: "checkout-paths", ref: "HEAD", paths: ["store.md"] })).toThrow(/derived/);
+		expect(() => toArgv({ kind: "checkout-paths", ref: "HEAD", paths: [] })).toThrow(/at least one path/);
+	});
+
+	it("refuses a worktree path that is not absolute, and a narrowing that climbs out", () => {
+		// A relative worktree path is resolved against the repository, which is
+		// how a checkout ends up inside the store it was meant to stay out of.
+		expect(() => toArgv({ kind: "worktree-add", path: "wt", branch: "dream/a/b", startPoint: "HEAD" })).toThrow(
+			/worktree path/,
+		);
+		expect(() =>
+			toArgv({ kind: "worktree-add", path: "/tmp/../etc/wt", branch: "dream/a/b", startPoint: "HEAD" }),
+		).toThrow(/worktree path/);
+		expect(() => toArgv({ kind: "sparse-checkout-set", paths: ["/../etc/"] })).toThrow(/narrow/);
+		// Unanchored would also match a `.pi/muninn/` nested anywhere in the project.
+		expect(() => toArgv({ kind: "sparse-checkout-set", paths: [".pi/muninn/"] })).toThrow(/narrow/);
+		expect(() => toArgv({ kind: "sparse-checkout-set", paths: ["/.pi/muninn"] })).toThrow(/narrow/);
+		expect(() => toArgv({ kind: "sparse-checkout-set", paths: [] })).toThrow(/at least one path/);
+	});
+
 	it("refuses an empty add", () => {
 		expect(() => toArgv({ kind: "add", paths: [] })).toThrow(/at least one path/);
 	});

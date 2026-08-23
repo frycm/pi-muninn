@@ -1170,6 +1170,7 @@ one host produce a well-formed daily file. **All three met**, in
 ### Phase 2 — Dreaming, manual
 
 *Outcome: a dream produces a reviewable branch from the journal, with a local model.*
+Step-by-step plan in [docs/phase-2-plan.md](docs/phase-2-plan.md).
 
 Orient / gather / consolidate / lint / commit; topic file format with fact ids;
 supersession into `supersessions.md` and active-only recall; echo exclusion; the

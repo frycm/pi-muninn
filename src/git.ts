@@ -18,6 +18,7 @@
  */
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -39,6 +40,19 @@ const STAGEABLE = new Set([
 	"dreams/",
 	"skills/",
 ]);
+
+/**
+ * What a dream writes, and the only paths a remember may restore.
+ *
+ * A dream produces derived layers and nothing else; the journal is capture's,
+ * and a fast-forward from a dream branch can therefore never change it. That
+ * invariant is what makes recovery safe — `checkout-paths HEAD -- <derived>`
+ * cannot lose a journal entry because it is not allowed to name one — so the
+ * set is a separate allow-list rather than "STAGEABLE minus journal".
+ */
+export const DERIVED_PATHS: readonly string[] = ["MEMORY.md", "supersessions.md", "topics/", "rules.md", "dreams/"];
+
+const DERIVED = new Set(DERIVED_PATHS);
 
 export type GitCommand =
 	| { kind: "init" }
@@ -68,7 +82,44 @@ export type GitCommand =
 	/** Read a file as of a ref, without checking anything out. */
 	| { kind: "show-file"; ref: string; path: string }
 	/** Whether `ref` exists, for telling a first push from a rebase. */
-	| { kind: "verify-ref"; ref: string };
+	| { kind: "verify-ref"; ref: string }
+	// --- dreams -----------------------------------------------------------
+	/**
+	 * A dream's own checkout, on a new branch.
+	 *
+	 * `noCheckout` is for an in-repo store, where the repository is the user's
+	 * project: the worktree is created empty and then narrowed to the store's
+	 * own directory, so a dream never materialises a copy of someone's source
+	 * tree to write a topic file.
+	 */
+	| { kind: "worktree-add"; path: string; branch: string; startPoint: string; noCheckout?: boolean }
+	| { kind: "worktree-remove"; path: string; force: boolean }
+	| { kind: "worktree-prune" }
+	| { kind: "worktree-list" }
+	/** Narrow a worktree to `paths`, exactly — `--no-cone`, so root files stay out too. */
+	| { kind: "sparse-checkout-set"; paths: string[] }
+	/** Populate a worktree created with `--no-checkout`. */
+	| { kind: "checkout-head" }
+	/** Branches under a prefix, newest commit first. */
+	| { kind: "branch-list"; prefix: string }
+	| { kind: "branch-delete"; name: string; force: boolean }
+	/**
+	 * Advance a branch to a descendant, or fail.
+	 *
+	 * Never a merge commit: `--ff-only` is the compare-and-swap that makes
+	 * remember safe against a `main` that moved under it, and git moves the
+	 * ref, the index and the worktree together so a reader never sees a store
+	 * that is dirty against its own HEAD.
+	 */
+	| { kind: "merge-ff-only"; ref: string }
+	| { kind: "revert"; sha: string }
+	/** Restore paths from a ref into the worktree and index — recovery only. */
+	| { kind: "checkout-paths"; ref: string; paths: string[] }
+	| { kind: "rev-list-count"; range: string; paths: string[] }
+	| { kind: "diff-name-only"; range: string; paths: string[] }
+	| { kind: "merge-base"; a: string; b: string }
+	/** One line per commit: `<sha> <subject>`, for listing dreams. */
+	| { kind: "log-oneline"; ref: string; limit: number };
 
 /**
  * git itself is not on the PATH.
@@ -135,6 +186,58 @@ function assertStageable(path: string): void {
 	}
 	if (!STAGEABLE.has(path)) {
 		throw new Error(`refusing to stage "${path}": not in the allow-list`);
+	}
+}
+
+/** A path a remember may restore from `HEAD`: derived only, never the journal. */
+function assertDerived(path: string): void {
+	if (!DERIVED.has(path)) throw new Error(`refusing to check out "${path}": not a derived path`);
+}
+
+/**
+ * A commit range, as `rev-list` and `diff` take one.
+ *
+ * `a..b`, `a...b` or a single ref. Written out rather than assembled from two
+ * `assertName` calls so that a range can never be mistaken for a path or a
+ * flag, and so `..` — which every other assertion in this file treats as an
+ * escape attempt — is legal in exactly this one position.
+ */
+const GIT_RANGE = /^[A-Za-z0-9][A-Za-z0-9._/-]*(\.\.\.?[A-Za-z0-9][A-Za-z0-9._/-]*)?$/;
+
+function assertRange(value: string): void {
+	if (!GIT_RANGE.test(value)) throw new Error(`refusing to run git with the range "${value}"`);
+}
+
+/**
+ * An absolute path outside every store, where a dream worktree may live.
+ *
+ * Worktrees are the one thing Muninn writes outside a store, so this is the
+ * one place an absolute path is allowed — and it is checked, not assumed: a
+ * relative path here would be resolved against the repository and could put a
+ * checkout inside the main worktree, which git would then see as untracked
+ * content in the store it is meant to leave alone.
+ */
+function assertWorktreePath(path: string): void {
+	if (!isAbsolute(path) || path.startsWith("-") || path.includes("..")) {
+		throw new Error(`refusing to use "${path}" as a worktree path`);
+	}
+}
+
+/**
+ * A directory pattern a worktree may be narrowed to.
+ *
+ * `--no-cone` takes gitignore-style *patterns*, not paths, so the leading `/`
+ * is required rather than forbidden: it anchors the pattern at the repository
+ * root. Unanchored, `.pi/muninn/` would also match a directory of that name
+ * nested anywhere in the project. A pattern cannot escape the repository at
+ * all, so what is left to check is that it is a directory, anchored, and not
+ * something git would read as a flag or a climb.
+ */
+const SPARSE_PATTERN = /^\/(?:[^/\\:*?"<>|]+\/)+$/;
+
+function assertSparsePattern(pattern: string): void {
+	if (!SPARSE_PATTERN.test(pattern) || pattern.includes("..")) {
+		throw new Error(`refusing to narrow a worktree to "${pattern}"`);
 	}
 }
 
@@ -222,6 +325,65 @@ export function toArgv(command: GitCommand): string[] {
 		case "verify-ref":
 			assertName("ref", command.ref);
 			return ["rev-parse", "--verify", "--quiet", command.ref];
+
+		case "worktree-add": {
+			assertWorktreePath(command.path);
+			assertName("branch", command.branch);
+			assertName("ref", command.startPoint);
+			const flags = command.noCheckout === true ? ["--no-checkout"] : [];
+			return ["worktree", "add", "--quiet", ...flags, "-b", command.branch, command.path, command.startPoint];
+		}
+		case "worktree-remove":
+			assertWorktreePath(command.path);
+			return command.force ? ["worktree", "remove", "--force", command.path] : ["worktree", "remove", command.path];
+		case "worktree-prune":
+			return ["worktree", "prune"];
+		case "worktree-list":
+			return ["worktree", "list", "--porcelain"];
+		case "sparse-checkout-set":
+			if (command.paths.length === 0) throw new Error("git sparse-checkout set needs at least one path");
+			for (const pattern of command.paths) assertSparsePattern(pattern);
+			// `--no-cone` because cone mode always keeps every file at the
+			// repository root, and the point of narrowing an in-repo worktree is
+			// that a dream materialises the store and nothing else.
+			return ["sparse-checkout", "set", "--no-cone", ...command.paths];
+		case "checkout-head":
+			return ["checkout", "--quiet"];
+		case "branch-list":
+			assertName("branch", command.prefix);
+			return ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", `refs/heads/${command.prefix}*`];
+		case "branch-delete":
+			assertName("branch", command.name);
+			return ["branch", command.force ? "-D" : "-d", command.name];
+		case "merge-ff-only":
+			assertName("ref", command.ref);
+			return ["merge", "--ff-only", "--quiet", command.ref];
+		case "revert":
+			assertName("ref", command.sha);
+			return ["revert", "--no-edit", "--no-gpg-sign", command.sha];
+		case "checkout-paths":
+			assertName("ref", command.ref);
+			if (command.paths.length === 0) throw new Error("git checkout needs at least one path");
+			for (const path of command.paths) assertDerived(path);
+			return ["checkout", command.ref, "--", ...command.paths];
+		case "rev-list-count":
+			assertRange(command.range);
+			for (const path of command.paths) assertStageable(path);
+			return ["rev-list", "--count", command.range, "--", ...command.paths];
+		case "diff-name-only":
+			assertRange(command.range);
+			for (const path of command.paths) assertStageable(path);
+			return ["diff", "--name-only", command.range, "--", ...command.paths];
+		case "merge-base":
+			assertName("ref", command.a);
+			assertName("ref", command.b);
+			return ["merge-base", command.a, command.b];
+		case "log-oneline":
+			assertName("ref", command.ref);
+			if (!Number.isInteger(command.limit) || command.limit < 1) {
+				throw new Error(`git log needs a positive limit, not ${command.limit}`);
+			}
+			return ["log", `--max-count=${command.limit}`, "--format=%H %s", command.ref];
 	}
 }
 
