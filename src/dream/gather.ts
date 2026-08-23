@@ -68,6 +68,15 @@ export interface GatherResult {
 	quarantined: Array<{ topic: string; reason: string }>;
 	/** Claim ids considered and rejected, with the rule that rejected them. */
 	dropped: Array<{ id: string; reason: string }>;
+	/**
+	 * Entry ids this dream deliberately did not learn from.
+	 *
+	 * Held-out groups and entries whose claims were deferred for want of room in
+	 * a job. The caller must not record these as seen: they have to be in the
+	 * *next* dream's range, or the hold-out becomes a deletion and a deferral
+	 * becomes a loss.
+	 */
+	withheld: Set<string>;
 	notes: string[];
 }
 
@@ -86,7 +95,7 @@ const QUIET_MS = 60 * 60 * 1000;
 
 export function gather(options: GatherOptions): GatherResult {
 	const { orientation, entries, now } = options;
-	const result: GatherResult = { jobs: [], heldOut: [], quarantined: [], dropped: [], notes: [] };
+	const result: GatherResult = { jobs: [], heldOut: [], quarantined: [], dropped: [], notes: [], withheld: new Set() };
 
 	// --- 1. hold out the most recent completed task groups -------------------
 	const groups = taskGroups(entries);
@@ -96,6 +105,9 @@ export function gather(options: GatherOptions): GatherResult {
 	// Every task id of every held group, so a resumed half of a task cannot leak
 	// back in through its other half.
 	const visible = entries.filter((entry) => entry.task === undefined || !heldTasks.has(entry.task));
+	for (const entry of entries) {
+		if (entry.task !== undefined && heldTasks.has(entry.task)) result.withheld.add(entry.id);
+	}
 	if (heldTasks.size > 0) {
 		result.notes.push(`held out ${held.length} completed task group(s) — ${heldTasks.size} task id(s)`);
 	}
@@ -156,6 +168,9 @@ export function gather(options: GatherOptions): GatherResult {
 				topic,
 				reason: `${external} of ${claims.length} claims are external — over the poisoning budget, waiting for review`,
 			});
+			// Quarantined, not consumed: a human has to look, and the next dream
+			// must still be able to show it to them.
+			for (const claim of claims) result.withheld.add(claim.entry.id);
 			continue;
 		}
 
@@ -169,6 +184,7 @@ export function gather(options: GatherOptions): GatherResult {
 		for (const claim of ordered) {
 			if (!seen.has(claim.entry.id) && seen.size >= MAX_EVIDENCE) {
 				deferred.push(claim.id);
+				result.withheld.add(claim.entry.id);
 				continue;
 			}
 			seen.add(claim.entry.id);

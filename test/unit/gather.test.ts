@@ -267,5 +267,8 @@ describe("topics", () => {
 		expect(job?.entries).toHaveLength(MAX_EVIDENCE);
 		expect(job?.deferred).toHaveLength(5);
 		expect(result.notes.join(" ")).toMatch(/deferred/);
+		// And "deferred rather than lost" has to be true of the watermark too,
+		// or the next dream's range starts past them and the comment is a lie.
+		expect(result.withheld.size).toBe(5);
 	});
 });

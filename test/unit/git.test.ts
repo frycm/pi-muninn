@@ -99,6 +99,7 @@ describe("toArgv — the allow-list is the promise", () => {
 			"dream/mbp/x",
 		]);
 		expect(toArgv({ kind: "revert", sha: "abc123" })).toEqual(["revert", "--no-edit", "--no-gpg-sign", "abc123"]);
+		expect(toArgv({ kind: "revert-abort" })).toEqual(["revert", "--abort"]);
 		expect(toArgv({ kind: "merge-base", a: "main", b: "dream/mbp/x" })).toEqual(["merge-base", "main", "dream/mbp/x"]);
 		expect(toArgv({ kind: "log-entries", ref: "main", limit: 5 })).toEqual([
 			"log",

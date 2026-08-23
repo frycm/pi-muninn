@@ -113,6 +113,8 @@ export type GitCommand =
 	 */
 	| { kind: "merge-ff-only"; ref: string }
 	| { kind: "revert"; sha: string }
+	/** Undo a revert that stopped on a conflict, leaving nothing half-applied. */
+	| { kind: "revert-abort" }
 	/** Restore paths from a ref into the worktree and index — recovery only. */
 	| { kind: "checkout-paths"; ref: string; paths: string[] }
 	| { kind: "rev-list-count"; range: string; paths: string[] }
@@ -375,6 +377,8 @@ export function toArgv(command: GitCommand): string[] {
 		case "revert":
 			assertName("ref", command.sha);
 			return ["revert", "--no-edit", "--no-gpg-sign", command.sha];
+		case "revert-abort":
+			return ["revert", "--abort"];
 		case "checkout-paths":
 			assertName("ref", command.ref);
 			if (command.paths.length === 0) throw new Error("git checkout needs at least one path");

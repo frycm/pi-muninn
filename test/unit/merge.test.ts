@@ -9,6 +9,7 @@ const OURS_FACT = "f-testing-0198b000-0000-7000-8000-000000000002";
 const THEIRS_FACT = "f-testing-0198c000-0000-7000-8000-000000000003";
 const CLAIM_A = "j-0198e9a4-1c2f-7d33-8e55-aa10b2c3d4e0.1";
 const CLAIM_B = "j-0198e9a4-1c2f-7d33-8e55-aa10b2c3d4e0.2";
+const CLAIM_C = "j-0198e9a4-1c2f-7d33-8e55-aa10b2c3d4e0.3";
 
 function fact(id: string, claim: string, extra: Partial<Fact> = {}): Fact {
 	return { id, claim, validFrom: "2026-08-01", source: "user", evidence: [CLAIM_A], ...extra };
@@ -23,12 +24,18 @@ function topic(facts: Fact[], superseded: Fact[] = []): TopicFile {
 
 describe("layer 1: the merge unit is a fact, not a line", () => {
 	it("keeps a fact each side added", () => {
-		const base = topic([fact(BASE_FACT, "Shared history.")]);
+		// Genuinely disjoint: the base fact has its own evidence too, or it would
+		// be a residue against both additions — correctly, since a new fact
+		// citing what an existing one cites is exactly a pair worth judging.
+		const base = topic([fact(BASE_FACT, "Shared history.", { evidence: [CLAIM_C] })]);
 		const result = mergeTopic({
 			base,
-			ours: topic([fact(BASE_FACT, "Shared history."), fact(OURS_FACT, "We learned A.", { evidence: [CLAIM_A] })]),
+			ours: topic([
+				fact(BASE_FACT, "Shared history.", { evidence: [CLAIM_C] }),
+				fact(OURS_FACT, "We learned A.", { evidence: [CLAIM_A] }),
+			]),
 			theirs: topic([
-				fact(BASE_FACT, "Shared history."),
+				fact(BASE_FACT, "Shared history.", { evidence: [CLAIM_C] }),
 				fact(THEIRS_FACT, "They learned B.", { evidence: [CLAIM_B] }),
 			]),
 		});
@@ -120,6 +127,33 @@ describe("layer 2: what is left over is named, not merged", () => {
 			theirs: topic([fact(THEIRS_FACT, "Deploys go through the release workflow.", { evidence: [CLAIM_B] })]),
 		});
 		expect(result.residue).toEqual([]);
+	});
+
+	it("pairs a new fact against one the topic already had", () => {
+		// The design's residue is "one per side, *or* one new and one existing" —
+		// and the second is the common case: a host adds something that
+		// contradicts what the topic already said.
+		const existing = fact(BASE_FACT, "Tests are run with pnpm test", { evidence: [CLAIM_C] });
+		const result = mergeTopic({
+			base: topic([existing]),
+			ours: topic([existing, fact(OURS_FACT, "Tests are run with pnpm test --run", { evidence: [CLAIM_A] })]),
+			theirs: topic([existing]),
+		});
+		expect(result.residue).toHaveLength(1);
+		expect(result.residue[0]?.ours.id).toBe(OURS_FACT);
+		expect(result.residue[0]?.theirs.id).toBe(BASE_FACT);
+		expect(result.residue[0]?.why).toBe("overlap");
+	});
+
+	it("produces the same residue whichever side runs it", () => {
+		const existing = fact(BASE_FACT, "Tests are run with pnpm test", { evidence: [CLAIM_C] });
+		const ours = topic([existing, fact(OURS_FACT, "Tests are run with pnpm test --run", { evidence: [CLAIM_A] })]);
+		const theirs = topic([existing]);
+		const forward = mergeTopic({ base: topic([existing]), ours, theirs });
+		const backward = mergeTopic({ base: topic([existing]), ours: theirs, theirs: ours });
+		expect(backward.residue.map((pair) => [pair.ours.id, pair.theirs.id].sort())).toEqual(
+			forward.residue.map((pair) => [pair.ours.id, pair.theirs.id].sort()),
+		);
 	});
 });
 

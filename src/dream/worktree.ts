@@ -281,7 +281,7 @@ export function parseWorktreeList(stdout: string): StaleWorktree[] {
  * dream on this host is alive, so every dream worktree registered here is
  * abandoned. Returns what it removed, for the report.
  */
-export async function collectWorktrees(repo: string): Promise<string[]> {
+export async function collectWorktrees(repo: string, keep?: string): Promise<string[]> {
 	let stdout: string;
 	try {
 		stdout = (await git(repo, { kind: "worktree-list" })).stdout;
@@ -290,7 +290,16 @@ export async function collectWorktrees(repo: string): Promise<string[]> {
 	}
 	const removed: string[] = [];
 	for (const worktree of parseWorktreeList(stdout)) {
-		if (worktree.branch !== undefined && !worktree.branch.startsWith(DREAM_BRANCH_PREFIX)) continue;
+		// Only a worktree that is *on a dream branch*. A detached-HEAD checkout
+		// has no `branch` line at all, and the earlier form of this test let one
+		// through — so a person reviewing a commit in `git worktree add --detach`
+		// beside their project had it force-removed, uncommitted work and all,
+		// every time a dream ran against an in-repo store.
+		if (worktree.branch === undefined || !worktree.branch.startsWith(DREAM_BRANCH_PREFIX)) continue;
+		// A dream running right now owns its checkout. The store lock no longer
+		// keeps remember and dream apart — it is released after a dream's setup —
+		// so anything that collects worktrees has to say what it must not touch.
+		if (keep !== undefined && worktree.branch === keep) continue;
 		try {
 			await discard(repo, worktree.path);
 			removed.push(worktree.path);

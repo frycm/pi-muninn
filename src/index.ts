@@ -38,7 +38,7 @@ import { forget, listDreams } from "./dream/dreams.ts";
 import { erase, eraseImpact } from "./dream/erase.ts";
 import type { DreamModel } from "./dream/model.ts";
 import { latestReport, readTopics } from "./dream/orient.ts";
-import { readMarker, remember } from "./dream/remember.ts";
+import { readMarker, remember, resolveConflict } from "./dream/remember.ts";
 import { newStoreId } from "./ids.ts";
 import { SessionIndexes } from "./index/search.ts";
 import { type AppendResult, appendEntry } from "./journal/append.ts";
@@ -482,7 +482,30 @@ export default function (pi: ExtensionAPI): void {
 						// journal is a decision, not a flag.
 						return { ok: false, problems: [`${stamp} failed lint; fix or discard it`], notes: [] };
 					}
-					return remember({ scope: active, agentDir: getAgentDir(), host: current.host, branch: listing.branch });
+					const model = sessionDreamModel(ctx, current.loaded.settings.dream.model);
+					return remember({
+						scope: active,
+						agentDir: getAgentDir(),
+						host: current.host,
+						branch: listing.branch,
+						// Two dreams that rewrote the same topic are settled by a
+						// merge dream, never by `git merge`. Without a model there
+						// is nothing to settle it with, and the conflict is
+						// reported instead of guessed at.
+						...(model
+							? {
+									resolve: (conflict) =>
+										resolveConflict(conflict, {
+											scope: active,
+											agentDir: getAgentDir(),
+											host: current.host,
+											storeId: current.host.id,
+											model,
+											now: new Date(),
+										}),
+								}
+							: {}),
+					});
 				},
 				forget: async (scope, stamp) => {
 					const current = await load(ctx.cwd, ctx.isProjectTrusted(), false);

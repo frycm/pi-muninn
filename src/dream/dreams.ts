@@ -15,6 +15,7 @@ import type { HostIdentity } from "../store/host.ts";
 import { STORE_BRANCH, storeIdentity } from "../store/init.ts";
 import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import type { ActiveScope } from "../store/scopes.ts";
+import { runningDream } from "./dream.ts";
 import { readTopics } from "./orient.ts";
 import { type DreamReport, parseReport, reportPath } from "./report.ts";
 import { DREAM_BRANCH_PREFIX } from "./worktree.ts";
@@ -169,6 +170,15 @@ async function applyForget(
 	result: ForgetResult,
 ): Promise<ForgetResult> {
 	const { scope, host, stamp } = options;
+
+	// Same reason remember asks: a revert rewrites the derived files a running
+	// dream's worktree was cut from, and the commit that follows would race it.
+	const dreaming = runningDream(scope.path, options.now);
+	if (dreaming !== undefined) {
+		result.problems.push(`a dream (${dreaming.stamp}) is running here; wait for it to finish`);
+		return result;
+	}
+
 	const sha = (await rememberedDreams(scope.path)).get(stamp);
 	if (sha === undefined) {
 		result.problems.push(`no remembered dream ${stamp} in this store`);
@@ -197,8 +207,15 @@ async function applyForget(
 	try {
 		await git(scope.path, { kind: "revert", sha }, identity ? { identity } : {});
 	} catch (error) {
+		// A conflicted revert is the *normal* case once a later dream has been
+		// remembered: both rewrote `MEMORY.md` wholesale. Left alone it wedges the
+		// store — `REVERT_HEAD`, an unmerged index and conflict markers in the one
+		// file every new session reads at start — and nothing surfaces it, because
+		// journal commits carry their own pathspec and keep succeeding.
+		await git(scope.path, { kind: "revert-abort" }).catch(() => undefined);
 		result.problems.push(
-			`could not revert ${stamp} (${error instanceof GitError ? error.stderr.trim().split("\n")[0] : String(error)})`,
+			`could not revert ${stamp} (${error instanceof GitError ? error.stderr.trim().split("\n")[0] : String(error)}); ` +
+				"a later dream rewrote the same files — forget that one first, or revert this by hand",
 		);
 		return result;
 	}

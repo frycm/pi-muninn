@@ -19,7 +19,7 @@ import { erase, eraseImpact } from "./dream/erase.ts";
 import type { DreamModel } from "./dream/model.ts";
 import { headlessModel } from "./dream/pi-model.ts";
 import { formatQualify, qualify } from "./dream/qualify.ts";
-import { remember } from "./dream/remember.ts";
+import { remember, resolveConflict } from "./dream/remember.ts";
 import { reportTotals } from "./dream/report.ts";
 import { gitToplevel } from "./git.ts";
 import { newStoreId } from "./ids.ts";
@@ -111,7 +111,22 @@ export async function runCli(argv: readonly string[], cwd: string = process.cwd(
 			continue;
 		}
 		if (command === "dreams") {
-			code = Math.max(code, await runDreams(scope, { host, args, out, err }));
+			// Resolved only when a conflict needs settling, which is why it is
+			// looked up here rather than at the top: `muninn dreams` with no
+			// model configured is an ordinary listing, not an error.
+			const ref = loaded.settings.dream.model;
+			const resolved = ref === null ? undefined : await headlessModel({ ref, agentDir });
+			if (resolved !== undefined && !resolved.ok) err.push(`  ! ${resolved.problem}`);
+			code = Math.max(
+				code,
+				await runDreams(scope, {
+					host,
+					args,
+					out,
+					err,
+					...(resolved?.ok ? { model: resolved.model } : {}),
+				}),
+			);
 			continue;
 		}
 		if (command === "erase") {
@@ -244,7 +259,7 @@ async function runDream(
 /** `muninn dreams [remember|forget <stamp>]`. */
 async function runDreams(
 	scope: ActiveScope,
-	context: Pick<SubcommandContext, "host" | "args" | "out" | "err">,
+	context: Pick<SubcommandContext, "host" | "args" | "out" | "err"> & { model?: DreamModel },
 ): Promise<number> {
 	const { host, args, out, err } = context;
 	const action = args.find((arg) => arg === "remember" || arg === "forget");
@@ -294,7 +309,23 @@ async function runDreams(
 		err.push(`  ! ${stamp} failed lint; fix or discard it rather than remembering it`);
 		return 1;
 	}
-	const result = await remember({ scope, agentDir: resolveAgentDir(), host, branch: listing.branch });
+	const agentDir = resolveAgentDir();
+	const model = context.model;
+	const result = await remember({
+		scope,
+		agentDir,
+		host,
+		branch: listing.branch,
+		// A conflict means two dreams rewrote the same topic, which needs a merge
+		// dream and never `git merge`. With no `dream.model` there is nothing to
+		// settle it with, and the conflict is reported rather than guessed at.
+		...(model
+			? {
+					resolve: (conflict) =>
+						resolveConflict(conflict, { scope, agentDir, host, storeId: host.id, model, now: new Date() }),
+				}
+			: {}),
+	});
 	for (const note of result.notes) out.push(`  ${note}`);
 	for (const problem of result.problems) err.push(`  ! ${problem}`);
 	if (result.ok) out.push(`  remembered ${stamp}; the new MEMORY.md is read by the next session`);

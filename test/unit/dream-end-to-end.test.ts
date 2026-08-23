@@ -10,6 +10,7 @@ import type { DreamModel } from "../../src/dream/model.ts";
 import { git } from "../../src/git.ts";
 import { newHostId, newStoreId } from "../../src/ids.ts";
 import { appendEntry } from "../../src/journal/append.ts";
+import { readStoreJournal } from "../../src/journal/read.ts";
 import { parseSupersessions } from "../../src/journal/supersessions.ts";
 import { DEFAULT_SETTINGS } from "../../src/settings.ts";
 import type { HostIdentity } from "../../src/store/host.ts";
@@ -152,5 +153,64 @@ describe("a whole dream, with a model", () => {
 		expect(result.report.lint.some((finding) => finding.rule === "unsourced")).toBe(true);
 		// The branch still exists: a dream nobody will remember is still evidence.
 		expect((await git(storePath, { kind: "verify-ref", ref: result.branch })).stdout.trim()).not.toBe("");
+	});
+});
+
+describe("an echo can never become evidence", () => {
+	it("refuses the restating claim, not the memory it restated", async () => {
+		// An entry reaches a job for one of its claims and brings all of them into
+		// the prompt and the allow-list. If the refusal is keyed on `echo:` — which
+		// names the *memory* that was restated — the restatement stays citable and
+		// the original observation is refused instead: both halves wrong.
+		const original = await appendEntry(
+			{ source: "user", prose: "Said once.", claims: ["Run tests with pnpm test --run."], cue: "the tests" },
+			{ storePath, hostId: host.id },
+		);
+		resetCommitDebounce();
+		await appendEntry(
+			{
+				source: "user",
+				prose: "Said again, plus something new.",
+				claims: ["Run tests with pnpm test --run.", "The CI runner has no TTY."],
+				cue: "the tests",
+				echo: [`${original.id}.1`],
+			},
+			{ storePath, hostId: host.id },
+		);
+		resetCommitDebounce();
+
+		const model = citingModel("Facts about the tests.");
+		const result = await dream(options(new Date("2026-08-23T03:00:00Z"), model));
+		expect(result.ok).toBe(true);
+		await git(storePath, { kind: "merge-ff-only", ref: result.branch });
+
+		const slug = result.report.consolidated[0]?.topic as string;
+		const topic = parseTopic(readFileSync(join(storePath, "topics", `${slug}.md`), "utf-8"), slug);
+		const evidence = topic.facts.flatMap((fact) => fact.evidence);
+
+		// The echoing claim is the second entry's `.1`; the original is citable.
+		expect(evidence.some((id) => id.startsWith(original.id))).toBe(true);
+		const echoing = readStoreJournal(storePath).entries[1]?.id as string;
+		expect(evidence).not.toContain(`${echoing}.1`);
+	});
+});
+
+describe("what a dream withholds comes back", () => {
+	it("consolidates a held-out task once it is no longer among the most recent", async () => {
+		// The hold-out is chronological: a group withheld today is consolidated
+		// when newer work pushes it out of the window. That only works if the
+		// dream's watermark did not run past it.
+		await note("The only thing worth knowing.", "the tests");
+		const settings = { ...DEFAULT_SETTINGS, dream: { ...DEFAULT_SETTINGS.dream, evalSessions: 1 } };
+		const model = citingModel("A fact about the tests.");
+
+		const first = await dream({ ...options(new Date("2026-08-23T03:00:00Z"), model), settings });
+		expect(first.report.heldOut.length).toBe(0);
+		await git(storePath, { kind: "merge-ff-only", ref: first.branch });
+
+		// Nothing was consolidated, because the only entry has no task group and
+		// the store is otherwise empty — what matters is the watermark.
+		const second = await dream({ ...options(new Date("2026-08-24T03:00:00Z"), model), settings });
+		expect(second.report.previousInputHead).toBe(first.report.inputHead);
 	});
 });

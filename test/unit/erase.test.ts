@@ -96,6 +96,36 @@ describe("erase", () => {
 		expect(search([{ scope: "global", storePath, index: rebuilt }], { query: "Elm Row", history: true })).toEqual([]);
 	});
 
+	it("leaves the other entries of the same daily file exactly as they were", async () => {
+		// A daily file starts with `## ` at byte 0, so a search for "\n## " finds
+		// the *second* entry — which once meant entry one was copied out verbatim
+		// as "preamble", secret and all, and its id appeared twice.
+		const first = await note(SECRET);
+		const second = await note("Something else, which must survive untouched.");
+		const third = await note("And a third.");
+
+		const result = await erase({ scope, host, entryId: second, now: NOW, noRewrite: true });
+		expect(result.ok).toBe(true);
+
+		const entries = readStoreJournal(storePath).entries;
+		expect(entries.map((entry) => entry.id)).toEqual([first, second, third]);
+		expect(entries[0]?.claims[0]).toContain("Elm Row");
+		expect(entries[1]?.claims).toEqual([]);
+		expect(entries[2]?.claims[0]).toContain("And a third.");
+
+		const daily = readFileSync(entries[0]?.path as string, "utf-8");
+		expect(daily).not.toContain("Something else, which must survive");
+		expect(daily.split(second).length - 1).toBe(1);
+	});
+
+	it("removes the erased body from the file it was in", async () => {
+		const first = await note(SECRET);
+		await note("An unrelated second entry.");
+		await erase({ scope, host, entryId: first, now: NOW, noRewrite: true });
+		const daily = readFileSync(readStoreJournal(storePath).entries[0]?.path as string, "utf-8");
+		expect(daily).not.toContain("Elm Row");
+	});
+
 	it("refuses without git-filter-repo rather than erasing halfway", async () => {
 		const id = await note(SECRET);
 		const result = await erase({ scope, host, entryId: id, now: NOW });

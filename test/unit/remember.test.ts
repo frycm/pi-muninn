@@ -208,6 +208,28 @@ describe("forget", () => {
 		expect(listed[0]?.forgotten).toBe(true);
 	});
 
+	it("leaves nothing half-applied when a revert conflicts", async () => {
+		// The normal case once a later dream has been remembered: both rewrote
+		// `MEMORY.md` wholesale. Left alone this wedges the store with conflict
+		// markers in the one file every new session reads at start.
+		await note("A note.");
+		const first = await dream(options(new Date("2026-08-23T03:00:00Z"), "First fact."));
+		await remember({ scope, agentDir, host, branch: first.branch });
+
+		await note("A second note.");
+		const second = await dream(options(new Date("2026-08-24T03:00:00Z"), "Second fact."));
+		await remember({ scope, agentDir, host, branch: second.branch });
+
+		const result = await forget({ scope, host, stamp: first.stamp, now: new Date("2026-08-25T09:00:00Z") });
+		if (!result.ok) {
+			expect(result.problems.join(" ")).toContain("forget that one first");
+		}
+		// Whatever happened, the store is usable: no conflict markers, no
+		// unmerged index, and `MEMORY.md` is readable.
+		expect((await git(storePath, { kind: "status-porcelain", paths: [] })).stdout.trim()).toBe("");
+		expect(readFileSync(join(storePath, "MEMORY.md"), "utf-8")).not.toContain("<<<<<<<");
+	});
+
 	it("refuses to forget something that was never remembered", async () => {
 		const result = await forget({ scope, host, stamp: "2026-01-01T00-00", now: new Date() });
 		expect(result.ok).toBe(false);

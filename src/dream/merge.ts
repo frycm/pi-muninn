@@ -116,8 +116,17 @@ export function mergeTopic(input: MergeInput): MergeResult {
 		place(mine, active, external, superseded);
 	}
 
+	// Every field is chosen deterministically rather than inherited from `ours`:
+	// a merge has to produce the same bytes whichever side runs it, and
+	// `...ours` would have carried that host's `title`, `prose` and `updated`
+	// into the result — the one thing the sorting below was careful to avoid.
+	const updated = later(ours.updated, theirs.updated);
 	const topic: TopicFile = {
-		...ours,
+		topic: ours.topic,
+		title: ours.title === theirs.title ? ours.title : pick(ours.title, theirs.title),
+		...(updated !== undefined ? { updated } : {}),
+		prose:
+			ours.prose === theirs.prose ? ours.prose : [ours.prose, theirs.prose].filter((text) => text !== "").join("\n\n"),
 		stray: dedupeStray([...ours.stray, ...theirs.stray]),
 		facts: sortById(active),
 		external: sortById(external),
@@ -143,6 +152,17 @@ function mergeRetired(mine: Fact, yours: Fact): Fact {
 	const reasons = [earlier.reason, other.reason].filter((text): text is string => text !== undefined);
 	if (reasons.length > 0) merged.reason = [...new Set(reasons)].join("; ");
 	return merged;
+}
+
+/** The lexicographically smaller of two strings — an arbitrary but identical choice on both hosts. */
+function pick(a: string, b: string): string {
+	return a < b ? a : b;
+}
+
+function later(a: string | undefined, b: string | undefined): string | undefined {
+	if (a === undefined) return b;
+	if (b === undefined) return a;
+	return a > b ? a : b;
 }
 
 function sortById(facts: readonly Fact[]): Fact[] {
@@ -178,12 +198,27 @@ export function findResidue(
 	const theirIds = new Set(fromTheirs);
 	const pairs: ResiduePair[] = [];
 
-	for (const mine of topic.facts) {
-		if (!ourIds.has(mine.id)) continue;
-		for (const yours of topic.facts) {
-			if (!theirIds.has(yours.id)) continue;
-			const why = residueReason(mine, yours);
-			if (why !== undefined) pairs.push({ ours: mine, theirs: yours, why });
+	// A fact new on one side against *anything* active on the other, including
+	// facts that were already there. The design's residue is "one per side, or
+	// one new and one existing"; pairing only new-against-new missed the second
+	// case entirely, which is the common one — a host adds a fact that
+	// contradicts something the topic already said.
+	for (const fresh of topic.facts) {
+		const mine = ourIds.has(fresh.id);
+		const yours = theirIds.has(fresh.id);
+		if (!mine && !yours) continue;
+		for (const other of topic.facts) {
+			if (other.id === fresh.id) continue;
+			// Skip the mirror of a pair already made, and pairs from one side.
+			if (mine && ourIds.has(other.id)) continue;
+			if (yours && theirIds.has(other.id)) continue;
+			if (yours && !theirIds.has(other.id) && ourIds.has(other.id) && other.id < fresh.id) continue;
+			const why = residueReason(fresh, other);
+			if (why === undefined) continue;
+			const pair: ResiduePair = mine ? { ours: fresh, theirs: other, why } : { ours: other, theirs: fresh, why };
+			if (!pairs.some((seen) => seen.ours.id === pair.ours.id && seen.theirs.id === pair.theirs.id)) {
+				pairs.push(pair);
+			}
 		}
 	}
 	return pairs;

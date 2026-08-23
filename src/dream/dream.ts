@@ -171,6 +171,17 @@ function clearDreamMarker(storePath: string): void {
 	rmSync(dreamMarkerPath(storePath), { force: true });
 }
 
+/**
+ * Whether a dream is running here, and not merely one that died.
+ *
+ * Exported because remember, forget and erase all have to ask: each of them
+ * touches worktrees or rewrites refs, and since a dream releases the store lock
+ * after its setup, the lock no longer answers the question.
+ */
+export function runningDream(storePath: string, now: Date, staleMs: number = DREAM_STALE_MS): DreamMarker | undefined {
+	return dreamInProgress(storePath, now, staleMs);
+}
+
 /** Whether another dream is running here, and not merely one that died. */
 function dreamInProgress(storePath: string, now: Date, staleMs: number): DreamMarker | undefined {
 	const marker = readDreamMarker(storePath);
@@ -217,7 +228,7 @@ async function prepare(options: DreamOptions, context: LockedContext): Promise<P
 	// unexpired marker exists, so no other dream on this host is alive — which
 	// makes this the one moment at which every dream worktree registered here is
 	// provably garbage.
-	const collected = await collectWorktrees(repo);
+	const collected = await collectWorktrees(repo, context.branch);
 	if (collected.length > 0) report.notes.push(`removed ${collected.length} abandoned worktree(s)`);
 
 	// Everything this host has observed and not yet committed, committed now, so
@@ -276,7 +287,6 @@ async function runPhases(options: DreamOptions, context: LockedContext, prepared
 		const orientation = orient(worktree.storePath);
 		problems.push(...orientation.problems);
 		if (orientation.previousInputHead) report.previousInputHead = orientation.previousInputHead;
-		report.journalThrough = journalThrough(worktree.storePath);
 
 		progress?.("gather");
 		const inRange = entriesInRange(worktree.storePath, orientation);
@@ -287,6 +297,13 @@ async function runPhases(options: DreamOptions, context: LockedContext, prepared
 			now,
 		});
 		report.heldOut = gathered.heldOut;
+		// The watermark is where the *next* dream starts, so it may only advance
+		// over entries this one actually considered. Held-out groups and claims
+		// deferred for want of room are neither consolidated nor cited; recording
+		// them as seen would drop them out of every future range, which is how a
+		// hold-out becomes a deletion and "deferred rather than lost" becomes a
+		// lie the comment tells.
+		report.journalThrough = journalThrough(inRange, gathered.withheld);
 		report.gathered.push(...describeRange(orientation, report));
 		report.gathered.push(`${inRange.length} entry/entries in range, ${gathered.jobs.length} topic(s) affected`);
 		report.gathered.push(...gathered.notes);
@@ -399,11 +416,14 @@ async function consolidateAll(
 		}
 	}
 
-	// Echoes are never evidence. Gather already dropped the echoing claims from
-	// the job; this refuses them again by id, because a model may cite a claim
-	// it saw in the topic's existing evidence rather than in this job's.
-	const refused = new Set<string>([...orientation.superseded]);
-	for (const job of gathered.jobs) for (const entry of job.entries) for (const id of entry.echo ?? []) refused.add(id);
+	// Echoes are never evidence — and the ids to refuse are the *echoing claims*,
+	// not the memories they echo. `echo:` names what was restated, so adding
+	// those ids refused the original observation while leaving the restatement
+	// citable: both halves wrong, in one line. Gather drops echoing claims from
+	// its candidate list, but an entry reaches a job for *one* of its claims and
+	// brings all of them into the prompt and the allow-list, so the refusal has
+	// to be by claim id.
+	const refused = new Set<string>([...orientation.superseded, ...echoClaims(storePath, orientation)]);
 
 	for (const gatheredJob of gathered.jobs) {
 		const file = orientation.topics.get(gatheredJob.topic) ?? emptyTopic(gatheredJob.topic);
@@ -528,10 +548,21 @@ function echoClaims(storePath: string, orientation: Orientation): Set<string> {
 	return echoes;
 }
 
-/** The last entry id per host in the store, which is where the next dream starts. */
-function journalThrough(storePath: string): Record<string, string> {
+/**
+ * The last entry id per host this dream may claim to have seen.
+ *
+ * Withheld entries are excluded, so they stay in the next dream's range. A
+ * held-out group is withheld *because* the evaluation must be able to score
+ * against it later; if the watermark ran past it, no dream would ever
+ * consolidate it and the hold-out would be a quiet deletion.
+ */
+function journalThrough(
+	entries: readonly JournalEntryWithContext[],
+	withheld: ReadonlySet<string>,
+): Record<string, string> {
 	const through: Record<string, string> = {};
-	for (const entry of readStoreJournal(storePath).entries) {
+	for (const entry of entries) {
+		if (withheld.has(entry.id)) continue;
 		const current = through[entry.host];
 		if (current === undefined || current < entry.id) through[entry.host] = entry.id;
 	}

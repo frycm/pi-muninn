@@ -39,6 +39,7 @@ import { STORE_BRANCH, storeIdentity } from "../store/init.ts";
 import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import type { ActiveScope } from "../store/scopes.ts";
 import { allFacts, formatTopic } from "../topics/format.ts";
+import { runningDream } from "./dream.ts";
 import { readTopics } from "./orient.ts";
 
 export interface EraseOptions {
@@ -114,6 +115,15 @@ async function applyErase(options: EraseOptions, result: EraseResult): Promise<E
 	const { scope, host, entryId, now } = options;
 	const identity = scope.inRepo ? undefined : storeIdentity(host);
 	const withIdentity = identity ? { identity } : {};
+
+	// A running dream holds a worktree of this repository, and `filter-repo`
+	// rewrites every ref in it. Rewriting history under a live checkout is the
+	// one thing worse than not erasing yet.
+	const dreaming = runningDream(scope.path, now);
+	if (dreaming !== undefined) {
+		result.problems.push(`a dream (${dreaming.stamp}) is running here; wait for it to finish before erasing`);
+		return result;
+	}
 
 	// The erasure list is asked first, and not as a fallback: a tombstoned entry
 	// still parses as an entry — that is the whole point of leaving the id
@@ -231,10 +241,20 @@ export function tombstone(path: string, entry: JournalEntry, now: Date): void {
 		return formatEntry(stone);
 	});
 
-	// Anything before the first entry is a hand-written preamble and is kept.
-	const firstHeading = text.indexOf("\n## ");
-	const preamble = firstHeading < 0 ? "" : text.slice(0, firstHeading + 1);
+	// Anything before the *first* entry is a hand-written preamble and is kept.
+	// Searching for "\n## " finds the second entry's heading in the ordinary
+	// case, because `appendEntry` writes the first one at byte 0 — which meant
+	// the whole first entry was treated as preamble and then written out again,
+	// verbatim, ahead of the tombstones. The erased body survived and its id
+	// appeared twice.
+	const preamble = text.startsWith("## ") ? "" : preambleBefore(text);
 	writeFileSync(path, `${preamble}${rewritten.join("")}`);
+}
+
+/** The text before the first `## ` heading, when a file has one. */
+function preambleBefore(text: string): string {
+	const at = text.indexOf("\n## ");
+	return at < 0 ? text : text.slice(0, at + 1);
 }
 
 /** Supersede every active fact that rested on one of these claims. */
