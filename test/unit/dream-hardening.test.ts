@@ -135,6 +135,52 @@ describe("a dream that meets trouble says so and leaves the store alone", () => 
 	});
 });
 
+describe("two dreams on one host", () => {
+	it("lets the second in only once the first is finished", async () => {
+		await note("A note.");
+
+		// The store lock is released after setup, so the second dream is not
+		// excluded by it — the `.dreaming` marker is what excludes it, and this
+		// is the test that says so. Held open by blocking inside the model call.
+		let release: (() => void) | undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let secondDuringFirst: Awaited<ReturnType<typeof dream>> | undefined;
+
+		const blocking: DreamModel = {
+			id: "test/blocking",
+			async complete() {
+				secondDuringFirst = await dream(options(new Date("2026-08-23T03:01:00Z")));
+				release?.();
+				return "```json\n[]\n```";
+			},
+		};
+
+		const first = await dream(options(new Date("2026-08-23T03:00:00Z"), blocking));
+		await held;
+
+		expect(first.ok).toBe(true);
+		expect(secondDuringFirst?.ok).toBe(false);
+		expect(secondDuringFirst?.problems.join(" ")).toContain("a dream is already running");
+
+		// And once the first has finished, the next one starts normally.
+		const after = await dream(options(new Date("2026-08-23T03:02:00Z")));
+		expect(after.ok).toBe(true);
+	}, 30_000);
+
+	it("takes over from a dream that died without clearing its marker", async () => {
+		await note("A note.");
+		writeFileSync(
+			join(storePath, ".dreaming"),
+			JSON.stringify({ pid: 999999, host: "someone", stamp: "old", at: new Date("2020-01-01").toISOString() }),
+		);
+		// Two hours stale, and this marker is years old.
+		const result = await dream(options());
+		expect(result.ok).toBe(true);
+	}, 30_000);
+});
+
 describe("remember under stress", () => {
 	it("refuses when main moved to something the branch cannot fast-forward over", async () => {
 		await note("A note.");
