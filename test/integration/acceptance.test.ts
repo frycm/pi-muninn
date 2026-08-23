@@ -5,11 +5,24 @@
  * > on Tuesday on another laptop in a different project directory.
  *
  * Two scratch agent directories stand in for two laptops, and a bare
- * repository for the remote they share. The transport is `sync()` — the same
- * transaction `/muninn sync` and the `muninn` CLI run — and the query goes
- * through `search()`, the function `memory_search` calls. The one git command
- * left in the harness is the `clone` that provisions the second laptop, which
- * is how a machine joins a store that already exists.
+ * repository in `tmp` for the remote they share — nothing here touches a
+ * network. A path is a git remote like any other, and it is a configuration
+ * people really use (`sync.remote` pointing at a NAS or a synced folder); what
+ * a real ssh remote would add is auth and transport failure, neither of which
+ * changes a rebase. The offline case is covered in `test/unit/sync.test.ts` by
+ * pointing sync at a path that does not exist.
+ *
+ * The remote is *bare* because both laptops push: git refuses by default to
+ * push into the branch a non-bare repository has checked out. One-directional
+ * exchange would need no third repository at all — laptop two could fetch
+ * straight from laptop one's store — but "synced on both sides" is what the
+ * acceptance criterion asks for.
+ *
+ * The transport is `sync()` — the same transaction `/muninn sync` and the
+ * `muninn` CLI run — and the query goes through `search()`, the function
+ * `memory_search` calls. The one git command left in the harness is the
+ * `clone` that provisions the second laptop, which is how a machine joins a
+ * store that already exists.
  */
 import { execFile } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
