@@ -8,7 +8,7 @@ import { resetSupersessionCache, search } from "../../src/index/search.ts";
 import { appendSupersessions, readSupersessions } from "../../src/journal/supersessions.ts";
 import { type Fact, formatTopic, parseTopic } from "../../src/topics/format.ts";
 import { useCounts } from "../../src/topics/use-count.ts";
-import { applyFactList, MAX_LOSS_RATIO } from "../../src/topics/write.ts";
+import { applyFactList, MAX_LOSS_RATIO, withinLossBound } from "../../src/topics/write.ts";
 
 const NOW = new Date("2026-08-23T09:00:00Z");
 const OLD_FACT = "f-testing-0198e9a5-2d3e-7f40-9152-63748596a7b8";
@@ -100,6 +100,17 @@ describe("applying a fact list", () => {
 		);
 		expect(result.lossRatio).toBe(1);
 		expect(result.lossRatio).toBeGreaterThan(MAX_LOSS_RATIO);
+		expect(withinLossBound(2, 2)).toBe(false);
+	});
+
+	it("lets one fact be superseded however small the topic is", () => {
+		// A pure ratio would forbid the correction the mechanism exists for: a
+		// topic with three facts could never have one replaced.
+		expect(withinLossBound(1, 1)).toBe(true);
+		expect(withinLossBound(3, 1)).toBe(true);
+		expect(withinLossBound(3, 2)).toBe(false);
+		expect(withinLossBound(20, 5)).toBe(true);
+		expect(withinLossBound(20, 6)).toBe(false);
 	});
 
 	it("reports a supersedes that names a fact the topic does not have", () => {

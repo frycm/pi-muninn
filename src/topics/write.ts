@@ -71,6 +71,21 @@ export interface ApplyResult {
 export const MAX_LOSS_RATIO = 0.25;
 
 /**
+ * Whether a job's supersessions are within the bound.
+ *
+ * The design states the rule as a ratio, and a ratio alone is unusable at small
+ * sizes: a topic with three facts could never have one superseded, which
+ * forbids the correction the whole mechanism exists for — the design's own
+ * worked example is one fact of one being replaced by a user correction. So the
+ * bound is the ratio *or one fact*, whichever is larger. That keeps what the
+ * rule is for — a single job may not rewrite a topic wholesale — while leaving
+ * the ordinary case, one thing turning out to be wrong, possible.
+ */
+export function withinLossBound(activeBefore: number, retired: number): boolean {
+	return retired <= Math.max(1, Math.floor(MAX_LOSS_RATIO * activeBefore));
+}
+
+/**
  * Apply a fact list, returning a new topic file.
  *
  * Pure: no clock, no filesystem, no id source but `newFactId`. The caller

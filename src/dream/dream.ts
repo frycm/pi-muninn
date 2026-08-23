@@ -22,13 +22,17 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
 import { DERIVED_PATHS, GitError, type GitIdentity, git } from "../git.ts";
+import { claimsOf } from "../journal/format.ts";
 import { type JournalEntryWithContext, readStoreJournal } from "../journal/read.ts";
+import { appendSupersessions } from "../journal/supersessions.ts";
 import type { MuninnSettings } from "../settings.ts";
 import type { HostIdentity } from "../store/host.ts";
 import { storeIdentity } from "../store/init.ts";
 import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import type { ActiveScope } from "../store/scopes.ts";
-import { gather } from "./gather.ts";
+import { emptyTopic, formatTopic } from "../topics/format.ts";
+import { type ConsolidateJob, consolidate } from "./consolidate.ts";
+import { type GatherResult, gather } from "./gather.ts";
 import type { DreamModel } from "./model.ts";
 import { type Orientation, orient } from "./orient.ts";
 import { type DreamReport, emptyReport, formatReport, reportPath, reportTotals } from "./report.ts";
@@ -182,8 +186,15 @@ async function runLocked(options: DreamOptions, context: LockedContext): Promise
 			});
 		}
 
-		progress?.("commit");
+		progress?.("consolidate");
 		report.model = options.model?.id ?? "none";
+		if (options.model !== undefined) {
+			await consolidateAll(worktree.storePath, gathered, orientation, options, report);
+		} else if (gathered.jobs.length > 0) {
+			report.notes.push(`${gathered.jobs.length} topic(s) had new evidence but no dreamer model was configured`);
+		}
+
+		progress?.("commit");
 		report.finished = new Date(now.getTime()).toISOString();
 		await writeReport(worktree.storePath, report);
 		await commitDream(worktree.storePath, report, identity);
@@ -196,6 +207,86 @@ async function runLocked(options: DreamOptions, context: LockedContext): Promise
 		// whatever the dream managed to write are the evidence for why it failed,
 		// and the next dream collects it once the lock goes stale.
 		return { ok: false, stamp, branch, report, worktree: worktree.root, problems };
+	}
+}
+
+/**
+ * Run every topic's job, writing each result as it lands.
+ *
+ * One topic at a time and written as it goes, rather than collected and applied
+ * at the end: a dream that dies halfway has still produced a branch with real
+ * work on it and a report saying where it stopped, which is reviewable. The
+ * alternative loses everything to the last failure.
+ */
+async function consolidateAll(
+	storePath: string,
+	gathered: GatherResult,
+	orientation: Orientation,
+	options: DreamOptions,
+	report: DreamReport,
+): Promise<void> {
+	const model = options.model;
+	if (model === undefined) return;
+
+	// Source and date per journal claim, for the fact's own source and for
+	// turning "yesterday" into a date. Built once: every job asks about the
+	// same claims.
+	const sources = new Map<string, string>();
+	const dates = new Map<string, string>();
+	for (const job of gathered.jobs) {
+		for (const entry of job.entries) {
+			for (const claim of claimsOf(entry)) {
+				sources.set(claim.id, entry.source);
+				dates.set(claim.id, entry.date);
+			}
+		}
+	}
+
+	// Echoes are never evidence. Gather already dropped the echoing claims from
+	// the job; this refuses them again by id, because a model may cite a claim
+	// it saw in the topic's existing evidence rather than in this job's.
+	const refused = new Set<string>([...orientation.superseded]);
+	for (const job of gathered.jobs) for (const entry of job.entries) for (const id of entry.echo ?? []) refused.add(id);
+
+	for (const gatheredJob of gathered.jobs) {
+		const file = orientation.topics.get(gatheredJob.topic) ?? emptyTopic(gatheredJob.topic);
+		const job: ConsolidateJob = {
+			topic: gatheredJob.topic,
+			isNew: gatheredJob.isNew,
+			file,
+			claims: gatheredJob.claims,
+			entries: gatheredJob.entries,
+		};
+
+		const outcome = await consolidate(job, {
+			model,
+			now: options.now,
+			sourceOf: (id) => sources.get(id) as never,
+			dateOf: (id) => dates.get(id),
+			refused,
+			...(options.signal ? { signal: options.signal } : {}),
+		});
+
+		for (const refusal of outcome.refusals) {
+			report.lint.push({ blocking: false, rule: refusal.rule, message: `${gatheredJob.topic}: ${refusal.claim}` });
+		}
+		if (!outcome.ok) {
+			report.skipped.push({ topic: gatheredJob.topic, reason: outcome.reason });
+			continue;
+		}
+		if (outcome.retries > 0) report.notes.push(`${gatheredJob.topic}: ${outcome.retries} retry`);
+		if (outcome.applied.added.length === 0 && outcome.applied.superseded.length === 0) continue;
+
+		mkdirSync(join(storePath, "topics"), { recursive: true });
+		writeFileSync(join(storePath, "topics", `${gatheredJob.topic}.md`), formatTopic(outcome.applied.topic));
+		appendSupersessions(storePath, outcome.supersessions);
+
+		report.consolidated.push({
+			topic: gatheredJob.topic,
+			added: outcome.applied.added.length,
+			superseded: outcome.applied.superseded.length,
+			addedIds: outcome.applied.added.map((fact) => fact.id),
+		});
 	}
 }
 
