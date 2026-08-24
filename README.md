@@ -42,9 +42,9 @@ Every integration claim below is made against a specific pi:
 | Local reference | the fork checked out as a sibling directory (`../pi`, at `v0.84.2` / `914cf14`) — every API claim in this README was verified by reading that checkout; file references below are relative to `packages/coding-agent/src/` in it |
 
 Sibling projects in the same family, same conventions, same baseline policy:
-[pi-palantir](https://github.com/frycm/pi-palantir) (remote sessions and voice) and
+[pi-huginn](https://github.com/frycm/pi-huginn) (remote sessions and voice) and
 [pi-enclave](https://github.com/frycm/pi-enclave) (sandbox-first auto mode). Muninn is
-designed to run inside an enclave and to be reachable through a palantír, but depends on
+designed to run inside an enclave and to be reachable through Huginn, but depends on
 neither.
 
 ---
@@ -477,7 +477,7 @@ can tell which rule a regression touches.
 ```
                        day                                          night
  ┌──────────────────────────────────────────────┐   ┌──────────────────────────────────────┐
- │ pi session (TUI, palantír, SDK)               │   │ muninn dream  (cron / idle / manual)  │
+ │ pi session (TUI, Huginn, SDK)                 │   │ muninn dream  (cron / idle / manual)  │
  │                                               │   │                                       │
  │  session_start ─► MEMORY.md frozen snapshot   │   │  1 orient   read MEMORY.md, dreams/   │
  │  before_agent_start ─► recalled facts (budget)│   │  2 gather   search journal + sessions │
@@ -502,7 +502,7 @@ can tell which rule a regression touches.
 
 Two processes, one store. The session-side extension is thin and append-only. The dreamer
 is a separate job — runnable from the TUI (`/muninn dream`), from a cron entry, or from the
-palantír daemon's idle hook — that rewrites the derived layers on a branch. They never write
+Huginn daemon's idle hook — that rewrites the derived layers on a branch. They never write
 the same paths (`journal/` versus everything else), so a dream branch always rebases cleanly
 onto new journal commits; the exact transaction is under
 [the journal→dream transaction](#the-journaldream-transaction).
@@ -677,7 +677,7 @@ report. It is the only thing that ever modifies `topics/`, `rules.md`, `skills/`
 
 - `/muninn dream` (TUI), `muninn dream` (CLI, headless via the
   [SDK](https://github.com/earendil-works/pi/blob/v0.84.2/packages/coding-agent/docs/sdk.md)'s
-  `createAgentSession`), cron, or palantír's idle hook.
+  `createAgentSession`), cron, or Huginn's idle hook.
 - Automatic trigger, when enabled: **≥ 24 h since the last dream AND ≥ 5 new journal
   entries**, or **≥ 50 new entries regardless of time**. Time alone never triggers a dream.
 - A lock file with pid, host and timestamp; stale after 2 h. Dreams never run concurrently
@@ -1240,7 +1240,7 @@ embedding endpoint degrades to Tier 0 with a visible warning.
 
 Dreamed skills via `resources_discover`; team remote with pinning, `/muninn team review`
 and per-rule promotion; declared writable roots and broker path under pi-enclave;
-per-project "committed vs separate store" migration command; palantír idle hook only if
+per-project "committed vs separate store" migration command; Huginn idle hook only if
 cron and manual operation have shown it is needed.
 
 ### Platform matrix
@@ -1280,7 +1280,7 @@ extension, not only this one:
    [endpoint contract](#the-index).
 4. **An idle hook.** `pi` has no notion of "no session has been active for *T*". A
    process-level `idle` event (or an `--on-idle <command>` flag for `pi server`) is what a
-   dreamer and a palantír daemon both need; both currently poll. **Deferred**: this ask is
+   dreamer and the Huginn daemon both need; both currently poll. **Deferred**: this ask is
    made only if cron and manual dreams prove insufficient in practice.
 
 None of these is implemented yet — [`frycm/pi`](https://github.com/frycm/pi) is at upstream
@@ -1366,10 +1366,10 @@ night, report what is worth keeping. And Odin's line — that he fears more for 
 for Huginn — is the thesis of the 2026 memory research in one sentence: losing memory is the
 worse failure.
 
-It sits in the same mythic register as its siblings: **palantír** (Tolkien's seeing-stone:
-watch and speak from afar), **enclave** (the walled, trusted place), **muninn** (the memory
-that flies out and returns). Tolkien drew the palantíri's era from the Eddas; the family
-reads as one lineage.
+It sits in the same mythic register as its siblings: **huginn** (thought, the raven ranging
+over the world), **enclave** (the walled, trusted place), and **muninn** (memory, returning
+with what should endure). Huginn reaches and observes live sessions; Muninn preserves what
+those sessions teach. The family reads as one lineage.
 
 Considered and rejected: `pi-dream` (taken, and a direct neighbour), `pi-engram` and
 `pi-mnemosyne` (taken), `pi-lorien` (Irmo, the Vala of dreams — apt, but pure Tolkien twice
