@@ -7,6 +7,8 @@
  * and a bounded per-turn selection; and the model can now search, read and
  * write memory itself through three tools.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
 	type BeforeAgentStartEventResult,
 	CONFIG_DIR_NAME,
@@ -30,9 +32,17 @@ import {
 	sessionPointer,
 	taskFromSessionFile,
 } from "./capture/session-state.ts";
-import { type CommandOutput, type CommandRuntime, runMuninnCommand } from "./commands/muninn.ts";
+import { type CommandOutput, type CommandRuntime, type DreamOutcome, runMuninnCommand } from "./commands/muninn.ts";
+import { dream } from "./dream/dream.ts";
+import { forget, listDreams, matchStamp } from "./dream/dreams.ts";
+import { erase, eraseImpact } from "./dream/erase.ts";
+import type { DreamModel } from "./dream/model.ts";
+import { latestReport, readTopics } from "./dream/orient.ts";
+import { readMarker, remember, resolveConflict } from "./dream/remember.ts";
+
 import { SessionIndexes } from "./index/search.ts";
 import { type AppendResult, appendEntry } from "./journal/append.ts";
+import { readStoreJournal } from "./journal/read.ts";
 import {
 	buildRecallMessage,
 	type ContextTokens,
@@ -42,14 +52,17 @@ import {
 } from "./recall/per-turn.ts";
 import { appendSnapshot, readSnapshot, type Snapshot } from "./recall/snapshot.ts";
 import { buildSessionContext, journalStats, type SessionContext } from "./session.ts";
-import { formatStatus, formatStatusLine, formatWarning } from "./status.ts";
+import { type DreamStats, formatStatus, formatStatusLine, formatWarning } from "./status.ts";
 import { storeIdentity } from "./store/init.ts";
+import { projectStoreSlug } from "./store/paths.ts";
 import type { CaptureTarget } from "./store/scopes.ts";
+import { parseStoreMd } from "./store/store-md.ts";
 import { describeSync, type SyncResult, sync } from "./sync/sync.ts";
 import { memoryNoteTool } from "./tools/memory-note.ts";
 import { memoryReadTool } from "./tools/memory-read.ts";
 import { memorySearchTool } from "./tools/memory-search.ts";
 import type { ToolRuntime } from "./tools/runtime.ts";
+import { activeRules, parseRules } from "./topics/rules.ts";
 import { MUNINN_VERSION } from "./version.ts";
 
 /** How long a shutdown will wait for sync before giving up on the network. */
@@ -245,6 +258,40 @@ export default function (pi: ExtensionAPI): void {
 	 * The `/muninn` report, assembled from what only this file knows: versions,
 	 * counters, and the objects the session is holding open.
 	 */
+	/**
+	 * What `/muninn` says about dreaming.
+	 *
+	 * Computed at session start rather than on demand: it reads the store's
+	 * branches and its newest report, and `/muninn` should not cost a handful of
+	 * subprocesses every time somebody types it.
+	 */
+	let dreamStats: DreamStats | undefined;
+
+	const readDreamStats = async (current: SessionContext): Promise<DreamStats | undefined> => {
+		const target = current.scopes.active.find((scope) => scope.scope === current.scopes.captureTarget);
+		if (!target?.exists) return undefined;
+		try {
+			const listed = await listDreams(target.path);
+			const pending = listed.filter((entry) => !entry.remembered);
+			const previous = latestReport(target.path);
+			const through = previous?.journalThrough ?? {};
+			const since = readStoreJournal(target.path).entries.filter((entry) => {
+				const last = through[entry.host];
+				return last === undefined || entry.id > last;
+			}).length;
+			return {
+				sinceLastDream: since,
+				...(previous ? { last: previous.stamp } : {}),
+				pending: pending.length,
+				blocking: pending[0]?.report?.lint.filter((finding) => finding.blocking).length ?? 0,
+				interrupted: readMarker(target.path) !== undefined,
+				model: current.loaded.settings.dream.model,
+			};
+		} catch {
+			return undefined;
+		}
+	};
+
 	const statusReport = (current: SessionContext): string => {
 		const indexStats = indexes?.scopes.map((scoped) => ({
 			scope: scoped.scope,
@@ -261,6 +308,7 @@ export default function (pi: ExtensionAPI): void {
 			runsWithoutAgentEnd,
 			uncommitted: pendingTotal(),
 			sync: { remote: current.loaded.settings.sync.remote, ...(lastSync ? { last: lastSync } : {}) },
+			...(dreamStats ? { dream: dreamStats } : {}),
 			...(indexStats ? { index: indexStats } : {}),
 			recall: {
 				snapshotLines: snapshot?.lines ?? 0,
@@ -268,6 +316,135 @@ export default function (pi: ExtensionAPI): void {
 				recalled: state?.recalled.length ?? 0,
 			},
 		});
+	};
+
+	/**
+	 * What a dream needs from pi's context.
+	 *
+	 * Declared structurally, as `writeOutcome` does, so the parts of this module
+	 * that could be tested without pi are not typed against it.
+	 */
+	interface DreamContext {
+		cwd: string;
+		model?: unknown;
+		modelRegistry: { complete(model: never, context: never, options: never): Promise<unknown> };
+		isProjectTrusted(): boolean;
+	}
+
+	/**
+	 * The store path for a scope, creating it if this session would.
+	 *
+	 * A dream needs a store on disk; `/muninn dreams` on a project whose store
+	 * has not been created yet should say "no dreams" rather than create one, so
+	 * this does not create and the caller that needs one loads with stores.
+	 */
+	const storeFor = async (ctx: { cwd: string; isProjectTrusted(): boolean }, scope: CaptureTarget): Promise<string> => {
+		const current = await load(ctx.cwd, ctx.isProjectTrusted(), false);
+		return current.scopes.active.find((candidate) => candidate.scope === scope)?.path ?? "";
+	};
+
+	/**
+	 * Run a dream from inside a session.
+	 *
+	 * `dream.model` selects the dreamer, falling back to the session's own model
+	 * — the design's point is that the two are configured separately, and a
+	 * session that has a model at hand is the one case where falling back is
+	 * better than refusing.
+	 */
+	const runDream = async (
+		ctx: DreamContext,
+		options: { scope?: CaptureTarget; progress: (phase: string) => void },
+	): Promise<DreamOutcome> => {
+		const current = await load(ctx.cwd, ctx.isProjectTrusted(), true);
+		const wanted = options.scope ?? current.scopes.captureTarget;
+		const active = current.scopes.active.find((candidate) => candidate.scope === wanted);
+		if (!active) throw new Error(`muninn: no ${wanted ?? "active"} store here`);
+
+		const model = sessionDreamModel(ctx, current.loaded.settings.dream.model);
+		// A session has a model at hand, so falling back to it is better than
+		// refusing — but never silently. The design's point is that the dreamer
+		// runs locally and offline while the session talks to whatever it likes,
+		// and a dream that quietly sent the whole store to a frontier API because
+		// one setting was unset is exactly the surprise this says out loud.
+		if (model !== undefined && current.loaded.settings.dream.model === null) {
+			process.stderr.write(
+				"muninn: dream.model is not set, so this dream uses the session's own model. " +
+					"Set muninn.dream.model to dream against a local endpoint.\n",
+			);
+		}
+		const globalRules =
+			active.scope === "project" ? readIfPresent(current.scopes.active, "global", "rules.md") : undefined;
+
+		const result = await dream({
+			scope: active,
+			agentDir: getAgentDir(),
+			host: current.host,
+			// The store's own id, not a fresh one: a new uuid per dream gives
+			// every dream its own worktree parent directory, and the collector
+			// works through `worktree list` and never reclaims the empty shells.
+			storeId: storeIdOf(active.path),
+
+			settings: current.loaded.settings,
+			now: new Date(),
+			progress: options.progress,
+			...(model ? { model } : {}),
+			...(globalRules !== undefined ? { globalRules } : {}),
+		});
+		// The dream wrote on a branch, but it also committed this host's pending
+		// journal, so the session's index is behind by whatever it committed.
+		if (result.ok) openIndexes(current, false);
+		return {
+			ok: result.ok,
+			stamp: result.stamp,
+			branch: result.branch,
+			report: result.report,
+			problems: result.problems,
+		};
+	};
+
+	/** A `DreamModel` over the session's own model registry. */
+	const sessionDreamModel = (ctx: DreamContext, ref: string | null): DreamModel | undefined => {
+		const model = ctx.model;
+		if (!model) return undefined;
+		return {
+			// The report records what actually ran, which is the session's model
+			// whenever `dream.model` is unset.
+			id: ref ?? "session model",
+			async complete(request, signal) {
+				const reply = (await ctx.modelRegistry.complete(
+					model as never,
+					{
+						systemPrompt: request.systemPrompt,
+						messages: [{ role: "user", content: request.prompt }],
+					} as never,
+					{ signal } as never,
+				)) as { content?: unknown };
+				return messageText(reply as never);
+			},
+		};
+	};
+
+	/** A store's id, for keying its worktrees. Falls back to a path hash. */
+	const storeIdOf = (path: string): string => {
+		try {
+			return parseStoreMd(readFileSync(join(path, "store.md"), "utf-8")).store?.store ?? projectStoreSlug(path);
+		} catch {
+			return projectStoreSlug(path);
+		}
+	};
+
+	const readIfPresent = (
+		scopes: readonly { scope: CaptureTarget; path: string }[],
+		scope: CaptureTarget,
+		name: string,
+	): string | undefined => {
+		const path = scopes.find((candidate) => candidate.scope === scope)?.path;
+		if (path === undefined) return undefined;
+		try {
+			return readFileSync(join(path, name), "utf-8");
+		} catch {
+			return undefined;
+		}
 	};
 
 	pi.registerCommand("muninn", {
@@ -295,6 +472,104 @@ export default function (pi: ExtensionAPI): void {
 				statusReport,
 				channel: () => channelForMode(ctx.mode),
 				sessionPointer: () => sessionPointer(ctx.sessionManager),
+
+				// A dream runs on the append queue for the same reason a sync
+				// does: it takes the store lock for its whole duration, and a
+				// queued entry waiting on that lock would time out and be lost.
+				dream: async (options) => {
+					let outcome: DreamOutcome | undefined;
+					queue.enqueue("dream", async () => {
+						outcome = await runDream(ctx, options);
+					});
+					await queue.flush();
+					if (outcome === undefined) throw new Error("muninn: the dream did not run");
+					return outcome;
+				},
+				dreams: async (scope) => listDreams(await storeFor(ctx, scope)),
+				remember: async (scope, stamp) => {
+					const current = await load(ctx.cwd, ctx.isProjectTrusted(), false);
+					const active = current.scopes.active.find((candidate) => candidate.scope === scope);
+					if (!active) return { ok: false, problems: [`no ${scope} store here`], notes: [] };
+					const matched = matchStamp(await listDreams(active.path), stamp);
+					const listing = matched.listing;
+					if (matched.problem !== undefined || listing?.branch === undefined) {
+						return { ok: false, problems: [matched.problem ?? `no pending dream ${stamp}`], notes: [] };
+					}
+					if (listing.report?.status === "lint-blocked") {
+						// Remembering a dream whose facts cannot be traced to the
+						// journal is a decision, not a flag.
+						return { ok: false, problems: [`${stamp} failed lint; fix or discard it`], notes: [] };
+					}
+					const model = sessionDreamModel(ctx, current.loaded.settings.dream.model);
+					return remember({
+						scope: active,
+						agentDir: getAgentDir(),
+						host: current.host,
+						branch: listing.branch,
+						// Two dreams that rewrote the same topic are settled by a
+						// merge dream, never by `git merge`. Without a model there
+						// is nothing to settle it with, and the conflict is
+						// reported instead of guessed at.
+						...(model
+							? {
+									resolve: (conflict) =>
+										resolveConflict(conflict, {
+											scope: active,
+											agentDir: getAgentDir(),
+											host: current.host,
+											storeId: current.host.id,
+											model,
+											settings: current.loaded.settings,
+											now: new Date(),
+										}),
+								}
+							: {}),
+					});
+				},
+				forget: async (scope, stamp) => {
+					const current = await load(ctx.cwd, ctx.isProjectTrusted(), false);
+					const active = current.scopes.active.find((candidate) => candidate.scope === scope);
+					if (!active) return { ok: false, problems: [`no ${scope} store here`], notes: [] };
+					return forget({ scope: active, host: current.host, stamp, now: new Date() });
+				},
+				erase: async (scope, entryId, options) => {
+					const current = await load(ctx.cwd, ctx.isProjectTrusted(), false);
+					const active = current.scopes.active.find((candidate) => candidate.scope === scope);
+					if (!active) return { ok: false, problems: [`no ${scope} store here`], notes: [] };
+					const result = await erase({
+						scope: active,
+						host: current.host,
+						entryId,
+						now: new Date(),
+						...(options.noRewrite ? { noRewrite: true } : {}),
+						...(current.loaded.settings.sync.remote ? { remote: current.loaded.settings.sync.remote } : {}),
+					});
+					// The store's own text changed under the session's index.
+					if (result.ok) openIndexes(current, true);
+					return result;
+				},
+				eraseImpact: (scope, entryId) => {
+					const path = session?.scopes.active.find((candidate) => candidate.scope === scope)?.path;
+					return path === undefined ? { claims: [], facts: [] } : eraseImpact(path, entryId);
+				},
+				derived: (scope) => {
+					const path = session?.scopes.active.find((candidate) => candidate.scope === scope)?.path;
+					if (path === undefined) return { topics: [], rules: [] };
+					const topics = [...readTopics(path).entries()].map(([slug, topic]) => ({
+						slug,
+						title: topic.title,
+						facts: topic.facts.length + topic.external.length,
+					}));
+					let rules: string[] = [];
+					try {
+						rules = activeRules(parseRules(readFileSync(join(path, "rules.md"), "utf-8"))).map(
+							(rule) => `${rule.id}${rule.phase ? ` · ${rule.phase}` : ""} — ${rule.text.split("\n")[0]?.trim() ?? ""}`,
+						);
+					} catch {
+						rules = [];
+					}
+					return { topics, rules };
+				},
 			};
 
 			let output: CommandOutput;
@@ -347,6 +622,12 @@ export default function (pi: ExtensionAPI): void {
 		openIndexes(current, false);
 		// Read once, here. Everything downstream uses this string, never the file.
 		snapshot = readSnapshot(current.scopes.active, current.loaded.settings.recall.snapshotLines);
+		// Queued, not awaited: this reads branches and a report, and a session
+		// must not wait on subprocesses before accepting a keystroke.
+		queue.enqueue("dream-status", async () => {
+			dreamStats = await readDreamStats(current);
+			refreshStatus();
+		});
 
 		// A misread setting or an unusable store means Muninn is not behaving the
 		// way the files say it should. That is exactly the class of failure this

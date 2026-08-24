@@ -28,6 +28,22 @@ export interface StatusInput {
 	recall?: RecallStats;
 	/** Where memory is pushed, and what the last sync in this session did. */
 	sync?: SyncStats;
+	dream?: DreamStats;
+}
+
+export interface DreamStats {
+	/** Entries written since the last complete dream's `journal_through`. */
+	sinceLastDream: number;
+	/** The last complete dream's stamp, when there has been one. */
+	last?: string;
+	/** Branches waiting to be remembered. */
+	pending: number;
+	/** Blocking lint findings in the newest pending dream. */
+	blocking: number;
+	/** A `.remember` marker on disk, which should never outlive a store open. */
+	interrupted: boolean;
+	/** `dream.model`, or nothing when the session's own model would be used. */
+	model: string | null;
 }
 
 export interface SyncStats {
@@ -142,6 +158,23 @@ export function formatStatus(input: StatusInput): string {
 		lines.push(
 			`          ${snapshot} · ${input.recall.recalled} memor${input.recall.recalled === 1 ? "y" : "ies"} recalled`,
 		);
+	}
+
+	if (input.dream) {
+		const dream = input.dream;
+		lines.push(
+			`dream     ${dream.model ?? "session model (dream.model is unset)"} · ${dream.sinceLastDream} entr${dream.sinceLastDream === 1 ? "y" : "ies"} since ${dream.last ?? "the store was created"}`,
+		);
+		if (dream.pending > 0) {
+			lines.push(
+				`          ${dream.pending} dream(s) waiting${dream.blocking > 0 ? `, ${dream.blocking} blocking lint finding(s)` : ""} — /muninn dreams`,
+			);
+		}
+		if (dream.interrupted) {
+			// Recovery runs at every store open, so seeing this means the marker
+			// outlived one — which is a bug, and worth saying so plainly.
+			lines.push("          ! a .remember marker is present; a remember was interrupted and not recovered");
+		}
 	}
 
 	if (input.sync) {

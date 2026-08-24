@@ -10,17 +10,30 @@
  * Runnable straight from source: Node ≥ 22.19 strips the types, which is also
  * how pi loads the extension itself.
  */
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_DIR, resolveAgentDir } from "./agent-dir.ts";
+import { dream } from "./dream/dream.ts";
+import { forget, listDreams, matchStamp } from "./dream/dreams.ts";
+import { erase, eraseImpact } from "./dream/erase.ts";
+import type { DreamModel } from "./dream/model.ts";
+import { headlessModel } from "./dream/pi-model.ts";
+import { formatQualify, qualify } from "./dream/qualify.ts";
+import { remember, resolveConflict } from "./dream/remember.ts";
+import { reportTotals } from "./dream/report.ts";
 import { gitToplevel } from "./git.ts";
+
 import { claimsOf } from "./journal/format.ts";
 import { readStoreJournal } from "./journal/read.ts";
+import type { MuninnSettings } from "./settings.ts";
 import { loadSettings } from "./settings-io.ts";
+import type { HostIdentity } from "./store/host.ts";
 import { loadHostIdentity } from "./store/host.ts";
 import { storeIdentity } from "./store/init.ts";
-import { storeExistsAt } from "./store/paths.ts";
-import { type CaptureTarget, resolveScopes } from "./store/scopes.ts";
+import { projectStoreSlug, storeExistsAt } from "./store/paths.ts";
+import { type ActiveScope, type CaptureTarget, resolveScopes } from "./store/scopes.ts";
+import { parseStoreMd } from "./store/store-md.ts";
 import { describeSync, sync } from "./sync/sync.ts";
 import { MUNINN_VERSION } from "./version.ts";
 
@@ -29,10 +42,17 @@ const USAGE = [
 	"",
 	"  muninn sync [--scope global|project] [--no-push]   commit, fetch, rebase, push",
 	"  muninn status [--scope global|project]             what is in the store",
+	"  muninn dream [--scope s] [--force]                 consolidate the journal onto a branch",
+	"  muninn dream --qualify                             score the configured model on the fixture store",
+	"  muninn dreams [--scope s]                          list dreams, remembered and pending",
+	"  muninn dreams remember <stamp>                     fast-forward main to a dream",
+	"  muninn dreams forget <stamp>                       revert a remembered dream",
+	"  muninn erase <entry id> --yes --yes [--no-rewrite] privacy erasure (confirms twice)",
 	"",
 	"Runs without a pi session. The store is chosen the way a session would choose",
 	"it: global always, project when the working directory is inside a git",
-	"repository that already has one.",
+	"repository that already has one. `dream` needs pi installed for its model;",
+	"`sync` does not, and does not load it.",
 ].join("\n");
 
 export interface CliResult {
@@ -53,7 +73,8 @@ export async function runCli(argv: readonly string[], cwd: string = process.cwd(
 
 	if (command === "help" || command === "--help" || command === "-h") return { code: 0, out: [USAGE], err };
 	if (command === "version" || command === "--version") return { code: 0, out: [MUNINN_VERSION], err };
-	if (command !== "sync" && command !== "status") {
+	const KNOWN = new Set(["sync", "status", "dream", "dreams", "erase"]);
+	if (!KNOWN.has(command)) {
 		return { code: 2, out, err: [`muninn: unknown command "${command}"`, "", USAGE] };
 	}
 
@@ -86,6 +107,35 @@ export async function runCli(argv: readonly string[], cwd: string = process.cwd(
 	let code = 0;
 	for (const scope of targets) {
 		out.push(`${scope.scope}: ${scope.path}`);
+
+		if (command === "dream") {
+			code = Math.max(code, await runDream(scope, { host, settings: loaded.settings, agentDir, args, out, err }));
+			continue;
+		}
+		if (command === "dreams") {
+			// Resolved only when a conflict needs settling, which is why it is
+			// looked up here rather than at the top: `muninn dreams` with no
+			// model configured is an ordinary listing, not an error.
+			const ref = loaded.settings.dream.model;
+			const resolved = ref === null ? undefined : await headlessModel({ ref, agentDir });
+			if (resolved !== undefined && !resolved.ok) err.push(`  ! ${resolved.problem}`);
+			code = Math.max(
+				code,
+				await runDreams(scope, {
+					host,
+					settings: loaded.settings,
+					args,
+					out,
+					err,
+					...(resolved?.ok ? { model: resolved.model } : {}),
+				}),
+			);
+			continue;
+		}
+		if (command === "erase") {
+			code = Math.max(code, await runErase(scope, { host, settings: loaded.settings, args, out, err }));
+			continue;
+		}
 
 		if (command === "status") {
 			const journal = readStoreJournal(scope.path);
@@ -120,6 +170,232 @@ export async function runCli(argv: readonly string[], cwd: string = process.cwd(
 
 	for (const warning of loaded.warnings) err.push(`  ! [${warning.scope}] ${warning.message}`);
 	return { code, out, err };
+}
+
+// ---------------------------------------------------------------------------
+// Dreaming, from the shell
+// ---------------------------------------------------------------------------
+
+/** A store's id, for keying its worktrees. Falls back to a path hash. */
+function storeIdOf(path: string): string {
+	try {
+		return parseStoreMd(readFileSync(join(path, "store.md"), "utf-8")).store?.store ?? projectStoreSlug(path);
+	} catch {
+		return projectStoreSlug(path);
+	}
+}
+
+interface SubcommandContext {
+	host: HostIdentity;
+	settings: MuninnSettings;
+	agentDir: string;
+	args: string[];
+	out: string[];
+	err: string[];
+}
+
+/**
+ * `muninn dream` — the headless dream, which is the one the design is aimed at.
+ *
+ * The recommended deployment is a server running `muninn sync && muninn dream
+ * --scope global && muninn sync` nightly, so everything here has to be legible
+ * from a cron log: one line per phase, the branch name at the end, and an exit
+ * code that means something.
+ */
+async function runDream(
+	scope: ActiveScope,
+	context: Omit<SubcommandContext, "settings"> & { settings: MuninnSettings },
+): Promise<number> {
+	const { host, settings, agentDir, args, out, err } = context;
+	const ref = settings.dream.model;
+
+	if (args.includes("--qualify")) {
+		if (ref === null) {
+			err.push("  ! dream.model is not set, so there is no model to qualify");
+			return 1;
+		}
+		const resolved = await headlessModel({ ref, agentDir });
+		if (!resolved.ok) {
+			err.push(`  ! ${resolved.problem}`);
+			return 1;
+		}
+		const fixture = fileURLToPath(new URL("../test/fixtures/qualify", import.meta.url));
+		const result = await qualify({ fixture, model: resolved.model, settings, now: new Date() });
+		out.push(formatQualify(result));
+		return result.passed ? 0 : 1;
+	}
+
+	if (ref === null) {
+		// Not an error: a dream with no model still commits the journal, records
+		// the range and writes a report. It just consolidates nothing, and says
+		// so rather than pretending it had nothing to do.
+		err.push("  ! dream.model is not set — this dream will gather but not consolidate");
+	}
+
+	let model: DreamModel | undefined;
+	if (ref !== null) {
+		const resolved = await headlessModel({ ref, agentDir });
+		if (!resolved.ok) {
+			err.push(`  ! ${resolved.problem}`);
+			return 1;
+		}
+		model = resolved.model;
+	}
+
+	const result = await dream({
+		scope,
+		agentDir,
+		host,
+		// The store's own id: a fresh one per dream leaves an unreclaimed
+		// worktree parent directory behind every time.
+		storeId: storeIdOf(scope.path),
+		settings,
+		now: new Date(),
+		...(model ? { model } : {}),
+		progress: (phase) => out.push(`  ${phase}…`),
+	});
+
+	for (const line of result.report.gathered) out.push(`  ${line}`);
+	for (const change of result.report.consolidated) {
+		out.push(`  ${change.topic}: +${change.added} fact(s), ${change.superseded} superseded`);
+	}
+	for (const finding of result.report.lint) {
+		(finding.blocking ? err : out).push(`  ${finding.blocking ? "!" : "-"} ${finding.rule}: ${finding.message}`);
+	}
+	for (const skip of result.report.skipped) err.push(`  ! skipped ${skip.topic}: ${skip.reason}`);
+	for (const problem of result.problems) err.push(`  ! ${problem}`);
+
+	if (!result.ok) return 1;
+	out.push(`  ${result.branch} — review with \`muninn dreams\`, apply with \`muninn dreams remember ${result.stamp}\``);
+	return result.report.status === "lint-blocked" ? 1 : 0;
+}
+
+/** `muninn dreams [remember|forget <stamp>]`. */
+async function runDreams(
+	scope: ActiveScope,
+	context: Pick<SubcommandContext, "host" | "settings" | "args" | "out" | "err"> & { model?: DreamModel },
+): Promise<number> {
+	const { host, settings, args, out, err } = context;
+	const action = args.find((arg) => arg === "remember" || arg === "forget");
+
+	if (action === undefined) {
+		const listed = await listDreams(scope.path);
+		if (listed.length === 0) {
+			out.push("  no dreams yet");
+			return 0;
+		}
+		for (const entry of listed) {
+			const state = entry.forgotten ? "forgotten" : entry.remembered ? "remembered" : "pending";
+			const totals = entry.report ? reportTotals(entry.report) : undefined;
+			const shape = totals ? `${totals.added} fact(s), ${totals.superseded} superseded` : "no report";
+			const blocking = entry.report?.lint.filter((finding) => finding.blocking).length ?? 0;
+			out.push(`  ${entry.stamp}  ${state.padEnd(11)} ${shape}${blocking > 0 ? ` · ${blocking} blocking` : ""}`);
+		}
+		return 0;
+	}
+
+	// The next argument, unless it is a flag: `dreams remember --scope global`
+	// would otherwise take "--scope" for a dream stamp and report that no such
+	// dream exists, which is true and useless.
+	const next = args[args.indexOf(action) + 1];
+	const stamp = next === undefined || next.startsWith("-") ? undefined : next;
+	if (stamp === undefined) {
+		err.push(`  ! ${action} needs a dream stamp; run \`muninn dreams\` to see them`);
+		return 2;
+	}
+
+	if (action === "forget") {
+		const result = await forget({ scope, host, stamp, now: new Date() });
+		for (const note of result.notes) out.push(`  ${note}`);
+		for (const problem of result.problems) err.push(`  ! ${problem}`);
+		return result.ok ? 0 : 1;
+	}
+
+	const matched = matchStamp(await listDreams(scope.path), stamp);
+	if (matched.problem !== undefined || matched.listing?.branch === undefined) {
+		err.push(`  ! ${matched.problem ?? `no pending dream ${stamp} in this store`}`);
+		return 1;
+	}
+	const listing = matched.listing;
+	const branch = listing.branch as string;
+	if (listing.report?.status === "lint-blocked") {
+		// Blocked at lint means a fact in it cannot be traced to the journal.
+		// Remembering it anyway is a decision, and not one a flag should make
+		// quietly, so there is no flag.
+		err.push(`  ! ${stamp} failed lint; fix or discard it rather than remembering it`);
+		return 1;
+	}
+	const agentDir = resolveAgentDir();
+	const model = context.model;
+	const result = await remember({
+		scope,
+		agentDir,
+		host,
+		branch,
+		// A conflict means two dreams rewrote the same topic, which needs a merge
+		// dream and never `git merge`. With no `dream.model` there is nothing to
+		// settle it with, and the conflict is reported rather than guessed at.
+		...(model
+			? {
+					resolve: (conflict) =>
+						resolveConflict(conflict, {
+							scope,
+							agentDir,
+							host,
+							storeId: host.id,
+							model,
+							settings,
+							now: new Date(),
+						}),
+				}
+			: {}),
+	});
+	for (const note of result.notes) out.push(`  ${note}`);
+	for (const problem of result.problems) err.push(`  ! ${problem}`);
+	if (result.ok) out.push(`  remembered ${stamp}; the new MEMORY.md is read by the next session`);
+	// A staged merge is not a failure: the conflict was settled, the result is
+	// waiting for review, and a cron job has nothing to alarm about.
+	if (result.pending !== undefined) return 0;
+	return result.ok ? 0 : 1;
+}
+
+/**
+ * `muninn erase <id> --yes --yes`.
+ *
+ * Two confirmations, because there is no undo: the flag has to be given twice.
+ * The impact is printed first either way, so the second `--yes` is a decision
+ * about something specific.
+ */
+async function runErase(
+	scope: ActiveScope,
+	context: Pick<SubcommandContext, "host" | "settings" | "args" | "out" | "err">,
+): Promise<number> {
+	const { host, settings, args, out, err } = context;
+	const entryId = args.find((arg) => arg.startsWith("j-"));
+	if (entryId === undefined) {
+		err.push("  ! erase needs a journal entry id (j-…)");
+		return 2;
+	}
+
+	const impact = eraseImpact(scope.path, entryId);
+	out.push(`  ${entryId}: ${impact.claims.length} claim(s), ${impact.facts.length} fact(s) resting on them`);
+
+	if (args.filter((arg) => arg === "--yes").length < 2) {
+		err.push("  ! erasure rewrites history and cannot be undone; pass --yes twice to confirm");
+		return 2;
+	}
+
+	const result = await erase({
+		scope,
+		host,
+		entryId,
+		now: new Date(),
+		...(args.includes("--no-rewrite") ? { noRewrite: true } : {}),
+		...(settings.sync.remote ? { remote: settings.sync.remote } : {}),
+	});
+	for (const note of result.notes) out.push(`  ${note}`);
+	for (const problem of result.problems) err.push(`  ! ${problem}`);
+	return result.ok ? 0 : 1;
 }
 
 function scopeFlag(args: string[]): CaptureTarget | undefined | "invalid" {
