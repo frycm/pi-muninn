@@ -130,10 +130,15 @@ say which rule a regression touched.
 cap, unused rules, a project rule contradicting a global one) and reports; rules are
 written by people. Rule derivation arrives with the promotion gate that makes it safe.
 
-## `dreams/<stamp>.md`
+## `dreams/<host slug>/<ts>.md`
 
-One report per dream, keyed by the same stamp as its branch (`dream/<host>/<stamp>`), so
-the two are paired without an index. It records `input_head` and `journal_through` — which
+One report per dream. A dream's identity is `<host slug>/<ts>` — the host is part of it,
+not decoration: two hosts dreaming the same synced store in the same minute is the
+design's normal case, and a bare timestamp would make them one dream, with one listing
+key and one report *file* that two remembers would then meet in an add/add conflict.
+Reports are per host for the same reason journal files are: two machines never write the
+same file. The branch is `dream/<host slug>/<ts>` and the report shares the key, so the
+two are paired without an index. It records `input_head` and `journal_through` — which
 makes "what has this store not yet learned from" the exact question
 `git diff input_head..main -- journal/` — the held-out task groups, what was consolidated,
 the lint findings, and, from Phase 3, the eval table.

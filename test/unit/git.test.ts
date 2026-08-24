@@ -107,6 +107,27 @@ describe("toArgv — the allow-list is the promise", () => {
 			"--format=%H%x1f%s%x1f%b%x1e",
 			"main",
 		]);
+		// Grep-limited: the walk counts matching commits, so "the last N dreams"
+		// is a question about dreams, not about the last N commits.
+		expect(toArgv({ kind: "log-entries", ref: "main", limit: 5, grep: "Muninn-Dream:" })).toEqual([
+			"log",
+			"--max-count=5",
+			"--grep=Muninn-Dream:",
+			"--format=%H%x1f%s%x1f%b%x1e",
+			"main",
+		]);
+		expect(() => toArgv({ kind: "log-entries", ref: "main", limit: 5, grep: "--all-match" })).toThrow(/grep/);
+		expect(toArgv({ kind: "branch-create", name: "dream/mbp/x", startPoint: "abc123" })).toEqual([
+			"branch",
+			"dream/mbp/x",
+			"abc123",
+		]);
+		expect(toArgv({ kind: "branch-list", prefix: "dream/", remote: "origin" })).toEqual([
+			"for-each-ref",
+			"--sort=-committerdate",
+			"--format=%(refname:short)",
+			"refs/remotes/origin/dream/**",
+		]);
 		expect(toArgv({ kind: "worktree-add-existing", path: "/tmp/wt", branch: "dream/mbp/x" })).toEqual([
 			"worktree",
 			"add",

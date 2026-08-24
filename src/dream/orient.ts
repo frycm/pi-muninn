@@ -138,22 +138,38 @@ export function readTopics(storePath: string): Map<string, TopicFile> {
 /**
  * The newest dream report in the store.
  *
- * Reports are named by their stamp, which sorts chronologically, so "newest" is
- * the last name — no parsing needed to order them, and a report a person copied
- * in by hand sorts into the right place too.
+ * A report lives at `dreams/<host slug>/<ts>.md` — per host, like the journal,
+ * so two hosts' same-minute dreams never fight over one file. "Newest" is by
+ * timestamp *across* hosts, which is what `started:` in the front matter is
+ * for; the filename ordering alone would compare hosts' names first.
  */
 export function latestReport(storePath: string) {
 	const dir = join(storePath, "dreams");
 	if (!existsSync(dir)) return undefined;
-	const names = readdirSync(dir)
-		.filter((name) => name.endsWith(".md"))
-		.sort();
-	for (const name of names.reverse()) {
-		const stamp = basename(name, ".md");
-		const report = parseReport(readFileSync(join(dir, name), "utf-8"), stamp);
+
+	const stamps: string[] = [];
+	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+		if (entry.isDirectory()) {
+			for (const name of readdirSync(join(dir, entry.name))) {
+				if (name.endsWith(".md")) stamps.push(`${entry.name}/${basename(name, ".md")}`);
+			}
+		} else if (entry.name.endsWith(".md")) {
+			// A report from before per-host directories, or one a person wrote.
+			stamps.push(basename(entry.name, ".md"));
+		}
+	}
+
+	const reports = stamps
+		.map((stamp) => {
+			try {
+				return parseReport(readFileSync(join(dir, `${stamp}.md`), "utf-8"), stamp);
+			} catch {
+				return undefined;
+			}
+		})
 		// A failed dream consolidated nothing, so its range was never learned
 		// from; the next dream must start where the last *successful* one ended.
-		if (report && report.status === "complete") return report;
-	}
-	return undefined;
+		.filter((report) => report !== undefined && report.status === "complete");
+	reports.sort((a, b) => ((a?.started ?? "") < (b?.started ?? "") ? 1 : -1));
+	return reports[0];
 }

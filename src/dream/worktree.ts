@@ -33,15 +33,22 @@ export function worktreeRoot(agentDir: string): string {
 }
 
 /**
- * The branch and report key for a dream started now.
+ * The identity of a dream started now on this host: `<host slug>/<ts>`.
  *
- * Minute resolution, UTC, and `:` replaced — a branch name may not contain one,
- * and neither may a filename on Windows. The report is `dreams/<stamp>.md`, so
- * branch and report share a key and `/muninn dreams` can pair them without an
- * index.
+ * The timestamp is minute resolution, UTC, with `:` replaced — a branch name
+ * may not contain one, and neither may a filename on Windows. The host is part
+ * of the identity, not decoration: two hosts dreaming the same synced store in
+ * the same minute is the design's normal case, and a timestamp alone made them
+ * one dream — the same listing key, and worse, the same report *file*, which
+ * two remembers would then meet in an add/add conflict. Per-host report
+ * directories are the same shape as per-host journal directories, and exist for
+ * the same reason: two machines never write the same file.
+ *
+ * The branch is `dream/<stamp>` and the report `dreams/<stamp>.md`, so branch
+ * and report share a key and `/muninn dreams` pairs them without an index.
  */
-export function dreamStamp(at: Date): string {
-	return at.toISOString().slice(0, 16).replace(":", "-");
+export function dreamStamp(at: Date, hostName: string): string {
+	return `${branchSlug(hostName)}/${at.toISOString().slice(0, 16).replace(":", "-")}`;
 }
 
 /**
@@ -61,9 +68,9 @@ export function branchSlug(hostName: string): string {
 	return slug === "" ? "host" : slug;
 }
 
-/** `dream/<host slug>/<stamp>`, and the merge variant of it. */
-export function dreamBranch(hostName: string, stamp: string, merge = false): string {
-	return `dream/${branchSlug(hostName)}/${stamp}${merge ? "-merge" : ""}`;
+/** `dream/<stamp>`, and the merge variant of it. The stamp already carries the host. */
+export function dreamBranch(stamp: string, merge = false): string {
+	return `dream/${stamp}${merge ? "-merge" : ""}`;
 }
 
 /** The branch prefix `/muninn dreams` lists. */
@@ -87,6 +94,14 @@ export interface CreateWorktreeOptions {
 	branch: string;
 	/** The commit the dream reads: everything it consolidates is at or before this. */
 	startPoint: string;
+	/**
+	 * Check out `branch` as it already exists rather than creating it.
+	 *
+	 * The merge resolver works on a branch it has just created from the dream's
+	 * — the branch carries the history being rebased, so `-b` from a start
+	 * point would be exactly wrong.
+	 */
+	existing?: boolean;
 }
 
 /**
@@ -126,10 +141,18 @@ export async function createWorktree(options: CreateWorktreeOptions): Promise<Dr
 	const root = join(worktreeRoot(agentDir), storeId, branch.replace(/\//g, "-"));
 
 	await discard(repo, root);
-	await discardEmptyBranch(repo, branch, startPoint);
+	// Only when this call is about to *create* the branch: an existing branch
+	// deliberately created at its start point — the merge resolver's, cut from
+	// the dream branch it is about to rebase — has the exact signature of a
+	// leftover, and deleting it here would delete the thing being built.
+	if (options.existing !== true) await discardEmptyBranch(repo, branch, startPoint);
 
 	const inRepo = scope.inRepo && toplevel !== undefined;
-	await git(repo, { kind: "worktree-add", path: root, branch, startPoint, ...(inRepo ? { noCheckout: true } : {}) });
+	if (options.existing === true) {
+		await git(repo, { kind: "worktree-add-existing", path: root, branch, ...(inRepo ? { noCheckout: true } : {}) });
+	} else {
+		await git(repo, { kind: "worktree-add", path: root, branch, startPoint, ...(inRepo ? { noCheckout: true } : {}) });
+	}
 
 	let storePath = root;
 	if (inRepo) {
@@ -236,6 +259,13 @@ async function inRepoToplevel(storePath: string): Promise<string | undefined> {
 	}
 }
 
+export interface CollectOptions {
+	/** A branch whose worktree must not be touched — the dream running right now. */
+	keep?: string;
+	/** The directory Muninn's worktrees live in; anything outside it is not Muninn's to remove. */
+	ownedRoot?: string;
+}
+
 export interface StaleWorktree {
 	path: string;
 	branch: string | undefined;
@@ -281,13 +311,14 @@ export function parseWorktreeList(stdout: string): StaleWorktree[] {
  * dream on this host is alive, so every dream worktree registered here is
  * abandoned. Returns what it removed, for the report.
  */
-export async function collectWorktrees(repo: string, keep?: string): Promise<string[]> {
+export async function collectWorktrees(repo: string, options: CollectOptions = {}): Promise<string[]> {
 	let stdout: string;
 	try {
 		stdout = (await git(repo, { kind: "worktree-list" })).stdout;
 	} catch {
 		return [];
 	}
+	const owned = options.ownedRoot === undefined ? undefined : canonicalPath(options.ownedRoot);
 	const removed: string[] = [];
 	for (const worktree of parseWorktreeList(stdout)) {
 		// Only a worktree that is *on a dream branch*. A detached-HEAD checkout
@@ -296,10 +327,18 @@ export async function collectWorktrees(repo: string, keep?: string): Promise<str
 		// beside their project had it force-removed, uncommitted work and all,
 		// every time a dream ran against an in-repo store.
 		if (worktree.branch === undefined || !worktree.branch.startsWith(DREAM_BRANCH_PREFIX)) continue;
+		// And only inside the directory Muninn manages. A branch name is a thing
+		// anyone can create — a person with their own checkout of `dream/…`,
+		// wherever it is, has not signed it over to be force-removed. Ownership
+		// is the path, canonically compared, same as every other boundary here.
+		if (owned !== undefined) {
+			const canonical = canonicalPath(worktree.path);
+			if (canonical === undefined || !isInside(owned, canonical)) continue;
+		}
 		// A dream running right now owns its checkout. The store lock no longer
 		// keeps remember and dream apart — it is released after a dream's setup —
 		// so anything that collects worktrees has to say what it must not touch.
-		if (keep !== undefined && worktree.branch === keep) continue;
+		if (options.keep !== undefined && worktree.branch === options.keep) continue;
 		try {
 			await discard(repo, worktree.path);
 			removed.push(worktree.path);

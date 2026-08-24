@@ -551,6 +551,33 @@ comment said "the caller is told which topics need it", but the caller was a gen
 a `resolve` callback the caller supplies, with the cross-host test the step's "done when"
 always described.
 
+A second review, on the PR itself, found eleven more — seven P1. The themes worth
+recording:
+
+- **The watermark, twice more.** Excluding withheld ids while taking the maximum still ran
+  past them whenever retained and withheld entries interleaved, and it was computed before
+  consolidation so a skipped or model-less job was recorded as consumed. It is now the
+  largest contiguous prefix per host, computed after consolidation, over what was actually
+  consumed. Three rounds of bugs in one function is the argument for its test fixture
+  being labelled entry by entry.
+- **The resolver reconstructed instead of rebasing.** Starting a fresh branch and
+  rewriting only the conflicted topics dropped the dream's non-conflicting topics, report
+  and supersessions — and rejected the MEMORY-only conflict, which is the *normal* case
+  for disjoint work. It now rebases the dream's own branch and resolves each stop:
+  topics via the three layers, `supersessions.md` by union, `MEMORY.md` by regeneration;
+  the result is linted and carries its own report before the transaction may apply it,
+  and its merge-job evidence is bounded to what the conflicting facts cite.
+- **A dream's identity now includes its host.** Two hosts dreaming the same store in the
+  same minute produced one stamp, one listing key and one report file. The id is
+  `<host slug>/<ts>` and reports live per host, like journal files, for the same reason.
+- **Remembering a fetched dream detached.** A worktree from `origin/dream/…` is a detached
+  checkout; the rebase moved the detached HEAD while the ref stayed put and the work was
+  lost. The fetched branch is materialised locally first.
+- **"ok" that was not.** An erase whose history rewrite failed still returned ok; a
+  `filter-repo` note is not a result. And carried-forward evidence was superseded by the
+  very merge that still cited it, making the merged fact stale against its own sources —
+  supersession rows are now written only for claims nothing active cites any more.
+
 ## Decisions made by this plan
 
 Things the README leaves open or states at a level an implementation cannot follow, decided

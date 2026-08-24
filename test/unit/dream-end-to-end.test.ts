@@ -195,6 +195,75 @@ describe("an echo can never become evidence", () => {
 	});
 });
 
+describe("the watermark advances only over consumed work", () => {
+	it("does not run past a skipped topic, so a model outage eats nothing", async () => {
+		// A dead endpoint means the job consolidated nothing. If the watermark
+		// still advanced, the day's evidence would fall before
+		// previous_input_head and no dream would ever see it again.
+		await note("Worth consolidating.", "the tests");
+		const dead: DreamModel = {
+			id: "test/dead",
+			complete: async () => {
+				throw new Error("ECONNREFUSED");
+			},
+		};
+		const first = await dream(options(new Date("2026-08-23T03:00:00Z"), dead));
+		expect(first.ok).toBe(true);
+		expect(first.report.skipped.length).toBeGreaterThan(0);
+		await git(storePath, { kind: "merge-ff-only", ref: first.branch });
+
+		// The endpoint is back; the same entry is in range and consolidates.
+		const second = await dream(options(new Date("2026-08-24T03:00:00Z"), citingModel("A fact about the tests.")));
+		expect(second.ok).toBe(true);
+		expect(second.report.consolidated).toHaveLength(1);
+	});
+
+	it("does not run past evidence a dream with no model could not touch", async () => {
+		await note("Worth consolidating.", "the tests");
+		const first = await dream({ ...options(new Date("2026-08-23T03:00:00Z")) });
+		expect(first.ok).toBe(true);
+		await git(storePath, { kind: "merge-ff-only", ref: first.branch });
+
+		const second = await dream(options(new Date("2026-08-24T03:00:00Z"), citingModel("A fact about the tests.")));
+		expect(second.report.consolidated).toHaveLength(1);
+	});
+
+	it("stops at the first withheld entry, not at the highest retained one", async () => {
+		// A held-out task's entries sit *between* two consumable notes. The
+		// contiguous-prefix rule stops the watermark before the held-out group, so
+		// the note after it is offered again too — where a maximum over retained
+		// ids would have advanced past the group and deleted it from every range.
+		await note("First note.", "the tests");
+		await appendEntry(
+			{ source: "user", prose: "Task work.", claims: ["Learned in a task."], task: "t-done", cue: "held" },
+			{ storePath, hostId: host.id },
+		);
+		await appendEntry(
+			{ source: "agent", prose: "Outcome.", claims: ["Finished the task."], task: "t-done", phase: "fix" },
+			{ storePath, hostId: host.id },
+		);
+		resetCommitDebounce();
+		await note("Second note.", "the tests");
+
+		const settings = { ...DEFAULT_SETTINGS, dream: { ...DEFAULT_SETTINGS.dream, evalSessions: 1 } };
+		// "Completed" means quiet for an hour, measured against the dream's own
+		// clock — so the dream runs two hours after the entries were written.
+		const result = await dream({
+			...options(new Date(Date.now() + 2 * 3_600_000), citingModel("A fact about the tests.")),
+			settings,
+		});
+		expect(result.ok).toBe(true);
+		expect(result.report.heldOut).toEqual(["t-done"]);
+
+		const entries = readStoreJournal(storePath).entries;
+		const firstNote = entries[0]?.id as string;
+		const watermark = result.report.journalThrough[host.id];
+		// Advanced over the first note and no further: the held-out group and the
+		// second note both stay in the next dream's range.
+		expect(watermark).toBe(firstNote);
+	});
+});
+
 describe("what a dream withholds comes back", () => {
 	it("consolidates a held-out task once it is no longer among the most recent", async () => {
 		// The hold-out is chronological: a group withheld today is consolidated

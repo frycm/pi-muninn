@@ -77,8 +77,8 @@ export type GitCommand =
 	| { kind: "rebase-continue" }
 	| { kind: "rebase-abort" }
 	| { kind: "push"; remote: string; branch: string }
-	/** Read one side of a conflicted file: 2 is ours, 3 is theirs. */
-	| { kind: "show-stage"; stage: 2 | 3; path: string }
+	/** Read one side of a conflicted file: 1 is the common ancestor, 2 is ours, 3 is theirs. */
+	| { kind: "show-stage"; stage: 1 | 2 | 3; path: string }
 	/** Read a file as of a ref, without checking anything out. */
 	| { kind: "show-file"; ref: string; path: string }
 	/** Whether `ref` exists, for telling a first push from a rebase. */
@@ -122,10 +122,12 @@ export type GitCommand =
 	| { kind: "merge-base"; a: string; b: string }
 	/** Push a branch that is not the one checked out — dream branches, on sync. */
 	| { kind: "push-ref"; remote: string; ref: string }
+	/** A local branch at a known commit — for materialising a fetched dream branch. */
+	| { kind: "branch-create"; name: string; startPoint: string }
 	/** Check out a branch that already exists into its own worktree. */
-	| { kind: "worktree-add-existing"; path: string; branch: string }
+	| { kind: "worktree-add-existing"; path: string; branch: string; noCheckout?: boolean }
 	/** Commits with their full message, for finding a dream's commit by its trailer. */
-	| { kind: "log-entries"; ref: string; limit: number }
+	| { kind: "log-entries"; ref: string; limit: number; grep?: string }
 	// --- erasure ----------------------------------------------------------
 	// The only two commands that can destroy history. Nothing but `dream/erase.ts`
 	// constructs them, and erasure is always a human action.
@@ -405,10 +407,16 @@ export function toArgv(command: GitCommand): string[] {
 			// Still never `--force`. A dream branch is created once and never
 			// rewritten, so a rejected push means the remote already has it.
 			return ["push", "--quiet", command.remote, `refs/heads/${command.ref}:refs/heads/${command.ref}`];
-		case "worktree-add-existing":
+		case "branch-create":
+			assertName("branch", command.name);
+			assertName("ref", command.startPoint);
+			return ["branch", command.name, command.startPoint];
+		case "worktree-add-existing": {
 			assertWorktreePath(command.path);
 			assertName("branch", command.branch);
-			return ["worktree", "add", "--quiet", command.path, command.branch];
+			const flags = command.noCheckout === true ? ["--no-checkout"] : [];
+			return ["worktree", "add", "--quiet", ...flags, command.path, command.branch];
+		}
 		case "filter-repo":
 			assertWorktreePath(command.replacements);
 			// `--force` because the repository is not a fresh clone; that is the
@@ -422,14 +430,24 @@ export function toArgv(command: GitCommand): string[] {
 			// The one force push in the system. Erasure rewrites history, so the
 			// remote's copy of the old bytes has to go the same way.
 			return ["push", "--force", command.remote, `HEAD:${command.branch}`];
-		case "log-entries":
+		case "log-entries": {
 			assertName("ref", command.ref);
 			if (!Number.isInteger(command.limit) || command.limit < 1) {
 				throw new Error(`git log needs a positive limit, not ${command.limit}`);
 			}
+			if (command.grep !== undefined && (command.grep.trim() === "" || command.grep.startsWith("-"))) {
+				throw new Error(`refusing to grep git log for "${command.grep}"`);
+			}
 			// Unit separators, not newlines: a commit body contains newlines, and
 			// a format a message can forge is a format that can be lied to.
-			return ["log", `--max-count=${command.limit}`, "--format=%H%x1f%s%x1f%b%x1e", command.ref];
+			// `grep` limits the walk to matching commits, so "the last N dreams"
+			// is a question about dreams and not about whatever the last N
+			// commits happened to be — routine journal commits would otherwise
+			// push an old dream out of the window and it would read as
+			// unremembered.
+			const grep = command.grep === undefined ? [] : [`--grep=${command.grep}`];
+			return ["log", `--max-count=${command.limit}`, ...grep, "--format=%H%x1f%s%x1f%b%x1e", command.ref];
+		}
 	}
 }
 

@@ -24,21 +24,25 @@
  * checked out.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
-import { currentBranch, DERIVED_PATHS, GitError, type GitIdentity, git } from "../git.ts";
+import { currentBranch, DERIVED_PATHS, GitError, type GitIdentity, git, hasChanges } from "../git.ts";
 import { claimsOf, type Source } from "../journal/format.ts";
 import { readStoreJournal } from "../journal/read.ts";
-import { appendSupersessions } from "../journal/supersessions.ts";
+import { appendSupersessions, parseSupersessions, readSupersessions } from "../journal/supersessions.ts";
+import type { MuninnSettings } from "../settings.ts";
 import type { HostIdentity } from "../store/host.ts";
 import { STORE_BRANCH, storeIdentity } from "../store/init.ts";
 import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import type { ActiveScope } from "../store/scopes.ts";
-import { allFacts, emptyTopic, formatTopic, parseTopic, type TopicFile } from "../topics/format.ts";
-import { runningDream } from "./dream.ts";
+import { allFacts, formatTopic, parseTopic } from "../topics/format.ts";
+import { allClaimIds, echoClaims, runningDream } from "./dream.ts";
+import { lint } from "./lint.ts";
+import { buildMemory } from "./memory-md.ts";
 import { mergeDream, mergeTopic } from "./merge.ts";
 import type { DreamModel } from "./model.ts";
 import { orient } from "./orient.ts";
+import { emptyReport, formatReport, reportPath } from "./report.ts";
 import { collectWorktrees, createWorktree, repositoryFor, worktreeRoot } from "./worktree.ts";
 
 /**
@@ -164,11 +168,35 @@ async function applyRemember(
 	identity: GitIdentity | undefined,
 	result: RememberResult,
 ): Promise<RememberResult> {
-	const { scope, host, branch } = options;
+	const { scope, host } = options;
+	let branch = options.branch;
 
-	if ((await git(scope.path, { kind: "verify-ref", ref: branch }).catch(() => ({ stdout: "" }))).stdout.trim() === "") {
+	const at = (await git(scope.path, { kind: "verify-ref", ref: branch }).catch(() => ({ stdout: "" }))).stdout.trim();
+	if (at === "") {
 		result.problems.push(`no such dream branch: ${branch}`);
 		return result;
+	}
+
+	// A dream fetched from another host arrives as `origin/dream/…`, and a
+	// worktree added from a remote-tracking name is a *detached* checkout: the
+	// rebase would rewrite the detached HEAD while the remote ref stayed put,
+	// and the fast-forward that follows would apply the unrebased commit — or
+	// fail — with the rebased work lost either way. So the fetched dream is
+	// materialised as a local branch at the same commit first, and everything
+	// downstream operates on a name a rebase actually moves.
+	if (branch.startsWith("origin/")) {
+		const local = branch.slice("origin/".length);
+		const existing = (
+			await git(scope.path, { kind: "verify-ref", ref: local }).catch(() => ({ stdout: "" }))
+		).stdout.trim();
+		if (existing === "") {
+			await git(scope.path, { kind: "branch-create", name: local, startPoint: at });
+			result.notes.push(`materialised ${branch} as ${local}`);
+		} else if (existing !== at) {
+			result.problems.push(`${local} exists and does not match ${branch}; delete or remember the local one first`);
+			return result;
+		}
+		branch = local;
 	}
 
 	// A dream running right now owns a worktree on a `dream/*` branch, and this
@@ -307,8 +335,9 @@ async function rebaseOnto(
 	const repo = await repositoryFor(options.scope);
 	// The dream's own worktree may still hold this branch, and git will not
 	// check a branch out twice. Nothing is running — `applyRemember` refused
-	// otherwise — so every dream worktree here is finished work.
-	await collectWorktrees(repo);
+	// otherwise — so every dream worktree *under Muninn's own root* is finished
+	// work; anything elsewhere is somebody's checkout and is not touched.
+	await collectWorktrees(repo, { ownedRoot: worktreeRoot(options.agentDir) });
 
 	// The store's own branch, not the literal "main": an in-repo store is on
 	// whatever branch the project is on, and rebasing onto a branch that is not
@@ -344,7 +373,7 @@ async function rebaseOnto(
 async function deleteBranch(options: RememberOptions, branch: string, result: RememberResult): Promise<void> {
 	try {
 		const repo = await repositoryFor(options.scope);
-		await collectWorktrees(repo);
+		await collectWorktrees(repo, { ownedRoot: worktreeRoot(options.agentDir) });
 		await git(repo, { kind: "branch-delete", name: branch, force: true });
 	} catch {
 		result.notes.push(`could not delete ${branch}; it is remembered either way`);
@@ -423,6 +452,7 @@ export interface ResolveOptions {
 	host: HostIdentity;
 	storeId: string;
 	model: DreamModel;
+	settings: MuninnSettings;
 	now: Date;
 	signal?: AbortSignal;
 }
@@ -430,130 +460,164 @@ export interface ResolveOptions {
 /**
  * Settle a derived-file conflict and hand back a branch to apply instead.
  *
- * The three layers, in order: the structural per-fact merge resolves most of it
- * without asking anybody; what is left is the semantic residue; and only that
- * goes to a model, in a job bounded exactly like a consolidation. The result is
- * committed as `<branch>-merge` and remembered through the ordinary
- * transaction, so a bad merge is reviewable and forgettable like any dream.
+ * The shape is a *rebase*, not a reconstruction. An earlier version started a
+ * fresh branch from the store's head and rewrote only the conflicted topics —
+ * which quietly dropped everything else the dream had done: its non-conflicting
+ * topics, its report, its supersessions. So the resolver now creates
+ * `<branch>-merge` *from the dream branch* and rebases it onto the store's own
+ * branch, resolving each conflicted file as the rebase stops on it:
+ *
+ *  - `topics/…` — the three layers: structural per-fact merge from the index
+ *    stages (1 = ancestor, 2 = the store's side, 3 = the dream's), residue
+ *    detection, and a merge-dream job only for what those could not settle;
+ *  - `supersessions.md` — the union, which is always right because the file is
+ *    append-only;
+ *  - `MEMORY.md` — taken from the store's side during the rebase and
+ *    regenerated from the resolved topics afterwards, because it is derived
+ *    and is never merged;
+ *  - `rules.md` — never resolved by a model: a rule is followed, not just
+ *    recalled, so a rules conflict waits for a human;
+ *  - `journal/` — impossible by construction, and a bug to report if seen.
+ *
+ * The merge-dream job's evidence is bounded to the entries the conflicting
+ * facts actually cite — not the whole journal — and the finished branch is
+ * linted and carries its own report before the transaction may fast-forward to
+ * it. A merge that fails lint fails the resolution; the branch is kept for
+ * inspection.
  */
 export async function resolveConflict(conflict: RebaseConflict, options: ResolveOptions): Promise<MergeResolution> {
 	const resolution: MergeResolution = { ok: false, problems: [], notes: [] };
 	const { scope } = options;
 
-	const topics = conflict.paths.filter((path) => path.startsWith("topics/") && path.endsWith(".md"));
-	const others = conflict.paths.filter((path) => !topics.includes(path) && path !== "MEMORY.md");
-	if (others.length > 0) {
-		// `rules.md` residue always waits for a human: a rule is followed, not
-		// just recalled. Anything else here is a file this cannot reason about.
-		resolution.problems.push(`${others.join(", ")} must be resolved by hand, not by a merge dream`);
-		return resolution;
-	}
-	if (topics.length === 0) {
-		// Only `MEMORY.md` conflicted, which is regenerated and never merged.
-		resolution.problems.push("nothing but MEMORY.md conflicted; re-run the dream rather than merging");
+	// Refused before anything is built: a rule is followed, not just recalled,
+	// so a rules conflict waits for a human whatever else is in the pile.
+	const untouchable = conflict.paths.filter(
+		(path) => path === "rules.md" || path.startsWith("skills/") || path.startsWith("journal/"),
+	);
+	if (untouchable.length > 0) {
+		resolution.problems.push(`${untouchable.join(", ")} must be resolved by hand, not by a merge dream`);
 		return resolution;
 	}
 
+	// The store's own branch, not the literal "main": an in-repo store is on
+	// whatever branch the project is on.
+	const onto = (await currentBranch(scope.path)) ?? STORE_BRANCH;
 	const mergeBranch = `${conflict.branch}-merge`;
 	const repo = await repositoryFor(scope);
-	const base = (await git(scope.path, { kind: "merge-base", a: conflict.branch, b: STORE_BRANCH })).stdout.trim();
+
+	// A leftover from an earlier failed resolution is stale, not state.
+	await git(repo, { kind: "branch-delete", name: mergeBranch, force: true }).catch(() => undefined);
+	await git(repo, { kind: "branch-create", name: mergeBranch, startPoint: conflict.branch });
 
 	const worktree = await createWorktree({
 		scope,
 		agentDir: options.agentDir,
 		storeId: options.storeId,
 		branch: mergeBranch,
-		startPoint: STORE_BRANCH,
+		startPoint: conflict.branch,
+		existing: true,
 	});
+	const storeP = worktree.storePath;
 
 	try {
-		const orientation = orient(worktree.storePath);
-		const entries = readStoreJournal(worktree.storePath).entries;
-		const sources = new Map<string, Source>();
-		const dates = new Map<string, string>();
-		for (const entry of entries) {
-			for (const claim of claimsOf(entry)) {
-				sources.set(claim.id, entry.source);
-				dates.set(claim.id, entry.date);
-			}
-		}
-		// As in `dream.ts`: a fact's own source is the class its evidence rests
-		// on, and without it a claim cited only through an existing fact has no
-		// known source and escapes the external quarantine.
-		for (const topic of orientation.topics.values()) {
-			for (const fact of allFacts(topic)) {
-				for (const id of fact.evidence) if (!sources.has(id)) sources.set(id, fact.source);
+		const settled: Array<{ topic: string; residue: number; added: string[] }> = [];
+
+		try {
+			await git(storeP, { kind: "rebase", onto }, scope.inRepo ? {} : { identity: storeIdentity(options.host) });
+			resolution.notes.push(`${conflict.branch} rebased cleanly onto ${onto} on the second look`);
+		} catch {
+			const outcome = await resolveRebaseStops(storeP, options, resolution, settled);
+			if (!outcome) {
+				await git(storeP, { kind: "rebase-abort" }).catch(() => undefined);
+				return resolution;
 			}
 		}
 
-		let changed = 0;
-		for (const path of topics) {
-			const slug = path.slice("topics/".length, -".md".length);
-			const merged = mergeTopic({
-				base: await topicAt(scope.path, base, slug),
-				ours: await topicAt(scope.path, STORE_BRANCH, slug),
-				theirs: await topicAt(scope.path, conflict.branch, slug),
-			});
-			resolution.notes.push(...merged.notes.map((note) => `${slug}: ${note}`));
+		// The rebase is done; the dream's whole diff — conflicting or not — is on
+		// the branch. Now the derived index over it: MEMORY.md regenerated from
+		// the *resolved* topics, and lint over the result, because a merge is a
+		// dream and goes through the same gate.
+		const orientation = orient(storeP);
+		const memory = buildMemory({
+			topics: orientation.topics,
+			rules: orientation.rules,
+			usage: orientation.usage,
+			current: orientation.memory,
+			budget: options.settings.recall.snapshotLines[scope.scope],
+		});
+		writeFileSync(join(storeP, "MEMORY.md"), memory.text);
 
-			let file = merged.topic;
-			if (merged.residue.length > 0) {
-				const outcome = await mergeDream(
-					{
-						topic: slug,
-						merged: merged.topic,
-						base: await topicAt(scope.path, base, slug),
-						residue: merged.residue,
-						entries,
-					},
-					{
-						model: options.model,
-						now: options.now,
-						sourceOf: (id) => sources.get(id),
-						dateOf: (id) => dates.get(id),
-						refused: orientation.superseded,
-						...(options.signal ? { signal: options.signal } : {}),
-					},
-				);
-				if (!outcome.outcome.ok) {
-					resolution.problems.push(`${slug}: ${outcome.outcome.reason}`);
-					return resolution;
-				}
-				// A merge may not lose a fact silently. It cannot, structurally —
-				// an unmentioned fact is kept — and this says so if it ever can.
-				if (outcome.dropped.length > 0) {
-					resolution.notes.push(`${slug}: dropped ${outcome.dropped.join(", ")}`);
-				}
-				file = outcome.outcome.applied.topic;
-				appendSupersessions(worktree.storePath, outcome.outcome.supersessions);
-				resolution.notes.push(`${slug}: ${merged.residue.length} residue pair(s) settled by a merge dream`);
-			}
+		const linted = lint({
+			topics: orientation.topics,
+			claims: allClaimIds(storeP),
+			superseded: readSupersessions(storeP).superseded,
+			erased: orientation.erased,
+			echoes: echoClaims(storeP, orientation),
+			rules: orientation.rules,
+			memory: memory.text,
+			usage: orientation.usage,
+			rulesCap: options.settings.dream.rulesCap,
+			retireAfterDays: options.settings.dream.retireAfterDays,
+			now: options.now,
+		});
 
-			mkdirSync(join(worktree.storePath, "topics"), { recursive: true });
-			writeFileSync(join(worktree.storePath, "topics", `${slug}.md`), formatTopic(file));
-			changed++;
+		// The merge's own report: what was settled, by what, and how lint judged
+		// it — committed on the branch, so the merge is reviewable and
+		// forgettable exactly like the dream it merges.
+		const stamp = `${conflict.branch.slice("dream/".length)}-merge`;
+		const report = emptyReport({
+			stamp,
+			scope: scope.scope,
+			host: options.host.name,
+			started: options.now.toISOString(),
+		});
+		report.model = options.model.id;
+		report.inputHead = (await git(scope.path, { kind: "rev-parse", target: "HEAD" })).stdout.trim();
+		report.finished = options.now.toISOString();
+		report.notes.push(`merge of ${conflict.branch} onto ${onto}`);
+		for (const entry of settled) {
+			report.consolidated.push({ topic: entry.topic, added: entry.added.length, superseded: 0, addedIds: entry.added });
+			report.notes.push(`${entry.topic}: ${entry.residue} residue pair(s) settled by a merge dream`);
+		}
+		report.lint.push(...linted.findings);
+		if (linted.blocking > 0) report.status = "lint-blocked";
+
+		const reportFile = join(storeP, reportPath(stamp));
+		mkdirSync(dirname(reportFile), { recursive: true });
+		writeFileSync(reportFile, formatReport(report));
+
+		const paths = DERIVED_PATHS.filter((path) => existsSync(join(storeP, path.replace(/\/$/, ""))));
+		await git(storeP, { kind: "add", paths: [...paths] });
+		if (await hasChanges(storeP, [...paths])) {
+			await git(
+				storeP,
+				{
+					kind: "commit",
+					message: [
+						`dream: merge ${settled.length} topic(s)`,
+						"",
+						`Muninn-Dream: ${stamp}`,
+						`Muninn-Merge-Of: ${conflict.branch}`,
+						`Muninn-Merge-Into: ${onto}`,
+					].join("\n"),
+					paths: [...paths],
+				},
+				scope.inRepo ? {} : { identity: storeIdentity(options.host) },
+			);
 		}
 
-		const paths = DERIVED_PATHS.filter((path) => existsSync(join(worktree.storePath, path.replace(/\/$/, ""))));
-		await git(worktree.storePath, { kind: "add", paths: [...paths] });
-		await git(
-			worktree.storePath,
-			{
-				kind: "commit",
-				message: [
-					`dream: merge ${changed} topic(s)`,
-					"",
-					`Muninn-Merge-Of: ${conflict.branch}`,
-					`Muninn-Merge-Into: ${STORE_BRANCH}`,
-				].join("\n"),
-				paths: [...paths],
-			},
-			scope.inRepo ? {} : { identity: storeIdentity(options.host) },
-		);
+		if (linted.blocking > 0) {
+			// A merge is a dream; a dream that fails lint is not remembered. The
+			// branch stays, report and all, so someone can see what it did.
+			resolution.problems.push(
+				`the merge failed lint (${linted.blocking} blocking finding(s)); ${mergeBranch} is kept for inspection`,
+			);
+			return resolution;
+		}
 
 		resolution.ok = true;
 		resolution.branch = mergeBranch;
-		resolution.notes.push(`merged ${conflict.branch} into ${mergeBranch}`);
+		resolution.notes.push(`merged ${conflict.branch} onto ${onto} as ${mergeBranch}`);
 		return resolution;
 	} catch (error) {
 		resolution.problems.push(error instanceof GitError ? error.message : String(error));
@@ -564,12 +628,144 @@ export async function resolveConflict(conflict: RebaseConflict, options: Resolve
 	}
 }
 
-/** A topic file as of a ref, or an empty one when that ref does not have it. */
-async function topicAt(storePath: string, ref: string, slug: string): Promise<TopicFile> {
+/**
+ * Walk the rebase's stops, resolving what may be resolved.
+ *
+ * Returns false — with the reason recorded — when a stop holds something no
+ * model may decide.
+ */
+async function resolveRebaseStops(
+	storeP: string,
+	options: ResolveOptions,
+	resolution: MergeResolution,
+	settled: Array<{ topic: string; residue: number; added: string[] }>,
+): Promise<boolean> {
+	for (let round = 0; round < 10; round++) {
+		const conflicts = await conflictedPaths(storeP);
+		if (conflicts.length === 0) return true;
+
+		for (const path of conflicts) {
+			if (path.startsWith("journal/")) {
+				// Per-host files make this impossible by construction.
+				resolution.problems.push(`a conflict in ${path} is a bug to report, not something to resolve`);
+				return false;
+			}
+			if (path === "rules.md" || path.startsWith("skills/")) {
+				resolution.problems.push(`${path} must be resolved by hand: a rule is followed, not just recalled`);
+				return false;
+			}
+			if (path === "MEMORY.md") {
+				// Derived; regenerated after the rebase. The store's side stands
+				// in so the rebase can continue.
+				const ours = await stageOf(storeP, 2, path);
+				writeFileSync(join(storeP, path), ours ?? "");
+				continue;
+			}
+			if (path === "supersessions.md") {
+				// Append-only, so the union is always right and never a loss.
+				const ours = parseSupersessions((await stageOf(storeP, 2, path)) ?? "");
+				const theirs = parseSupersessions((await stageOf(storeP, 3, path)) ?? "");
+				const rows = [...ours.byClaim.values(), ...theirs.byClaim.values()];
+				writeFileSync(join(storeP, path), "");
+				appendSupersessions(storeP, rows);
+				continue;
+			}
+			if (path.startsWith("topics/") && path.endsWith(".md")) {
+				const settledTopic = await settleTopic(storeP, path, options, resolution);
+				if (settledTopic === undefined) return false;
+				settled.push(settledTopic);
+				continue;
+			}
+			resolution.problems.push(`${path} is not a file a merge dream may decide`);
+			return false;
+		}
+
+		const paths = DERIVED_PATHS.filter((path) => existsSync(join(storeP, path.replace(/\/$/, ""))));
+		await git(storeP, { kind: "add", paths: [...paths] });
+		try {
+			await git(
+				storeP,
+				{ kind: "rebase-continue" },
+				options.scope.inRepo ? {} : { identity: storeIdentity(options.host) },
+			);
+			return true;
+		} catch {
+			// Another commit of the branch stopped; the loop resolves it too.
+		}
+	}
+	resolution.problems.push("the rebase kept stopping; giving up rather than looping");
+	return false;
+}
+
+/** One conflicted topic file, through the three layers. */
+async function settleTopic(
+	storeP: string,
+	path: string,
+	options: ResolveOptions,
+	resolution: MergeResolution,
+): Promise<{ topic: string; residue: number; added: string[] } | undefined> {
+	const slug = path.slice("topics/".length, -".md".length);
+	const base = parseTopic((await stageOf(storeP, 1, path)) ?? "", slug);
+	const ours = parseTopic((await stageOf(storeP, 2, path)) ?? "", slug);
+	const theirs = parseTopic((await stageOf(storeP, 3, path)) ?? "", slug);
+
+	const merged = mergeTopic({ base, ours, theirs });
+	resolution.notes.push(...merged.notes.map((note) => `${slug}: ${note}`));
+
+	let file = merged.topic;
+	let added: string[] = [];
+	if (merged.residue.length > 0) {
+		// The job's evidence is what the conflicting facts actually cite — not
+		// the whole journal. The merge prompt exists to settle named residue
+		// pairs, and handing it every entry in the store would hand it the
+		// held-out tasks with them.
+		const cited = new Set(allFacts(merged.topic).flatMap((fact) => fact.evidence));
+		const entries = readStoreJournal(storeP).entries.filter((entry) =>
+			claimsOf(entry).some((claim) => cited.has(claim.id)),
+		);
+		const sources = new Map<string, Source>();
+		const dates = new Map<string, string>();
+		for (const entry of entries) {
+			for (const claim of claimsOf(entry)) {
+				sources.set(claim.id, entry.source);
+				dates.set(claim.id, entry.date);
+			}
+		}
+		for (const fact of allFacts(merged.topic)) {
+			for (const id of fact.evidence) if (!sources.has(id)) sources.set(id, fact.source);
+		}
+
+		const outcome = await mergeDream(
+			{ topic: slug, merged: merged.topic, base, residue: merged.residue, entries },
+			{
+				model: options.model,
+				now: options.now,
+				sourceOf: (id) => sources.get(id),
+				dateOf: (id) => dates.get(id),
+				refused: readSupersessions(storeP).superseded,
+				...(options.signal ? { signal: options.signal } : {}),
+			},
+		);
+		if (!outcome.outcome.ok) {
+			resolution.problems.push(`${slug}: ${outcome.outcome.reason}`);
+			return undefined;
+		}
+		if (outcome.dropped.length > 0) resolution.notes.push(`${slug}: dropped ${outcome.dropped.join(", ")}`);
+		file = outcome.outcome.applied.topic;
+		appendSupersessions(storeP, outcome.outcome.supersessions);
+		added = outcome.outcome.applied.added.map((fact) => fact.id);
+	}
+
+	mkdirSync(join(storeP, "topics"), { recursive: true });
+	writeFileSync(join(storeP, path.slice("topics/".length) === "" ? path : `topics/${slug}.md`), formatTopic(file));
+	return { topic: slug, residue: merged.residue.length, added };
+}
+
+/** A conflicted file's content at an index stage, or nothing when the side lacks it. */
+async function stageOf(cwd: string, stage: 1 | 2 | 3, path: string): Promise<string | undefined> {
 	try {
-		const { stdout } = await git(storePath, { kind: "show-file", ref, path: `topics/${slug}.md` });
-		return parseTopic(stdout, slug);
+		return (await git(cwd, { kind: "show-stage", stage, path })).stdout;
 	} catch {
-		return emptyTopic(slug);
+		return undefined;
 	}
 }

@@ -82,7 +82,7 @@ describe("a dream is a branch, and the store is untouched", () => {
 				cwd: storePath,
 			},
 		);
-		expect(branchLog).toContain("dreams/2026-08-23T03-00.md");
+		expect(branchLog).toContain("dreams/mbp/2026-08-23T03-00.md");
 		expect(branchLog).toContain(`Muninn-Input-Head: ${after}`);
 	});
 

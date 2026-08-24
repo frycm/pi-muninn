@@ -36,15 +36,19 @@ const TRAILER = /^Muninn-Dream:\s*(\S+)\s*$/m;
 const UNIT = "\x1f";
 const RECORD = "\x1e";
 
-/** Commits on `main` that were dreams, keyed by stamp. */
-export async function rememberedDreams(storePath: string, limit = 50): Promise<Map<string, string>> {
+/** Commits on the store's branch that were dreams, keyed by stamp. */
+export async function rememberedDreams(storePath: string, limit = 500): Promise<Map<string, string>> {
 	const found = new Map<string, string>();
 	// The store's own branch, not the literal "main": an in-repo store lives in
 	// the user's project and is on whatever branch they are.
 	const branch = (await currentBranch(storePath)) ?? STORE_BRANCH;
 	let stdout: string;
 	try {
-		stdout = (await git(storePath, { kind: "log-entries", ref: branch, limit })).stdout;
+		// Grep-limited: the walk counts *matching* commits, so "the last 500
+		// dreams" is a question about dreams. Without it, routine journal
+		// commits pushed an older remembered dream out of the window and the
+		// listing called it unremembered — and `forget` could not find it.
+		stdout = (await git(storePath, { kind: "log-entries", ref: branch, limit, grep: "Muninn-Dream:" })).stdout;
 	} catch {
 		return found;
 	}
@@ -70,11 +74,12 @@ export async function listDreams(storePath: string): Promise<DreamListing[]> {
 		...(await branchesUnder(storePath, DREAM_BRANCH_PREFIX, "origin")),
 	];
 	for (const branch of branches) {
-		const stamp = branch.slice(branch.lastIndexOf("/") + 1);
+		// The stamp is everything after the `dream/` prefix — host slug included,
+		// because the host is part of a dream's identity.
+		const stamp = branch.replace(/^origin\//, "").slice(DREAM_BRANCH_PREFIX.length);
 		// A local branch wins over the same dream fetched from the remote: it is
-		// the one `remember` can check out.
-		if (listings.has(stamp) && !branch.startsWith("origin/")) continue;
-		if (listings.has(stamp) && branch.startsWith("origin/")) continue;
+		// the one `remember` can check out directly.
+		if (listings.has(stamp)) continue;
 		const report = await reportOn(storePath, branch, stamp);
 		listings.set(stamp, { stamp, branch, remembered: false, forgotten: false, ...report });
 	}
@@ -139,6 +144,27 @@ function isForgotten(storePath: string, stamp: string): boolean {
 	}
 }
 
+/**
+ * The listing whose stamp matches what a person typed.
+ *
+ * Stamps are `<host>/<ts>`, but the timestamp alone is what a listing shows
+ * most prominently and what a person will paste — so a bare `<ts>` matches
+ * when it is unambiguous, and names the candidates when it is not.
+ */
+export function matchStamp(
+	listings: readonly DreamListing[],
+	wanted: string,
+): { listing?: DreamListing; problem?: string } {
+	const exact = listings.find((entry) => entry.stamp === wanted);
+	if (exact) return { listing: exact };
+	const suffix = listings.filter((entry) => entry.stamp.endsWith(`/${wanted}`));
+	if (suffix.length === 1) return { listing: suffix[0] as DreamListing };
+	if (suffix.length > 1) {
+		return { problem: `"${wanted}" is ambiguous: ${suffix.map((entry) => entry.stamp).join(", ")}` };
+	}
+	return { problem: `no dream ${wanted} in this store` };
+}
+
 export interface ForgetOptions {
 	scope: ActiveScope;
 	host: HostIdentity;
@@ -197,11 +223,18 @@ async function applyForget(
 		return result;
 	}
 
-	const sha = (await rememberedDreams(scope.path)).get(stamp);
-	if (sha === undefined) {
+	const remembered = await rememberedDreams(scope.path);
+	// Resolve a bare timestamp to the full host-qualified stamp: the report path
+	// is derived from it, so a partial match has to be completed, not just found.
+	const match =
+		remembered.has(stamp) && stamp.includes("/")
+			? ([stamp, remembered.get(stamp) as string] as const)
+			: [...remembered.entries()].find(([key]) => key === stamp || key.endsWith(`/${stamp}`));
+	if (match === undefined) {
 		result.problems.push(`no remembered dream ${stamp} in this store`);
 		return result;
 	}
+	const [fullStamp, sha] = match;
 
 	// The worktree has to be clean or the revert refuses, and a session may have
 	// appended since the dream was remembered.
@@ -217,7 +250,7 @@ async function applyForget(
 	// Read the report *before* the revert removes it.
 	let report: string | undefined;
 	try {
-		report = readFileSync(join(scope.path, reportPath(stamp)), "utf-8");
+		report = readFileSync(join(scope.path, reportPath(fullStamp)), "utf-8");
 	} catch {
 		report = undefined;
 	}
@@ -238,9 +271,9 @@ async function applyForget(
 		return result;
 	}
 
-	if (report !== undefined) await restoreReport(scope.path, stamp, report, options.now, identity, result);
+	if (report !== undefined) await restoreReport(scope.path, fullStamp, report, options.now, identity, result);
 	result.ok = true;
-	result.notes.push(`reverted ${stamp}; the journal is untouched`);
+	result.notes.push(`reverted ${fullStamp}; the journal is untouched`);
 	return result;
 }
 

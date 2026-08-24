@@ -195,7 +195,17 @@ async function applyErase(options: EraseOptions, result: EraseResult): Promise<E
 	// --- 5. history ---------------------------------------------------------
 	if (rewriting) {
 		await rewriteHistory(scope.path, secrets, result);
-		if (result.rewroteHistory && options.remote !== undefined) {
+		if (!result.rewroteHistory) {
+			// The caller asked for the rewrite; steps 1–4 are done and correct
+			// either way, but "ok" would read as "the bytes are gone" and they
+			// are not. The notes say exactly what stands.
+			result.problems.push(
+				"the erasure is incomplete: the entry is tombstoned and no fact cites it, " +
+					"but git history still holds the original bytes. Fix the failure above and run erase again.",
+			);
+			return result;
+		}
+		if (options.remote !== undefined) {
 			try {
 				const branch = (await currentBranch(scope.path)) ?? STORE_BRANCH;
 				await git(scope.path, { kind: "push-force", remote: "origin", branch });

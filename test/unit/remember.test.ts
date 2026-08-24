@@ -9,6 +9,7 @@ import { dream } from "../../src/dream/dream.ts";
 import { forget, listDreams, rememberedDreams } from "../../src/dream/dreams.ts";
 import type { DreamModel } from "../../src/dream/model.ts";
 import { markerPath, readMarker, recoverRemember, remember } from "../../src/dream/remember.ts";
+import { collectWorktrees, worktreeRoot } from "../../src/dream/worktree.ts";
 import { git } from "../../src/git.ts";
 import { newHostId, newStoreId } from "../../src/ids.ts";
 import { appendEntry } from "../../src/journal/append.ts";
@@ -117,6 +118,47 @@ describe("remember", () => {
 		expect(result.ok).toBe(false);
 		expect(result.problems.join(" ")).toContain("no such dream branch");
 	});
+});
+
+describe("a dream fetched from another host", () => {
+	it("is listed from its remote-tracking ref and remembered via a materialised local branch", async () => {
+		// The recommended deployment: the server dreams overnight, the branch
+		// travels on sync, the laptop remembers it. A worktree added from
+		// `origin/dream/…` is a *detached* checkout — the rebase would move the
+		// detached HEAD while the ref stayed put, and the rebased work would be
+		// lost — so remember materialises a local branch first.
+		await note("Run tests with pnpm test --run.");
+		const dreamed = await dream(options(new Date("2026-08-23T03:00:00Z")));
+		expect(dreamed.ok).toBe(true);
+
+		// Push the dream branch to a bare remote, then delete the local branch —
+		// which is exactly what this store looks like after the *other* host
+		// dreamed and this one fetched.
+		const remote = mkdtempSync(join(tmpdir(), "muninn-remote-"));
+		try {
+			await execFileAsync("git", ["init", "--bare", remote]);
+			await git(storePath, { kind: "remote-add", name: "origin", url: remote });
+			await git(storePath, { kind: "push-ref", remote: "origin", ref: dreamed.branch });
+			// The finished dream's worktree still holds the branch; collect it
+			// first, as the other host never had it at all.
+			await collectWorktrees(storePath, { ownedRoot: worktreeRoot(agentDir) });
+			await git(storePath, { kind: "branch-delete", name: dreamed.branch, force: true });
+
+			const listed = await listDreams(storePath);
+			expect(listed).toHaveLength(1);
+			expect(listed[0]?.branch).toBe(`origin/${dreamed.branch}`);
+
+			// Capture keeps writing, so the fetched dream needs the rebase path.
+			await note("Committed after the other host dreamed.");
+			const result = await remember({ scope, agentDir, host, branch: `origin/${dreamed.branch}` });
+			expect(result.problems).toEqual([]);
+			expect(result.ok).toBe(true);
+			expect(result.notes.join(" ")).toContain("materialised");
+			expect(readFileSync(join(storePath, "MEMORY.md"), "utf-8")).toContain("topics/");
+		} finally {
+			rmSync(remote, { recursive: true, force: true });
+		}
+	}, 60_000);
 });
 
 describe("recovery", () => {

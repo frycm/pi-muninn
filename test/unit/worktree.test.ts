@@ -189,14 +189,52 @@ describe("dream worktrees", () => {
 		expect(await collectWorktrees(scope.path)).toEqual([]);
 		expect(existsSync(other)).toBe(true);
 	});
+
+	it("leaves a person's detached-HEAD worktree alone", async () => {
+		// A detached checkout has no `branch` line in the porcelain listing, and
+		// "no branch" must never be read as "a dream's".
+		const scope = await ownedStore();
+		const review = join(home, "review");
+		const head = (await git(scope.path, { kind: "rev-parse", target: "HEAD" })).stdout.trim();
+		await execFileAsync("git", ["worktree", "add", "--detach", review, head], { cwd: scope.path });
+		writeFileSync(join(review, "wip.txt"), "uncommitted work\n");
+		expect(await collectWorktrees(scope.path)).toEqual([]);
+		expect(existsSync(join(review, "wip.txt"))).toBe(true);
+	});
+
+	it("never removes a checkout outside its own root, whatever the branch is called", async () => {
+		// A branch name is a thing anyone can create. Somebody with their own
+		// `git worktree add ../x dream/mbp/y` has not signed it over.
+		const scope = await ownedStore();
+		const first = await createWorktree({
+			scope,
+			agentDir,
+			storeId: "s",
+			branch: "dream/mbp/theirs",
+			startPoint: "HEAD",
+		});
+		// Re-register the same branch's checkout at a path outside the root, as
+		// a person would; then a foreign-looking one too.
+		await first.remove();
+		const theirs = join(home, "their-checkout");
+		await git(scope.path, { kind: "worktree-add", path: theirs, branch: "dream/mbp/personal", startPoint: "HEAD" });
+		writeFileSync(join(theirs, "wip.txt"), "uncommitted\n");
+
+		const removed = await collectWorktrees(scope.path, { ownedRoot: worktreeRoot(agentDir) });
+		expect(removed).toEqual([]);
+		expect(existsSync(join(theirs, "wip.txt"))).toBe(true);
+	});
 });
 
 describe("naming", () => {
-	it("keys a branch and its report by the same stamp", () => {
-		const stamp = dreamStamp(new Date("2026-08-23T03:04:05.678Z"));
-		expect(stamp).toBe("2026-08-23T03-04");
-		expect(dreamBranch("mbp", stamp)).toBe("dream/mbp/2026-08-23T03-04");
-		expect(dreamBranch("mbp", stamp, true)).toBe("dream/mbp/2026-08-23T03-04-merge");
+	it("keys a branch and its report by the same host-qualified stamp", () => {
+		// The host is part of the identity: two hosts dreaming the same synced
+		// store in the same minute is the normal case, and a bare timestamp made
+		// them one dream — one listing key and, worse, one report file.
+		const stamp = dreamStamp(new Date("2026-08-23T03:04:05.678Z"), "Martin's MBP.local");
+		expect(stamp).toBe("martin-s-mbp-local/2026-08-23T03-04");
+		expect(dreamBranch(stamp)).toBe("dream/martin-s-mbp-local/2026-08-23T03-04");
+		expect(dreamBranch(stamp, true)).toBe("dream/martin-s-mbp-local/2026-08-23T03-04-merge");
 	});
 
 	it("reduces a host name to something git will accept as a branch", () => {

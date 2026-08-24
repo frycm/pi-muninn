@@ -101,7 +101,11 @@ describe("/muninn dream through pi", () => {
 		expect(dreamt.stderr).toMatch(/review with \/muninn dreams/);
 
 		const store = projectStore();
-		const stamp = (dreamt.stderr.match(/(\d{4}-\d{2}-\d{2}T\d{2}-\d{2})/) as RegExpMatchArray)[1] as string;
+		// The full host-qualified stamp, from the branch line: `dream/<host>/<ts>`.
+		const fullStamp = (
+			dreamt.stderr.match(/dream\/([a-z0-9-]+\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2})/) as RegExpMatchArray
+		)[1] as string;
+		const stamp = fullStamp.slice(fullStamp.indexOf("/") + 1);
 
 		const listed = await pi("/muninn dreams");
 		expect(listed.stderr).toContain(stamp);
@@ -123,7 +127,7 @@ describe("/muninn dream through pi", () => {
 		expect(forgotten.stderr).toContain("forgot");
 		expect(existsSync(join(store, "topics"))).toBe(false);
 		// The report of a forgotten dream is the record of why.
-		expect(readFileSync(join(store, "dreams", `${stamp}.md`), "utf-8")).toContain("forgotten:");
+		expect(readFileSync(join(store, "dreams", `${fullStamp}.md`), "utf-8")).toContain("forgotten:");
 	}, 120_000);
 
 	it("says rules are written by hand", async () => {

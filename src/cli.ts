@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_DIR, resolveAgentDir } from "./agent-dir.ts";
 import { dream } from "./dream/dream.ts";
-import { forget, listDreams } from "./dream/dreams.ts";
+import { forget, listDreams, matchStamp } from "./dream/dreams.ts";
 import { erase, eraseImpact } from "./dream/erase.ts";
 import type { DreamModel } from "./dream/model.ts";
 import { headlessModel } from "./dream/pi-model.ts";
@@ -123,6 +123,7 @@ export async function runCli(argv: readonly string[], cwd: string = process.cwd(
 				code,
 				await runDreams(scope, {
 					host,
+					settings: loaded.settings,
 					args,
 					out,
 					err,
@@ -272,9 +273,9 @@ async function runDream(
 /** `muninn dreams [remember|forget <stamp>]`. */
 async function runDreams(
 	scope: ActiveScope,
-	context: Pick<SubcommandContext, "host" | "args" | "out" | "err"> & { model?: DreamModel },
+	context: Pick<SubcommandContext, "host" | "settings" | "args" | "out" | "err"> & { model?: DreamModel },
 ): Promise<number> {
-	const { host, args, out, err } = context;
+	const { host, settings, args, out, err } = context;
 	const action = args.find((arg) => arg === "remember" || arg === "forget");
 
 	if (action === undefined) {
@@ -310,11 +311,13 @@ async function runDreams(
 		return result.ok ? 0 : 1;
 	}
 
-	const listing = (await listDreams(scope.path)).find((entry) => entry.stamp === stamp);
-	if (listing?.branch === undefined) {
-		err.push(`  ! no pending dream ${stamp} in this store`);
+	const matched = matchStamp(await listDreams(scope.path), stamp);
+	if (matched.problem !== undefined || matched.listing?.branch === undefined) {
+		err.push(`  ! ${matched.problem ?? `no pending dream ${stamp} in this store`}`);
 		return 1;
 	}
+	const listing = matched.listing;
+	const branch = listing.branch as string;
 	if (listing.report?.status === "lint-blocked") {
 		// Blocked at lint means a fact in it cannot be traced to the journal.
 		// Remembering it anyway is a decision, and not one a flag should make
@@ -328,14 +331,22 @@ async function runDreams(
 		scope,
 		agentDir,
 		host,
-		branch: listing.branch,
+		branch,
 		// A conflict means two dreams rewrote the same topic, which needs a merge
 		// dream and never `git merge`. With no `dream.model` there is nothing to
 		// settle it with, and the conflict is reported rather than guessed at.
 		...(model
 			? {
 					resolve: (conflict) =>
-						resolveConflict(conflict, { scope, agentDir, host, storeId: host.id, model, now: new Date() }),
+						resolveConflict(conflict, {
+							scope,
+							agentDir,
+							host,
+							storeId: host.id,
+							model,
+							settings,
+							now: new Date(),
+						}),
 				}
 			: {}),
 	});

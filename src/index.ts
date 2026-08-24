@@ -34,7 +34,7 @@ import {
 } from "./capture/session-state.ts";
 import { type CommandOutput, type CommandRuntime, type DreamOutcome, runMuninnCommand } from "./commands/muninn.ts";
 import { dream } from "./dream/dream.ts";
-import { forget, listDreams } from "./dream/dreams.ts";
+import { forget, listDreams, matchStamp } from "./dream/dreams.ts";
 import { erase, eraseImpact } from "./dream/erase.ts";
 import type { DreamModel } from "./dream/model.ts";
 import { latestReport, readTopics } from "./dream/orient.ts";
@@ -490,8 +490,11 @@ export default function (pi: ExtensionAPI): void {
 					const current = await load(ctx.cwd, ctx.isProjectTrusted(), false);
 					const active = current.scopes.active.find((candidate) => candidate.scope === scope);
 					if (!active) return { ok: false, problems: [`no ${scope} store here`], notes: [] };
-					const listing = (await listDreams(active.path)).find((entry) => entry.stamp === stamp);
-					if (listing?.branch === undefined) return { ok: false, problems: [`no pending dream ${stamp}`], notes: [] };
+					const matched = matchStamp(await listDreams(active.path), stamp);
+					const listing = matched.listing;
+					if (matched.problem !== undefined || listing?.branch === undefined) {
+						return { ok: false, problems: [matched.problem ?? `no pending dream ${stamp}`], notes: [] };
+					}
 					if (listing.report?.status === "lint-blocked") {
 						// Remembering a dream whose facts cannot be traced to the
 						// journal is a decision, not a flag.
@@ -516,6 +519,7 @@ export default function (pi: ExtensionAPI): void {
 											host: current.host,
 											storeId: current.host.id,
 											model,
+											settings: current.loaded.settings,
 											now: new Date(),
 										}),
 								}

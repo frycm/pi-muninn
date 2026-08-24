@@ -108,6 +108,7 @@ describe("two dreams that rewrote the same topic", () => {
 					host,
 					storeId: "s",
 					model: merger,
+					settings: DEFAULT_SETTINGS,
 					now: new Date("2026-08-23T05:00:00Z"),
 				}),
 		});
@@ -125,6 +126,50 @@ describe("two dreams that rewrote the same topic", () => {
 		expect(topic.facts.length).toBeGreaterThan(0);
 		expect((await git(storePath, { kind: "status-porcelain", paths: [] })).stdout.trim()).toBe("");
 		expect(existsSync(join(storePath, ".remember"))).toBe(false);
+	}, 60_000);
+
+	it("resolves a MEMORY.md-only conflict by regenerating it", async () => {
+		// Two dreams that touched *different* topics still both rewrite
+		// MEMORY.md, so the index file is the only conflict. That is the normal
+		// case for disjoint work, and rejecting it — as an earlier version did —
+		// meant the second of any two dreams could never be remembered.
+		await note("Tests need pnpm test --run.");
+		await appendEntry(
+			{ source: "user", prose: "Deploys.", claims: ["Deploys go through the release workflow."], cue: "deploying" },
+			{ storePath, hostId: host.id },
+		);
+		resetCommitDebounce();
+
+		const first = await dream(options(new Date("2026-08-23T03:00:00Z"), citing("Tests need --run.")));
+		const second = await dream(
+			options(new Date("2026-08-23T04:00:00Z"), citing("Deploys go through the release workflow.")),
+		);
+		await remember({ scope, agentDir, host, branch: first.branch });
+
+		const result = await remember({
+			scope,
+			agentDir,
+			host,
+			branch: second.branch,
+			resolve: (conflict) =>
+				resolveConflict(conflict, {
+					scope,
+					agentDir,
+					host,
+					storeId: "s",
+					model: merger,
+					settings: DEFAULT_SETTINGS,
+					now: new Date("2026-08-23T05:00:00Z"),
+				}),
+		});
+		expect(result.problems).toEqual([]);
+		expect(result.ok).toBe(true);
+
+		// Both dreams' topics stand, and MEMORY.md lists them both — the whole
+		// dream diff survived the merge, not just the conflicted files.
+		const memory = readFileSync(join(storePath, "MEMORY.md"), "utf-8");
+		const topics = new Set((memory.match(/topics\/[a-z0-9-]+\.md/g) ?? []).map((line) => line));
+		expect(topics.size).toBe(2);
 	}, 60_000);
 
 	it("reports the conflict rather than guessing when there is no model to settle it", async () => {
@@ -155,6 +200,7 @@ describe("two dreams that rewrote the same topic", () => {
 			host,
 			storeId: "s",
 			model: merger,
+			settings: DEFAULT_SETTINGS,
 			now: new Date(),
 		});
 		expect(result.ok).toBe(false);

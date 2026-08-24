@@ -141,6 +141,19 @@ export function applyFactList(topic: TopicFile, items: readonly FactItem[], opti
 	const keep = (fact: Fact): boolean => !retiredIds.has(fact.id);
 
 	const addedById = new Map(added.map((fact) => [fact.id, fact]));
+	// Evidence the topic still stands on after this application. A superseded
+	// fact's claims are only *invalidated* if nothing active cites them any
+	// more: a merge that folds two facts into one citing both sides' evidence
+	// carries those claims forward, and writing supersession rows for them
+	// would make the merged fact stale against its own sources — recall would
+	// drop the very observations it rests on.
+	const stillCited = new Set<string>();
+	for (const fact of topic.facts.concat(topic.external)) {
+		if (supersededNow.has(fact.id)) continue;
+		for (const id of fact.evidence) stillCited.add(id);
+	}
+	for (const fact of added) for (const id of fact.evidence) stillCited.add(id);
+
 	const moved: Fact[] = [];
 	const supersessions: Supersession[] = [];
 	for (const { fact, by, reason } of supersededNow.values()) {
@@ -156,6 +169,7 @@ export function applyFactList(topic: TopicFile, items: readonly FactItem[], opti
 		// reads as "this observation was overtaken by that one".
 		const replacement = by === undefined ? undefined : addedById.get(by)?.evidence[0];
 		for (const claim of fact.evidence) {
+			if (stillCited.has(claim)) continue;
 			const row: Supersession = { claim, validTo: today, fact: fact.id };
 			if (replacement !== undefined && replacement !== claim) row.by = replacement;
 			supersessions.push(row);
