@@ -578,6 +578,19 @@ recording:
   very merge that still cited it, making the merged fact stale against its own sources —
   supersession rows are now written only for claims nothing active cites any more.
 
+A third pass — a review of the review fixes, because that code had itself never been
+reviewed — found four more, and the pattern is worth stating: **the watermark took three
+rounds to get right.** First it advanced over withheld entries; then over interleaved
+ones and over jobs that never ran; finally a merge reset it to nothing, and a model that
+legitimately answered "keep everything" pinned it forever, because "the job changed
+something" had been used as the proxy for "the job ran". A cursor over partially-consumed
+input is the hardest state in this phase — harder than the git transaction it sits
+beside, which survived all three reviews unchanged. The other two: the resolver
+classified conflict paths without the in-repo store's repository prefix, so it could
+settle nothing for exactly the layout whose conflicts most need settling; and `forget`
+with a bare timestamp took the first of two same-minute dreams without the ambiguity
+check its sibling `matchStamp` had been given the same day.
+
 ## Decisions made by this plan
 
 Things the README leaves open or states at a level an implementation cannot follow, decided
