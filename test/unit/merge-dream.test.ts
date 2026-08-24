@@ -144,6 +144,42 @@ describe("two dreams that rewrote the same topic", () => {
 		expect(existsSync(join(storePath, ".remember"))).toBe(false);
 	}, 60_000);
 
+	it("preserves a staged merge when the original dream is selected again", async () => {
+		await note("Tests need pnpm test --run.");
+		const first = await dream(options(new Date("2026-08-23T03:00:00Z"), citing("Tests need --run.")));
+		const second = await dream(options(new Date("2026-08-23T04:00:00Z"), citing("Watch mode hangs CI.")));
+		expect((await remember({ scope, agentDir, host, branch: first.branch })).ok).toBe(true);
+
+		const stage = (now: Date) =>
+			remember({
+				scope,
+				agentDir,
+				host,
+				branch: second.branch,
+				resolve: (conflict) =>
+					resolveConflict(conflict, {
+						scope,
+						agentDir,
+						host,
+						storeId: "s",
+						model: merger,
+						settings: DEFAULT_SETTINGS,
+						now,
+					}),
+			});
+
+		const staged = await stage(new Date("2026-08-23T05:00:00Z"));
+		expect(staged.pending).toBeDefined();
+		const mergeBranch = staged.pending as string;
+		const before = (await git(storePath, { kind: "verify-ref", ref: mergeBranch })).stdout.trim();
+
+		const repeated = await stage(new Date("2026-08-23T06:00:00Z"));
+		expect(repeated.ok).toBe(false);
+		expect(repeated.pending).toBeUndefined();
+		expect(repeated.problems.join(" ")).toContain("already exists and is staged for review");
+		expect((await git(storePath, { kind: "verify-ref", ref: mergeBranch })).stdout.trim()).toBe(before);
+	}, 60_000);
+
 	it("resolves a MEMORY.md-only conflict by regenerating it", async () => {
 		// Two dreams that touched *different* topics still both rewrite
 		// MEMORY.md, so the index file is the only conflict. That is the normal

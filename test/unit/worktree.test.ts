@@ -14,6 +14,7 @@ import {
 	worktreeRoot,
 } from "../../src/dream/worktree.ts";
 import { git } from "../../src/git.ts";
+import { newHostId } from "../../src/ids.ts";
 import type { ActiveScope } from "../../src/store/scopes.ts";
 
 const execFileAsync = promisify(execFile);
@@ -228,25 +229,21 @@ describe("dream worktrees", () => {
 
 describe("naming", () => {
 	it("keys a branch and its report by the same host-qualified stamp", () => {
-		// The host is part of the identity: two hosts dreaming the same synced
-		// store at the same moment is the normal case, and a bare timestamp made
-		// them one dream — one listing key and, worse, one report file. A display
-		// name is not an identity either — two "mbp"s collide routinely — so the
-		// stable host id contributes a fragment; and a minute is not a moment, so
-		// the timestamp carries seconds.
-		const identity = { id: "0198a0b1-2222-7000-8000-000000000001", name: "Martin's MBP.local" };
-		const stamp = dreamStamp(new Date("2026-08-23T03:04:05.678Z"), identity);
-		expect(stamp).toBe("martin-s-mbp-local-0198a0b1/2026-08-23T03-04-05");
-		expect(dreamBranch(stamp)).toBe("dream/martin-s-mbp-local-0198a0b1/2026-08-23T03-04-05");
-		expect(dreamBranch(stamp, true)).toBe("dream/martin-s-mbp-local-0198a0b1/2026-08-23T03-04-05-merge");
+		// UUIDv7 hosts registered together share their leading timestamp bits, so
+		// this deliberately uses real adjacent ids rather than hand-picked prefixes.
+		const identity = { id: newHostId(), name: "Martin's MBP.local" };
+		const twin = { id: newHostId(), name: "Martin's MBP.local" };
+		const at = new Date("2026-08-23T03:04:05.678Z");
+		const dreamId = newHostId();
+		const stamp = dreamStamp(at, identity, dreamId);
+		expect(stamp).toBe(`martin-s-mbp-local-${identity.id}/2026-08-23T03-04-05-678Z-${dreamId}`);
+		expect(dreamBranch(stamp)).toBe(`dream/${stamp}`);
+		expect(dreamBranch(stamp, true)).toBe(`dream/${stamp}-merge`);
 
-		// Same second, different stable ids, same display name: two dreams.
-		const twin = { id: "0198ffff-2222-7000-8000-000000000002", name: "Martin's MBP.local" };
-		expect(dreamStamp(new Date("2026-08-23T03:04:05.678Z"), twin)).not.toBe(stamp);
-		// Same host, one minute apart at second resolution: two dreams.
-		expect(dreamStamp(new Date("2026-08-23T03:04:59.000Z"), identity)).not.toBe(
-			dreamStamp(new Date("2026-08-23T03:04:01.000Z"), identity),
-		);
+		// Same-named hosts at the same instant still have distinct full identities.
+		expect(dreamStamp(at, twin, dreamId)).not.toBe(stamp);
+		// The fresh dream id also separates two runs by one host at the exact same instant.
+		expect(dreamStamp(at, identity, newHostId())).not.toBe(dreamStamp(at, identity, newHostId()));
 	});
 
 	it("reduces a host name to something git will accept as a branch", () => {

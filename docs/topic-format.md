@@ -130,16 +130,16 @@ say which rule a regression touched.
 cap, unused rules, a project rule contradicting a global one) and reports; rules are
 written by people. Rule derivation arrives with the promotion gate that makes it safe.
 
-## `dreams/<host slug>-<host id fragment>/<ts>.md`
+## `dreams/<host slug>-<host id>/<ts>-<dream id>.md`
 
-One report per dream. A dream's identity is `<host slug>-<first 8 of host id>/<ts>`, with
-the timestamp at second resolution — the host is part of it, not decoration: two hosts
-dreaming the same synced store at the same moment is the design's normal case, and a bare
-timestamp would make them one dream, with one listing key and one report *file* that two
-remembers would then meet in an add/add conflict. The stable id fragment is there because
-a display name is not an identity — two machines called "mbp" collide routinely — and the
-seconds because a minute is not a moment. Reports are per host for the same reason
-journal files are: two machines never write the same file. The branch is `dream/<id>` and
+One report per dream. A dream's identity is `<host slug>-<full host id>/<timestamp>-<full
+dream UUIDv7>`. The timestamp is millisecond resolution for people and sorting; uniqueness
+comes from the full stable host id and the fresh dream id. Two hosts dreaming the same
+synced store at the same moment, or one host starting twice with the same supplied time,
+therefore cannot become one dream with one listing key and one report file. The full host
+id is required because the leading characters of UUIDv7 are timestamp bits rather than
+host entropy, and display names such as "mbp" also collide routinely. Reports are per host
+for the same reason journal files are: two machines never write the same file. The branch is `dream/<id>` and
 the report shares the key, so the two are paired without an index. It records `input_head` and `journal_through` — which
 makes "what has this store not yet learned from" the exact question
 `git diff input_head..main -- journal/` — the held-out task groups, what was consolidated,

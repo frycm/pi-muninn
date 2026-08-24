@@ -24,6 +24,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { GitError, git } from "../git.ts";
+import { newDreamId } from "../ids.ts";
 import { canonicalPath, isInside } from "../store/paths.ts";
 import type { ActiveScope } from "../store/scopes.ts";
 
@@ -34,30 +35,28 @@ export function worktreeRoot(agentDir: string): string {
 
 /**
  * The identity of a dream started now on this host:
- * `<host slug>-<host id fragment>/<ts>`.
+ * `<host slug>-<host id>/<ts>-<dream id>`.
  *
- * The timestamp is second resolution, UTC, with `:` replaced — a branch name
- * may not contain one, and neither may a filename on Windows. The host is part
- * of the identity, not decoration: two hosts dreaming the same synced store at
- * the same moment is the design's normal case, and a timestamp alone made them
- * one dream — the same listing key, and worse, the same report *file*, which
- * two remembers would then meet in an add/add conflict. Per-host report
- * directories are the same shape as per-host journal directories, and exist for
- * the same reason: two machines never write the same file.
+ * The timestamp is millisecond resolution, UTC, with `:` and `.` replaced — a
+ * branch name may not contain a colon, and neither may a filename on Windows.
+ * It is for people and sorting, not uniqueness. The full stable host id and a
+ * fresh full UUIDv7 dream id are the identity: two hosts dreaming the same
+ * synced store at the same moment, or one host starting twice at the exact same
+ * time supplied by a caller, still cannot share a listing key, branch, or report
+ * file. Per-host report directories are the same shape as per-host journal
+ * directories, and exist for the same reason: two machines never write the
+ * same file.
  *
- * Two lessons a review taught this function. A display *name* is not an
- * identity: `os.hostname()` collides across machines routinely, so the stable
- * host id contributes a fragment — enough to tell two "mbp"s apart, short
- * enough to read. And a minute is not a moment: back-to-back dreams on one
- * host landed on one stamp. Seconds close the observed case; the same-second
- * residue is caught loudly by `worktree add` refusing the existing branch.
+ * A UUIDv7's leading characters are timestamp bits, so truncating the front of
+ * a host id is specifically not an identity: hosts registered together share
+ * them. Keys retain the complete ids. Shortening belongs only in presentation.
  *
  * The branch is `dream/<stamp>` and the report `dreams/<stamp>.md`, so branch
  * and report share a key and `/muninn dreams` pairs them without an index.
  */
-export function dreamStamp(at: Date, host: { id: string; name: string }): string {
-	const ts = at.toISOString().slice(0, 19).replace(/:/g, "-");
-	return `${branchSlug(host.name)}-${host.id.slice(0, 8)}/${ts}`;
+export function dreamStamp(at: Date, host: { id: string; name: string }, dreamId = newDreamId()): string {
+	const ts = at.toISOString().replace(/[:.]/g, "-");
+	return `${branchSlug(host.name)}-${host.id}/${ts}-${dreamId}`;
 }
 
 /**

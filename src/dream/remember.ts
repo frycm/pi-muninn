@@ -536,8 +536,18 @@ export async function resolveConflict(conflict: RebaseConflict, options: Resolve
 	const mergeBranch = `${conflict.branch}-merge`;
 	const repo = await repositoryFor(scope);
 
-	// A leftover from an earlier failed resolution is stale, not state.
-	await git(repo, { kind: "branch-delete", name: mergeBranch, force: true }).catch(() => undefined);
+	// A merge branch is review state, whether it came from a successful merge or
+	// a failed one kept for inspection. Re-selecting the original dream must not
+	// destroy the exact report someone may already have reviewed or edited.
+	const existingMerge = (
+		await git(repo, { kind: "verify-ref", ref: mergeBranch }).catch(() => ({ stdout: "" }))
+	).stdout.trim();
+	if (existingMerge !== "") {
+		resolution.problems.push(
+			`${mergeBranch} already exists and is staged for review; remember or delete it before resolving ${conflict.branch} again`,
+		);
+		return resolution;
+	}
 	await git(repo, { kind: "branch-create", name: mergeBranch, startPoint: conflict.branch });
 
 	const worktree = await createWorktree({

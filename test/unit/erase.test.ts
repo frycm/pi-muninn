@@ -1,6 +1,8 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resetCommitDebounce } from "../../src/capture/commit.ts";
 import { erase, eraseImpact, hasFilterRepo } from "../../src/dream/erase.ts";
@@ -16,6 +18,8 @@ import type { HostIdentity } from "../../src/store/host.ts";
 import { ensureStore } from "../../src/store/init.ts";
 import type { ActiveScope } from "../../src/store/scopes.ts";
 import { formatTopic, parseTopic } from "../../src/topics/format.ts";
+
+const execFileAsync = promisify(execFile);
 
 let home: string;
 let storePath: string;
@@ -174,5 +178,45 @@ describe("erase", () => {
 		await erase({ scope, host, entryId: id, now: NOW, noRewrite: true });
 		const again = await erase({ scope, host, entryId: id, now: NOW, noRewrite: true });
 		expect(again.problems.join(" ")).toContain("already erased");
+	});
+
+	it("retries only remote propagation after a force-push fails", async () => {
+		const bin = join(home, "bin");
+		const filterRepo = join(bin, "git-filter-repo");
+		mkdirSync(bin, { recursive: true });
+		// The recovery behavior is under test, not git-filter-repo itself. A
+		// successful shim makes the first irreversible step deterministic in CI.
+		writeFileSync(filterRepo, "#!/usr/bin/env node\nprocess.stdout.write('git-filter-repo test shim\\n');\n");
+		chmodSync(filterRepo, 0o755);
+
+		const originalPath = process.env.PATH;
+		process.env.PATH = `${bin}${delimiter}${originalPath ?? ""}`;
+		try {
+			const id = await note(SECRET);
+			const remote = join(home, "remote.git");
+
+			// The rewrite succeeds, but the destination does not exist yet.
+			const failed = await erase({ scope, host, entryId: id, now: NOW, remote });
+			expect(failed.ok).toBe(false);
+			expect(failed.rewroteHistory).toBe(true);
+			expect(failed.problems.join(" ")).toContain("remote was not");
+
+			await execFileAsync("git", ["init", "--bare", "--quiet", remote]);
+			const retried = await erase({ scope, host, entryId: id, now: NOW, remote });
+			expect(retried.problems).toEqual([]);
+			expect(retried.ok).toBe(true);
+			expect(retried.rewroteHistory).toBe(true);
+			expect(retried.notes.join(" ")).toContain("retrying only remote propagation");
+			expect(retried.notes.join(" ")).toContain("force-pushed");
+
+			const { stdout } = await execFileAsync("git", ["--git-dir", remote, "rev-parse", "refs/heads/main"]);
+			expect(stdout.trim()).toMatch(/^[0-9a-f]{40}$/);
+			// Successful propagation clears recovery state; this is now an ordinary duplicate.
+			const again = await erase({ scope, host, entryId: id, now: NOW, remote });
+			expect(again.problems.join(" ")).toContain("already erased");
+		} finally {
+			if (originalPath === undefined) delete process.env.PATH;
+			else process.env.PATH = originalPath;
+		}
 	});
 });

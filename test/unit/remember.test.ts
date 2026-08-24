@@ -286,7 +286,9 @@ describe("forget", () => {
 		const second = await dream({ ...options(now), host: other });
 		await remember({ scope, agentDir, host: other, branch: second.branch });
 
-		const bare = first.stamp.slice(first.stamp.indexOf("/") + 1);
+		// Drop the `-<dream UUID>` suffix to exercise the timestamp-only shortcut.
+		const tail = first.stamp.slice(first.stamp.indexOf("/") + 1);
+		const bare = tail.slice(0, -37);
 		const ambiguous = await forget({ scope, host, stamp: bare, now: new Date("2026-08-25T09:00:00Z") });
 		expect(ambiguous.ok).toBe(false);
 		expect(ambiguous.problems.join(" ")).toContain("ambiguous");

@@ -101,9 +101,12 @@ describe("/muninn dream through pi", () => {
 		expect(dreamt.stderr).toMatch(/review with \/muninn dreams/);
 
 		const store = projectStore();
-		// The full host-qualified stamp, from the branch line: `dream/<host>/<ts>`.
+		// The full host-qualified stamp, from the branch line:
+		// `dream/<host>-<host UUID>/<time>-<dream UUID>`.
 		const fullStamp = (
-			dreamt.stderr.match(/dream\/([a-z0-9-]+\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})/) as RegExpMatchArray
+			dreamt.stderr.match(
+				/dream\/([a-z0-9-]+-[0-9a-f-]{36}\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f-]{36})/,
+			) as RegExpMatchArray
 		)[1] as string;
 		const stamp = fullStamp.slice(fullStamp.indexOf("/") + 1);
 

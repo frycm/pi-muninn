@@ -24,7 +24,7 @@
  * halfway, unless the caller explicitly asks for the partial form and is told
  * plainly what remains.
  */
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
 import { currentBranch, GitError, git, hasChanges } from "../git.ts";
@@ -68,6 +68,82 @@ export interface EraseResult {
 	rewroteHistory: boolean;
 	problems: string[];
 	notes: string[];
+}
+
+type PendingErasePhase = "rewrite" | "push";
+
+/**
+ * Machine-local recovery for the two irreversible external steps.
+ *
+ * The journal records that an entry is erased before history can be rewritten
+ * and pushed. If either external command fails, the next invocation otherwise
+ * sees only "already erased" and can never finish. This state lives in `.git`
+ * so it is neither synced nor included in the history being rewritten.
+ */
+interface PendingErase {
+	entryId: string;
+	phase: PendingErasePhase;
+	remote?: string;
+}
+
+function pendingEraseDir(storePath: string): string {
+	return join(storePath, ".git", "muninn-erasure-pending");
+}
+
+function pendingEraseStatePath(storePath: string, entryId: string): string {
+	return join(pendingEraseDir(storePath), `${entryId}.json`);
+}
+
+function pendingEraseReplacementsPath(storePath: string, entryId: string): string {
+	return join(pendingEraseDir(storePath), `${entryId}.replacements.txt`);
+}
+
+function writePendingErase(storePath: string, pending: PendingErase): void {
+	mkdirSync(pendingEraseDir(storePath), { recursive: true });
+	writeFileSync(pendingEraseStatePath(storePath, pending.entryId), `${JSON.stringify(pending, null, "\t")}\n`);
+}
+
+function readPendingErase(storePath: string, entryId: string): PendingErase | undefined {
+	try {
+		const parsed = JSON.parse(
+			readFileSync(pendingEraseStatePath(storePath, entryId), "utf-8"),
+		) as Partial<PendingErase>;
+		if (parsed.entryId !== entryId || (parsed.phase !== "rewrite" && parsed.phase !== "push")) return undefined;
+		if (parsed.remote !== undefined && typeof parsed.remote !== "string") return undefined;
+		return {
+			entryId,
+			phase: parsed.phase,
+			...(parsed.remote !== undefined ? { remote: parsed.remote } : {}),
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+function preparePendingErase(
+	storePath: string,
+	entryId: string,
+	secrets: readonly string[],
+	remote: string | undefined,
+): PendingErase {
+	const pending: PendingErase = { entryId, phase: "rewrite", ...(remote !== undefined ? { remote } : {}) };
+	mkdirSync(pendingEraseDir(storePath), { recursive: true });
+	writeFileSync(
+		pendingEraseReplacementsPath(storePath, entryId),
+		`${secrets.map((text) => `${text}==>[erased]`).join("\n")}\n`,
+	);
+	writePendingErase(storePath, pending);
+	return pending;
+}
+
+function clearPendingErase(storePath: string, entryId: string): void {
+	rmSync(pendingEraseStatePath(storePath, entryId), { force: true });
+	rmSync(pendingEraseReplacementsPath(storePath, entryId), { force: true });
+	try {
+		rmSync(pendingEraseDir(storePath));
+	} catch {
+		// Another pending erasure still owns the directory, or it is already gone.
+	}
 }
 
 /** Point `origin` at the configured destination, whether or not one survives. */
@@ -140,11 +216,28 @@ async function applyErase(options: EraseOptions, result: EraseResult): Promise<E
 		return result;
 	}
 
-	// The erasure list is asked first, and not as a fallback: a tombstoned entry
-	// still parses as an entry — that is the whole point of leaving the id
-	// behind — so "can I find it?" answers yes for something already erased, and
-	// erasing it again would rewrite history over nothing.
+	// A failed rewrite or force-push leaves explicit recovery state. Resume it
+	// before the ordinary already-erased guard: the local tombstone is complete,
+	// but the external step the person requested is not.
 	if (readErasures(scope.path).ids.has(entryId)) {
+		const statePath = pendingEraseStatePath(scope.path, entryId);
+		const pending = readPendingErase(scope.path, entryId);
+		if (pending !== undefined) {
+			result.notes.push(`${entryId} is already tombstoned; resuming its interrupted erasure`);
+			if (pending.phase === "push") {
+				result.rewroteHistory = true;
+				result.notes.push("local history was already rewritten; retrying only remote propagation");
+			}
+			if (await resumePendingErase(scope.path, pending, result)) {
+				result.ok = true;
+				result.notes.push(`${entryId} is tombstoned and listed in journal/erasures.md`);
+			}
+			return result;
+		}
+		if (existsSync(statePath)) {
+			result.problems.push(`${entryId} has unreadable pending-erasure recovery state at ${statePath}`);
+			return result;
+		}
 		result.problems.push(`${entryId} is already erased`);
 		return result;
 	}
@@ -169,6 +262,7 @@ async function applyErase(options: EraseOptions, result: EraseResult): Promise<E
 	const secrets = [found.prose, ...found.claims, found.cue ?? ""]
 		.map((text) => text.trim())
 		.filter((text) => text !== "");
+	const pending = rewriting ? preparePendingErase(scope.path, entryId, secrets, options.remote) : undefined;
 
 	await commitJournalLocked({
 		storePath: scope.path,
@@ -208,41 +302,8 @@ async function applyErase(options: EraseOptions, result: EraseResult): Promise<E
 	resetSupersessionCache();
 
 	// --- 5. history ---------------------------------------------------------
-	if (rewriting) {
-		await rewriteHistory(scope.path, secrets, result);
-		if (!result.rewroteHistory) {
-			// The caller asked for the rewrite; steps 1–4 are done and correct
-			// either way, but "ok" would read as "the bytes are gone" and they
-			// are not. The notes say exactly what stands.
-			result.problems.push(
-				"the erasure is incomplete: the entry is tombstoned and no fact cites it, " +
-					"but git history still holds the original bytes. Fix the failure above and run erase again.",
-			);
-			return result;
-		}
-		if (options.remote !== undefined) {
-			try {
-				// `git-filter-repo` removes the origin remote as part of its own
-				// safety story, so the configured destination is re-established
-				// before the push rather than assumed to have survived.
-				await ensureRemote(scope.path, options.remote);
-				const branch = (await currentBranch(scope.path)) ?? STORE_BRANCH;
-				await git(scope.path, { kind: "push-force", remote: "origin", branch });
-				result.notes.push("force-pushed the rewritten history to the configured remote");
-			} catch (error) {
-				// A requested propagation that failed is a *failure*, not a note:
-				// the caller asked for the bytes to be gone everywhere, the
-				// remote still serves them to every clone, and an ok exit from
-				// cron would say otherwise. The local store is erased and stays
-				// erased; the message says exactly what remains.
-				result.problems.push(
-					`the local history was rewritten but the remote was not: ${describeGitError(error)}. ` +
-						"The remote — and every clone of it — still holds the erased bytes. " +
-						"`muninn sync` will not fix this — it never force-pushes. Re-run the erase once the remote is reachable.",
-				);
-				return result;
-			}
-		}
+	if (pending !== undefined) {
+		if (!(await resumePendingErase(scope.path, pending, result))) return result;
 	} else {
 		result.notes.push(
 			"history was NOT rewritten: the erased text is still reachable in .git and in every existing clone.",
@@ -334,19 +395,74 @@ function supersedeCiting(storePath: string, claims: ReadonlySet<string>, now: Da
  * well, which is the correct direction to be wrong in: erasure is about text
  * that must not exist, not about one entry's copy of it.
  */
-async function rewriteHistory(storePath: string, secrets: readonly string[], result: EraseResult): Promise<void> {
-	const file = join(storePath, ".git", "muninn-erase-replacements.txt");
-	writeFileSync(file, `${secrets.map((text) => `${text}==>[erased]`).join("\n")}\n`);
+async function rewriteHistory(storePath: string, replacements: string, result: EraseResult): Promise<boolean> {
 	try {
-		await git(storePath, { kind: "filter-repo", replacements: file });
+		await git(storePath, { kind: "filter-repo", replacements });
 		result.rewroteHistory = true;
 		result.notes.push("rewrote git history; the erased text is gone from every commit");
+		return true;
 	} catch (error) {
 		result.notes.push(
 			`history was not rewritten: ${error instanceof GitError ? error.stderr.trim().split("\n")[0] : String(error)}`,
 		);
-	} finally {
-		rmSync(file, { force: true });
+		return false;
+	}
+}
+
+/** Finish the rewrite and/or force-push described by durable recovery state. */
+async function resumePendingErase(storePath: string, initial: PendingErase, result: EraseResult): Promise<boolean> {
+	let pending = initial;
+	if (pending.phase === "rewrite") {
+		const replacements = pendingEraseReplacementsPath(storePath, pending.entryId);
+		if (!existsSync(replacements)) {
+			result.problems.push(`the replacement data needed to resume erasing ${pending.entryId} is missing`);
+			return false;
+		}
+		if (!(await hasFilterRepo(storePath))) {
+			result.problems.push(
+				"git-filter-repo is not installed, so the interrupted local history rewrite cannot resume. " +
+					"Install it and run the same erase again.",
+			);
+			return false;
+		}
+		if (!(await rewriteHistory(storePath, replacements, result))) {
+			result.problems.push(
+				"the erasure is incomplete: the entry is tombstoned and no fact cites it, " +
+					"but git history still holds the original bytes. Fix the failure above and run the same erase again.",
+			);
+			return false;
+		}
+		rmSync(replacements, { force: true });
+		if (pending.remote === undefined) {
+			clearPendingErase(storePath, pending.entryId);
+			return true;
+		}
+		pending = { ...pending, phase: "push" };
+		// Written before the push: a crash during or immediately after it is safe
+		// to recover by force-pushing the same rewritten branch once more.
+		writePendingErase(storePath, pending);
+	}
+
+	if (pending.remote === undefined) {
+		result.problems.push(`pending remote propagation for ${pending.entryId} has no destination`);
+		return false;
+	}
+	try {
+		// `git-filter-repo` removes origin as part of its safety story, so the
+		// exact destination captured when erasure began is restored on every try.
+		await ensureRemote(storePath, pending.remote);
+		const branch = (await currentBranch(storePath)) ?? STORE_BRANCH;
+		await git(storePath, { kind: "push-force", remote: "origin", branch });
+		result.notes.push("force-pushed the rewritten history to the configured remote");
+		clearPendingErase(storePath, pending.entryId);
+		return true;
+	} catch (error) {
+		result.problems.push(
+			`the local history was rewritten but the remote was not: ${describeGitError(error)}. ` +
+				"The remote — and every clone of it — still holds the erased bytes. " +
+				"`muninn sync` will not fix this — it never force-pushes. Re-run the same erase once the remote is reachable.",
+		);
+		return false;
 	}
 }
 

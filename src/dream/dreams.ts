@@ -152,9 +152,10 @@ function isForgotten(storePath: string, stamp: string): boolean {
 /**
  * The listing whose stamp matches what a person typed.
  *
- * Stamps are `<host>/<ts>`, but the timestamp alone is what a listing shows
- * most prominently and what a person will paste — so a bare `<ts>` matches
- * when it is unambiguous, and names the candidates when it is not.
+ * Stamps are `<host>/<time>-<dream id>`. The part after `/` is what a listing
+ * shows most prominently. Its unambiguous prefix is accepted too, preserving
+ * the convenient timestamp-only form while the UUID keeps the stored identity
+ * exact. Ambiguous prefixes name their candidates rather than choosing one.
  */
 export function matchStamp(
 	listings: readonly DreamListing[],
@@ -162,12 +163,18 @@ export function matchStamp(
 ): { listing?: DreamListing; problem?: string } {
 	const exact = listings.find((entry) => entry.stamp === wanted);
 	if (exact) return { listing: exact };
-	const suffix = listings.filter((entry) => entry.stamp.endsWith(`/${wanted}`));
+	const suffix = listings.filter((entry) => matchesStampSuffix(entry.stamp, wanted));
 	if (suffix.length === 1) return { listing: suffix[0] as DreamListing };
 	if (suffix.length > 1) {
 		return { problem: `"${wanted}" is ambiguous: ${suffix.map((entry) => entry.stamp).join(", ")}` };
 	}
 	return { problem: `no dream ${wanted} in this store` };
+}
+
+function matchesStampSuffix(candidate: string, wanted: string): boolean {
+	const slash = candidate.indexOf("/");
+	const suffix = slash < 0 ? candidate : candidate.slice(slash + 1);
+	return suffix === wanted || suffix.startsWith(`${wanted}-`);
 }
 
 export interface ForgetOptions {
@@ -237,7 +244,7 @@ async function applyForget(
 	// dream the log yielded first.
 	const remembered = await rememberedDreams(scope.path, 100_000, stamp);
 	const exact = remembered.has(stamp) ? ([stamp, remembered.get(stamp) as string] as const) : undefined;
-	const suffix = [...remembered.entries()].filter(([key]) => key.endsWith(`/${stamp}`));
+	const suffix = [...remembered.entries()].filter(([key]) => matchesStampSuffix(key, stamp));
 	if (exact === undefined && suffix.length > 1) {
 		result.problems.push(`"${stamp}" is ambiguous: ${suffix.map(([key]) => key).join(", ")}`);
 		return result;
