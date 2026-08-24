@@ -110,7 +110,7 @@ export interface RememberOptions {
 /** What a merge dream produced, or why it could not. */
 export interface MergeResolution {
 	ok: boolean;
-	/** The branch to fast-forward to instead of the original. */
+	/** The settled branch, staged for review — applied by its own remember, never here. */
 	branch?: string;
 	problems: string[];
 	notes: string[];
