@@ -21,7 +21,7 @@
  * Nothing here takes the store lock. The lock is the dream's, held across the
  * whole job by `dream.ts`; a worktree is created and removed inside it.
  */
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { GitError, git } from "../git.ts";
 import { canonicalPath, isInside } from "../store/paths.ts";
@@ -33,22 +33,31 @@ export function worktreeRoot(agentDir: string): string {
 }
 
 /**
- * The identity of a dream started now on this host: `<host slug>/<ts>`.
+ * The identity of a dream started now on this host:
+ * `<host slug>-<host id fragment>/<ts>`.
  *
- * The timestamp is minute resolution, UTC, with `:` replaced — a branch name
+ * The timestamp is second resolution, UTC, with `:` replaced — a branch name
  * may not contain one, and neither may a filename on Windows. The host is part
- * of the identity, not decoration: two hosts dreaming the same synced store in
- * the same minute is the design's normal case, and a timestamp alone made them
+ * of the identity, not decoration: two hosts dreaming the same synced store at
+ * the same moment is the design's normal case, and a timestamp alone made them
  * one dream — the same listing key, and worse, the same report *file*, which
  * two remembers would then meet in an add/add conflict. Per-host report
  * directories are the same shape as per-host journal directories, and exist for
  * the same reason: two machines never write the same file.
  *
+ * Two lessons a review taught this function. A display *name* is not an
+ * identity: `os.hostname()` collides across machines routinely, so the stable
+ * host id contributes a fragment — enough to tell two "mbp"s apart, short
+ * enough to read. And a minute is not a moment: back-to-back dreams on one
+ * host landed on one stamp. Seconds close the observed case; the same-second
+ * residue is caught loudly by `worktree add` refusing the existing branch.
+ *
  * The branch is `dream/<stamp>` and the report `dreams/<stamp>.md`, so branch
  * and report share a key and `/muninn dreams` pairs them without an index.
  */
-export function dreamStamp(at: Date, hostName: string): string {
-	return `${branchSlug(hostName)}/${at.toISOString().slice(0, 16).replace(":", "-")}`;
+export function dreamStamp(at: Date, host: { id: string; name: string }): string {
+	const ts = at.toISOString().slice(0, 19).replace(/:/g, "-");
+	return `${branchSlug(host.name)}-${host.id.slice(0, 8)}/${ts}`;
 }
 
 /**
@@ -318,7 +327,18 @@ export async function collectWorktrees(repo: string, options: CollectOptions = {
 	} catch {
 		return [];
 	}
-	const owned = options.ownedRoot === undefined ? undefined : canonicalPath(options.ownedRoot);
+	let owned: string | undefined;
+	if (options.ownedRoot !== undefined) {
+		// The root may simply not exist yet — the first dream creates it — and
+		// `canonicalPath` answers undefined for what it cannot open. Treating
+		// that as "no restriction" inverted the check exactly when it mattered:
+		// on a first run, a foreign `dream/*` worktree outside the root was
+		// force-removed, uncommitted work and all. Create the root, then
+		// canonicalise; if it still cannot be named, remove nothing.
+		mkdirSync(options.ownedRoot, { recursive: true });
+		owned = canonicalPath(options.ownedRoot);
+		if (owned === undefined) return [];
+	}
 	const removed: string[] = [];
 	for (const worktree of parseWorktreeList(stdout)) {
 		// Only a worktree that is *on a dream branch*. A detached-HEAD checkout

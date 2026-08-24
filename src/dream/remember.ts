@@ -121,8 +121,15 @@ export interface RememberResult {
 	/** The commit `main` now points at, when it moved. */
 	sha?: string;
 	rebased: boolean;
-	/** The merge dream's branch, when a conflict had to be settled by one. */
-	merged?: string;
+	/**
+	 * A merge branch staged for review, when a conflict had to be settled.
+	 *
+	 * Nothing was applied: a merge dream is a dream, and a dream goes through
+	 * the ordinary gate — reviewed in `dreams`, applied by a second remember.
+	 * `ok` is false because the *requested* remember did not happen, and
+	 * `problems` is empty because nothing failed.
+	 */
+	pending?: string;
 	problems: string[];
 	notes: string[];
 }
@@ -242,7 +249,7 @@ async function applyRemember(
 		// store, not a broken one, and the answer is to come back rather than to
 		// spin holding the lock. A merge dream replaces the branch being applied,
 		// so the loop runs over `current` rather than the branch asked for.
-		let current = branch;
+		const current = branch;
 		let applied = false;
 		for (let attempt = 0; attempt < 3; attempt++) {
 			if (!(await isDescendant(scope.path, current, mainSha))) {
@@ -254,18 +261,23 @@ async function applyRemember(
 					// Two dreams rewrote the same topic. This is not something
 					// `git merge` may decide — both sides replaced the same
 					// bullets with different wording, which merges cleanly and
-					// produces nonsense — so it goes to a merge dream, and what
-					// comes back is a third branch to fast-forward to instead.
+					// produces nonsense — so it goes to a merge dream. And a
+					// merge dream is a *dream*: what comes back is a branch with
+					// a report, reviewed and remembered through the ordinary
+					// gate, never fast-forwarded in the same breath. An earlier
+					// version applied it immediately, which left no moment at
+					// which anyone could read the report it had just written.
 					const merged = await options.resolve(error);
 					result.notes.push(...merged.notes);
 					if (!merged.ok || merged.branch === undefined) {
 						result.problems.push(...merged.problems, error.message);
 						return result;
 					}
-					current = merged.branch;
-					result.merged = current;
-					result.rebased = true;
-					continue;
+					result.pending = merged.branch;
+					result.notes.push(
+						`${merged.branch} is staged, not applied — review it with \`dreams\` and apply it with \`dreams remember ${merged.branch.slice("dream/".length)}\``,
+					);
+					return result;
 				}
 			}
 			try {
@@ -292,10 +304,13 @@ async function applyRemember(
 		result.ok = true;
 		// The branch has served its purpose: its commit is on `main` and the
 		// report is the record. Leaving it would make `/muninn dreams` list
-		// dreams that are already remembered as if they were pending.
+		// dreams that are already remembered as if they were pending. A
+		// remembered merge also subsumes the dream it merged, so that branch
+		// goes with it — its work is contained in the merge, and listing it as
+		// pending would invite remembering it twice.
 		await deleteBranch(options, branch, result);
-		if (result.merged !== undefined && result.merged !== branch) {
-			await deleteBranch(options, result.merged, result);
+		if (branch.endsWith("-merge")) {
+			await deleteBranch(options, branch.slice(0, -"-merge".length), result);
 		}
 		return result;
 	} catch (error) {
@@ -602,18 +617,22 @@ export async function resolveConflict(conflict: RebaseConflict, options: Resolve
 		// and throwing away every per-host watermark the dreams had accumulated.
 		// The merged dream's own report rode the rebase and is in the worktree;
 		// its watermark, and its held-out list, are this merge's too.
+		// *Joined* with the newest report already on the store's branch, per host,
+		// never replaced by either side alone. The conflict exists because both
+		// sides dreamed — an older host-A dream resolving against a main that
+		// already remembered a newer host-B dream would otherwise stamp the merge
+		// with A's watermark and drop B's cursor entirely, and the next dream
+		// would re-offer everything B had consumed. Each side's cursor is proof
+		// of consumption; the furthest proven point wins per host.
+		const onMain = latestReport(scope.path);
 		const mergedReport = readReportFile(storeP, dreamStampMerged);
+		report.journalThrough = joinWatermarks(onMain?.journalThrough ?? {}, mergedReport?.journalThrough ?? {});
 		if (mergedReport !== undefined) {
-			report.journalThrough = mergedReport.journalThrough;
 			report.heldOut = mergedReport.heldOut;
 			if (mergedReport.previousInputHead !== undefined) report.previousInputHead = mergedReport.previousInputHead;
 		} else {
-			// Without it, the safe watermark is the one already on the store's
-			// branch: never advanced past, never reset.
-			const previous = latestReport(scope.path);
-			if (previous !== undefined) report.journalThrough = previous.journalThrough;
 			resolution.notes.push(
-				`the report of ${conflict.branch} could not be read; its watermark was carried from ${previous?.stamp ?? "nowhere"}`,
+				`the report of ${conflict.branch} could not be read; its watermark was carried from ${onMain?.stamp ?? "nowhere"}`,
 			);
 		}
 		for (const entry of settled) {
@@ -828,6 +847,19 @@ async function storePrefix(scope: ActiveScope): Promise<string> {
 /** A repo-root-relative path, as the store sees it. */
 function storeRelative(path: string, prefix: string): string {
 	return prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path;
+}
+
+/** Per-host maximum of two watermarks: the furthest cursor either side proved consumed. */
+function joinWatermarks(
+	a: Readonly<Record<string, string>>,
+	b: Readonly<Record<string, string>>,
+): Record<string, string> {
+	const joined: Record<string, string> = { ...a };
+	for (const [host, id] of Object.entries(b)) {
+		const current = joined[host];
+		if (current === undefined || current < id) joined[host] = id;
+	}
+	return joined;
 }
 
 /** A dream's report as it stands in a worktree, or nothing. */

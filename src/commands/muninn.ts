@@ -71,7 +71,10 @@ export interface CommandRuntime {
 	 */
 	dream(options: { scope?: CaptureTarget; progress: (phase: string) => void }): Promise<DreamOutcome>;
 	dreams(scope: CaptureTarget): Promise<DreamListing[]>;
-	remember(scope: CaptureTarget, stamp: string): Promise<{ ok: boolean; problems: string[]; notes: string[] }>;
+	remember(
+		scope: CaptureTarget,
+		stamp: string,
+	): Promise<{ ok: boolean; pending?: string; problems: string[]; notes: string[] }>;
 	forget(scope: CaptureTarget, stamp: string): Promise<{ ok: boolean; problems: string[]; notes: string[] }>;
 	erase(
 		scope: CaptureTarget,
@@ -447,6 +450,12 @@ async function runDreamsCommand(args: string, runtime: CommandRuntime): Promise<
 
 	const result = action === "remember" ? await runtime.remember(target, stamp) : await runtime.forget(target, stamp);
 	const lines = [...result.notes.map((note) => `  ${note}`), ...result.problems.map((problem) => `  ! ${problem}`)];
+	const pending = "pending" in result ? result.pending : undefined;
+	if (pending !== undefined) {
+		// The conflict was settled into a merge dream, which goes through the
+		// ordinary gate: nothing applied yet, nothing failed either.
+		return { level: "info", text: [`muninn: ${stamp} needed a merge dream`, ...lines].join("\n") };
+	}
 	if (!result.ok) return { level: "error", text: [`muninn: could not ${action} ${stamp}`, ...lines].join("\n") };
 	return {
 		level: "info",

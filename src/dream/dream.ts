@@ -99,7 +99,7 @@ export const PHASES = ["orient", "gather", "consolidate", "lint", "commit"] as c
  */
 export async function dream(options: DreamOptions): Promise<DreamResult> {
 	const { scope, host, now } = options;
-	const stamp = dreamStamp(now, host.name);
+	const stamp = dreamStamp(now, host);
 	const branch = dreamBranch(stamp);
 	const report = emptyReport({ stamp, scope: scope.scope, host: host.name, started: now.toISOString() });
 	const problems: string[] = [];

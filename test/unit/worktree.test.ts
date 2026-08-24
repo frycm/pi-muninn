@@ -229,12 +229,24 @@ describe("dream worktrees", () => {
 describe("naming", () => {
 	it("keys a branch and its report by the same host-qualified stamp", () => {
 		// The host is part of the identity: two hosts dreaming the same synced
-		// store in the same minute is the normal case, and a bare timestamp made
-		// them one dream — one listing key and, worse, one report file.
-		const stamp = dreamStamp(new Date("2026-08-23T03:04:05.678Z"), "Martin's MBP.local");
-		expect(stamp).toBe("martin-s-mbp-local/2026-08-23T03-04");
-		expect(dreamBranch(stamp)).toBe("dream/martin-s-mbp-local/2026-08-23T03-04");
-		expect(dreamBranch(stamp, true)).toBe("dream/martin-s-mbp-local/2026-08-23T03-04-merge");
+		// store at the same moment is the normal case, and a bare timestamp made
+		// them one dream — one listing key and, worse, one report file. A display
+		// name is not an identity either — two "mbp"s collide routinely — so the
+		// stable host id contributes a fragment; and a minute is not a moment, so
+		// the timestamp carries seconds.
+		const identity = { id: "0198a0b1-2222-7000-8000-000000000001", name: "Martin's MBP.local" };
+		const stamp = dreamStamp(new Date("2026-08-23T03:04:05.678Z"), identity);
+		expect(stamp).toBe("martin-s-mbp-local-0198a0b1/2026-08-23T03-04-05");
+		expect(dreamBranch(stamp)).toBe("dream/martin-s-mbp-local-0198a0b1/2026-08-23T03-04-05");
+		expect(dreamBranch(stamp, true)).toBe("dream/martin-s-mbp-local-0198a0b1/2026-08-23T03-04-05-merge");
+
+		// Same second, different stable ids, same display name: two dreams.
+		const twin = { id: "0198ffff-2222-7000-8000-000000000002", name: "Martin's MBP.local" };
+		expect(dreamStamp(new Date("2026-08-23T03:04:05.678Z"), twin)).not.toBe(stamp);
+		// Same host, one minute apart at second resolution: two dreams.
+		expect(dreamStamp(new Date("2026-08-23T03:04:59.000Z"), identity)).not.toBe(
+			dreamStamp(new Date("2026-08-23T03:04:01.000Z"), identity),
+		);
 	});
 
 	it("reduces a host name to something git will accept as a branch", () => {

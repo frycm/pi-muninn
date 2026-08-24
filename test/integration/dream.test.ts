@@ -103,7 +103,7 @@ describe("/muninn dream through pi", () => {
 		const store = projectStore();
 		// The full host-qualified stamp, from the branch line: `dream/<host>/<ts>`.
 		const fullStamp = (
-			dreamt.stderr.match(/dream\/([a-z0-9-]+\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2})/) as RegExpMatchArray
+			dreamt.stderr.match(/dream\/([a-z0-9-]+\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})/) as RegExpMatchArray
 		)[1] as string;
 		const stamp = fullStamp.slice(fullStamp.indexOf("/") + 1);
 

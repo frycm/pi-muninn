@@ -36,19 +36,24 @@ const TRAILER = /^Muninn-Dream:\s*(\S+)\s*$/m;
 const UNIT = "\x1f";
 const RECORD = "\x1e";
 
-/** Commits on the store's branch that were dreams, keyed by stamp. */
-export async function rememberedDreams(storePath: string, limit = 500): Promise<Map<string, string>> {
+/**
+ * Commits on the store's branch that were dreams, keyed by stamp.
+ *
+ * `wanted` narrows the walk to commits mentioning one stamp, which is how a
+ * targeted lookup stays exact however deep the history is; without it the walk
+ * is grep-limited to dream commits, so the cap counts dreams and not whatever
+ * journal traffic surrounds them.
+ */
+export async function rememberedDreams(storePath: string, limit = 500, wanted?: string): Promise<Map<string, string>> {
 	const found = new Map<string, string>();
 	// The store's own branch, not the literal "main": an in-repo store lives in
 	// the user's project and is on whatever branch they are.
 	const branch = (await currentBranch(storePath)) ?? STORE_BRANCH;
 	let stdout: string;
 	try {
-		// Grep-limited: the walk counts *matching* commits, so "the last 500
-		// dreams" is a question about dreams. Without it, routine journal
-		// commits pushed an older remembered dream out of the window and the
-		// listing called it unremembered — and `forget` could not find it.
-		stdout = (await git(storePath, { kind: "log-entries", ref: branch, limit, grep: "Muninn-Dream:" })).stdout;
+		// `--grep` takes a basic regex; a stamp's dots must match themselves.
+		const grep = wanted === undefined ? "Muninn-Dream:" : `Muninn-Dream: .*${wanted.replace(/[.\\]/g, "\\$&")}`;
+		stdout = (await git(storePath, { kind: "log-entries", ref: branch, limit, grep })).stdout;
 	} catch {
 		return found;
 	}
@@ -223,12 +228,14 @@ async function applyForget(
 		return result;
 	}
 
-	const remembered = await rememberedDreams(scope.path);
-	// Resolve a bare timestamp to the full host-qualified stamp: the report path
-	// is derived from it, so a partial match has to be completed, not just found
-	// — and an *ambiguous* one has to be refused. Two hosts dreaming the same
-	// minute is the design's normal case, and "first match wins" would revert
-	// whichever host's dream the log happened to yield first.
+	// The lookup greps for *this* stamp rather than walking the newest N dream
+	// commits: a listing may reasonably cap what it shows, but "forget this
+	// specific dream" must find it however many dreams came after — a store's
+	// 501st dream must not make its first unforgettable. Resolution of a bare
+	// timestamp still refuses ambiguity: two hosts dreaming the same minute is
+	// the design's normal case, and "first match wins" would revert whichever
+	// dream the log yielded first.
+	const remembered = await rememberedDreams(scope.path, 100_000, stamp);
 	const exact = remembered.has(stamp) ? ([stamp, remembered.get(stamp) as string] as const) : undefined;
 	const suffix = [...remembered.entries()].filter(([key]) => key.endsWith(`/${stamp}`));
 	if (exact === undefined && suffix.length > 1) {

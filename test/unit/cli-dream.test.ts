@@ -52,7 +52,7 @@ describe("muninn dream", () => {
 		const result = await runCli(["dream", "--scope", "global"], cwd);
 		expect(result.code).toBe(0);
 		expect(result.err.join("\n")).toContain("dream.model is not set");
-		expect(result.out.join("\n")).toContain("dream/mbp/");
+		expect(result.out.join("\n")).toContain("dream/mbp-");
 		expect(result.out.join("\n")).toContain("muninn dreams remember");
 	}, 30_000);
 
@@ -80,7 +80,9 @@ describe("muninn dreams", () => {
 
 		const listed = await runCli(["dreams", "--scope", "global"], cwd);
 		expect(listed.out.join("\n")).toContain("pending");
-		const stamp = (listed.out.join("\n").match(/(\d{4}-\d{2}-\d{2}T\d{2}-\d{2})/) as RegExpMatchArray)[1] as string;
+		const stamp = (
+			listed.out.join("\n").match(/(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})/) as RegExpMatchArray
+		)[1] as string;
 
 		const remembered = await runCli(["dreams", "remember", stamp, "--scope", "global"], cwd);
 		expect(remembered.code).toBe(0);

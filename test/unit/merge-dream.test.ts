@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resetCommitDebounce } from "../../src/capture/commit.ts";
 import { dream } from "../../src/dream/dream.ts";
+import { listDreams } from "../../src/dream/dreams.ts";
 import type { DreamModel } from "../../src/dream/model.ts";
 import { latestReport } from "../../src/dream/orient.ts";
 import { remember, resolveConflict } from "../../src/dream/remember.ts";
@@ -118,10 +119,20 @@ describe("two dreams that rewrote the same topic", () => {
 				}),
 		});
 
+		// Staged, not applied: a merge dream goes through the ordinary gate.
 		expect(result.problems).toEqual([]);
-		expect(result.ok).toBe(true);
-		expect(result.merged).toContain("-merge");
-		expect(result.notes.join(" ")).toMatch(/residue pair\(s\) settled|merged/);
+		expect(result.ok).toBe(false);
+		expect(result.pending).toContain("-merge");
+		expect(result.notes.join(" ")).toContain("staged, not applied");
+
+		// The report is reviewable before anything moves.
+		const staged = (await listDreams(storePath)).find((entry) => entry.stamp.endsWith("-merge"));
+		expect(staged?.remembered).toBe(false);
+		expect(staged?.report).toBeDefined();
+
+		const applied = await remember({ scope, agentDir, host, branch: result.pending as string });
+		expect(applied.problems).toEqual([]);
+		expect(applied.ok).toBe(true);
 
 		// One coherent result, both sides' facts accounted for — kept or
 		// superseded, never silently dropped.
@@ -168,7 +179,9 @@ describe("two dreams that rewrote the same topic", () => {
 				}),
 		});
 		expect(result.problems).toEqual([]);
-		expect(result.ok).toBe(true);
+		expect(result.pending).toBeDefined();
+		const applied = await remember({ scope, agentDir, host, branch: result.pending as string });
+		expect(applied.ok).toBe(true);
 
 		// Both dreams' topics stand, and MEMORY.md lists them both — the whole
 		// dream diff survived the merge, not just the conflicted files.
@@ -204,7 +217,8 @@ describe("two dreams that rewrote the same topic", () => {
 					now: new Date("2026-08-23T05:00:00Z"),
 				}),
 		});
-		expect(result.ok).toBe(true);
+		expect(result.pending).toBeDefined();
+		expect((await remember({ scope, agentDir, host, branch: result.pending as string })).ok).toBe(true);
 
 		const latest = latestReport(storePath);
 		expect(latest?.stamp).toContain("-merge");
@@ -213,6 +227,52 @@ describe("two dreams that rewrote the same topic", () => {
 		// And the next dream's range really does start there: nothing to gather.
 		const third = await dream(options(new Date("2026-08-23T06:00:00Z"), citing("Anything.")));
 		expect(third.report.gathered.join(" ")).toContain("0 entry/entries in range");
+	}, 60_000);
+
+	it("joins per-host watermarks instead of letting one side's replace the other's", async () => {
+		// Host A's older dream resolves against a main that already remembered
+		// host B's newer one. Stamping the merge with A's watermark alone drops
+		// B's cursor, and the next dream re-offers everything B consumed.
+		await note("Tests need pnpm test --run.");
+		const hostB: HostIdentity = { id: newHostId(), name: "ops", createdAt: "2026-08-01" };
+
+		const dreamA = await dream(options(new Date("2026-08-23T03:00:00Z"), citing("Tests need --run.")));
+		// B observes something of its own, then dreams and is remembered first.
+		await appendEntry(
+			{ source: "user", prose: "B's note.", claims: ["Watch mode hangs CI."], cue: "the tests" },
+			{ storePath, hostId: hostB.id },
+		);
+		resetCommitDebounce();
+		const dreamB = await dream({
+			...options(new Date("2026-08-23T04:00:00Z"), citing("Watch mode hangs CI.")),
+			host: hostB,
+		});
+		expect((await remember({ scope, agentDir, host: hostB, branch: dreamB.branch })).ok).toBe(true);
+		expect(dreamB.report.journalThrough[hostB.id]).toBeDefined();
+
+		// Now A's dream — cut before B's entry existed — resolves its conflict.
+		const staged = await remember({
+			scope,
+			agentDir,
+			host,
+			branch: dreamA.branch,
+			resolve: (conflict) =>
+				resolveConflict(conflict, {
+					scope,
+					agentDir,
+					host,
+					storeId: "s",
+					model: merger,
+					settings: DEFAULT_SETTINGS,
+					now: new Date("2026-08-23T05:00:00Z"),
+				}),
+		});
+		expect(staged.pending).toBeDefined();
+
+		const listed = await listDreams(storePath);
+		const merge = listed.find((entry) => entry.stamp.endsWith("-merge"));
+		expect(merge?.report?.journalThrough[hostB.id]).toBe(dreamB.report.journalThrough[hostB.id]);
+		expect(merge?.report?.journalThrough[host.id]).toBe(dreamA.report.journalThrough[host.id]);
 	}, 60_000);
 
 	it("reports the conflict rather than guessing when there is no model to settle it", async () => {
@@ -285,7 +345,10 @@ describe("two dreams that rewrote the same topic", () => {
 				}),
 		});
 		expect(result.problems).toEqual([]);
-		expect(result.ok).toBe(true);
+		expect(result.pending).toBeDefined();
+		const applied = await remember({ scope: inRepo, agentDir, host, branch: result.pending as string });
+		expect(applied.problems).toEqual([]);
+		expect(applied.ok).toBe(true);
 		// And the project's own files were never part of it.
 		expect(readFileSync(join(toplevel, "README.md"), "utf-8")).toBe("# project\n");
 	}, 60_000);

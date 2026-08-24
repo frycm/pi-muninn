@@ -70,6 +70,21 @@ export interface EraseResult {
 	notes: string[];
 }
 
+/** Point `origin` at the configured destination, whether or not one survives. */
+async function ensureRemote(storePath: string, url: string): Promise<void> {
+	try {
+		const current = (await git(storePath, { kind: "remote-get-url", name: "origin" })).stdout.trim();
+		if (current === url) return;
+		await git(storePath, { kind: "remote-set-url", name: "origin", url });
+	} catch {
+		await git(storePath, { kind: "remote-add", name: "origin", url });
+	}
+}
+
+function describeGitError(error: unknown): string {
+	return error instanceof GitError ? error.stderr.trim().split("\n")[0] || error.message : String(error);
+}
+
 /** Whether `git-filter-repo` is on the PATH. */
 export async function hasFilterRepo(cwd: string): Promise<boolean> {
 	try {
@@ -207,14 +222,25 @@ async function applyErase(options: EraseOptions, result: EraseResult): Promise<E
 		}
 		if (options.remote !== undefined) {
 			try {
+				// `git-filter-repo` removes the origin remote as part of its own
+				// safety story, so the configured destination is re-established
+				// before the push rather than assumed to have survived.
+				await ensureRemote(scope.path, options.remote);
 				const branch = (await currentBranch(scope.path)) ?? STORE_BRANCH;
 				await git(scope.path, { kind: "push-force", remote: "origin", branch });
-				result.notes.push("force-pushed the rewritten history to origin");
+				result.notes.push("force-pushed the rewritten history to the configured remote");
 			} catch (error) {
-				result.notes.push(
-					`the rewritten history was not pushed: ${error instanceof GitError ? error.stderr.trim().split("\n")[0] : String(error)}. ` +
-						"Other clones still hold the erased bytes until it is.",
+				// A requested propagation that failed is a *failure*, not a note:
+				// the caller asked for the bytes to be gone everywhere, the
+				// remote still serves them to every clone, and an ok exit from
+				// cron would say otherwise. The local store is erased and stays
+				// erased; the message says exactly what remains.
+				result.problems.push(
+					`the local history was rewritten but the remote was not: ${describeGitError(error)}. ` +
+						"The remote — and every clone of it — still holds the erased bytes. " +
+						"`muninn sync` will not fix this — it never force-pushes. Re-run the erase once the remote is reachable.",
 				);
+				return result;
 			}
 		}
 	} else {

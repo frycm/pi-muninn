@@ -59,7 +59,7 @@ describe("a dream is a branch, and the store is untouched", () => {
 		const result = await dream({ ...options(), progress: (phase) => phases.push(phase) });
 
 		expect(result.ok).toBe(true);
-		expect(result.branch).toBe("dream/mbp/2026-08-23T03-00");
+		expect(result.branch).toBe(`dream/mbp-${host.id.slice(0, 8)}/2026-08-23T03-00-00`);
 		expect(phases).toEqual(["orient", "gather", "consolidate", "lint", "commit"]);
 
 		// `input_head` names the commit the worktree was cut from — and the
@@ -82,7 +82,7 @@ describe("a dream is a branch, and the store is untouched", () => {
 				cwd: storePath,
 			},
 		);
-		expect(branchLog).toContain("dreams/mbp/2026-08-23T03-00.md");
+		expect(branchLog).toContain(`dreams/mbp-${host.id.slice(0, 8)}/2026-08-23T03-00-00.md`);
 		expect(branchLog).toContain(`Muninn-Input-Head: ${after}`);
 	});
 

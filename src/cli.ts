@@ -353,6 +353,9 @@ async function runDreams(
 	for (const note of result.notes) out.push(`  ${note}`);
 	for (const problem of result.problems) err.push(`  ! ${problem}`);
 	if (result.ok) out.push(`  remembered ${stamp}; the new MEMORY.md is read by the next session`);
+	// A staged merge is not a failure: the conflict was settled, the result is
+	// waiting for review, and a cron job has nothing to alarm about.
+	if (result.pending !== undefined) return 0;
 	return result.ok ? 0 : 1;
 }
 
