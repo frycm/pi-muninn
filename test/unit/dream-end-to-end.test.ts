@@ -264,6 +264,26 @@ describe("the watermark advances only over consumed work", () => {
 	});
 });
 
+describe("a model that answers 'keep everything' still consumes its evidence", () => {
+	it("advances the watermark past a job that legitimately changed nothing", async () => {
+		// A no-op reply is a completed job: the entries were considered and found
+		// to add nothing. Treating "changed nothing" as "did not run" rebuilt the
+		// identical job on every dream, got the identical no-op answer, and the
+		// watermark never advanced past that host's first entry — a livelock with
+		// a model bill.
+		await note("Something the model deems unremarkable.", "the tests");
+		const keeper: DreamModel = { id: "test/keeper", complete: async () => "```json\n[]\n```" };
+
+		const first = await dream(options(new Date("2026-08-23T03:00:00Z"), keeper));
+		expect(first.ok).toBe(true);
+		expect(first.report.skipped).toEqual([]);
+		await git(storePath, { kind: "merge-ff-only", ref: first.branch });
+
+		const second = await dream(options(new Date("2026-08-24T03:00:00Z"), keeper));
+		expect(second.report.gathered.join(" ")).toContain("0 entry/entries in range");
+	});
+});
+
 describe("what a dream withholds comes back", () => {
 	it("consolidates a held-out task once it is no longer among the most recent", async () => {
 		// The hold-out is chronological: a group withheld today is consolidated

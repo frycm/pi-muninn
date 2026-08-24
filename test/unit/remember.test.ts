@@ -272,6 +272,31 @@ describe("forget", () => {
 		expect(readFileSync(join(storePath, "MEMORY.md"), "utf-8")).not.toContain("<<<<<<<");
 	});
 
+	it("refuses a bare timestamp that names two hosts' dreams", async () => {
+		// Two hosts dreaming the same synced store in the same minute is the
+		// design's normal case. "First match wins" would revert whichever dream
+		// the log happened to yield first — silently, and possibly the wrong one.
+		await note("A note.");
+		const now = new Date("2026-08-23T03:00:00Z");
+		const first = await dream(options(now));
+		await remember({ scope, agentDir, host, branch: first.branch });
+
+		const other: HostIdentity = { id: newHostId(), name: "ops", createdAt: "2026-08-01" };
+		await note("Another note.");
+		const second = await dream({ ...options(now), host: other });
+		await remember({ scope, agentDir, host: other, branch: second.branch });
+
+		const bare = first.stamp.slice(first.stamp.indexOf("/") + 1);
+		const ambiguous = await forget({ scope, host, stamp: bare, now: new Date("2026-08-25T09:00:00Z") });
+		expect(ambiguous.ok).toBe(false);
+		expect(ambiguous.problems.join(" ")).toContain("ambiguous");
+
+		// The full host-qualified stamp is never ambiguous.
+		const exact = await forget({ scope, host, stamp: second.stamp, now: new Date("2026-08-25T09:00:00Z") });
+		expect(exact.problems).toEqual([]);
+		expect(exact.ok).toBe(true);
+	}, 60_000);
+
 	it("refuses to forget something that was never remembered", async () => {
 		const result = await forget({ scope, host, stamp: "2026-01-01T00-00", now: new Date() });
 		expect(result.ok).toBe(false);

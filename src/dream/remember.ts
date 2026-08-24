@@ -24,7 +24,7 @@
  * checked out.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
 import { currentBranch, DERIVED_PATHS, GitError, type GitIdentity, git, hasChanges } from "../git.ts";
 import { claimsOf, type Source } from "../journal/format.ts";
@@ -34,6 +34,7 @@ import type { MuninnSettings } from "../settings.ts";
 import type { HostIdentity } from "../store/host.ts";
 import { STORE_BRANCH, storeIdentity } from "../store/init.ts";
 import { LockBusyError, withStoreLock } from "../store/lock.ts";
+import { canonicalPath } from "../store/paths.ts";
 import type { ActiveScope } from "../store/scopes.ts";
 import { allFacts, formatTopic, parseTopic } from "../topics/format.ts";
 import { allClaimIds, echoClaims, runningDream } from "./dream.ts";
@@ -41,8 +42,8 @@ import { lint } from "./lint.ts";
 import { buildMemory } from "./memory-md.ts";
 import { mergeDream, mergeTopic } from "./merge.ts";
 import type { DreamModel } from "./model.ts";
-import { orient } from "./orient.ts";
-import { emptyReport, formatReport, reportPath } from "./report.ts";
+import { latestReport, orient } from "./orient.ts";
+import { emptyReport, formatReport, parseReport, reportPath } from "./report.ts";
 import { collectWorktrees, createWorktree, repositoryFor, worktreeRoot } from "./worktree.ts";
 
 /**
@@ -242,6 +243,7 @@ async function applyRemember(
 		// spin holding the lock. A merge dream replaces the branch being applied,
 		// so the loop runs over `current` rather than the branch asked for.
 		let current = branch;
+		let applied = false;
 		for (let attempt = 0; attempt < 3; attempt++) {
 			if (!(await isDescendant(scope.path, current, mainSha))) {
 				try {
@@ -274,7 +276,16 @@ async function applyRemember(
 				result.notes.push("main moved during remember; retried once");
 				continue;
 			}
+			applied = true;
 			break;
+		}
+		if (!applied) {
+			// Every attempt ended in a retry. Unreachable as far as anyone can
+			// construct today — but a loop that falls through to "ok" on
+			// exhaustion is a loop whose next refactor makes it reachable, and
+			// then a remember reports success while `main` never moved.
+			result.problems.push("the remember could not be applied after three attempts");
+			return result;
 		}
 
 		result.sha = (await git(scope.path, { kind: "rev-parse", target: "HEAD" })).stdout.trim();
@@ -490,10 +501,16 @@ export async function resolveConflict(conflict: RebaseConflict, options: Resolve
 	const { scope } = options;
 
 	// Refused before anything is built: a rule is followed, not just recalled,
-	// so a rules conflict waits for a human whatever else is in the pile.
-	const untouchable = conflict.paths.filter(
-		(path) => path === "rules.md" || path.startsWith("skills/") || path.startsWith("journal/"),
-	);
+	// so a rules conflict waits for a human whatever else is in the pile. The
+	// paths are repo-root-relative — `git status` reports them that way even
+	// when run from a subdirectory — so for an in-repo store, whose files sit
+	// under a prefix inside the user's repository, they are classified with the
+	// prefix stripped. Without that, every in-repo conflict fell through every
+	// check and the resolver could settle nothing at all.
+	const conflictPrefix = await storePrefix(scope);
+	const untouchable = conflict.paths
+		.map((path) => storeRelative(path, conflictPrefix))
+		.filter((path) => path === "rules.md" || path.startsWith("skills/") || path.startsWith("journal/"));
 	if (untouchable.length > 0) {
 		resolution.problems.push(`${untouchable.join(", ")} must be resolved by hand, not by a merge dream`);
 		return resolution;
@@ -521,12 +538,13 @@ export async function resolveConflict(conflict: RebaseConflict, options: Resolve
 
 	try {
 		const settled: Array<{ topic: string; residue: number; added: string[] }> = [];
+		const prefix = conflictPrefix;
 
 		try {
 			await git(storeP, { kind: "rebase", onto }, scope.inRepo ? {} : { identity: storeIdentity(options.host) });
 			resolution.notes.push(`${conflict.branch} rebased cleanly onto ${onto} on the second look`);
 		} catch {
-			const outcome = await resolveRebaseStops(storeP, options, resolution, settled);
+			const outcome = await resolveRebaseStops(storeP, prefix, options, resolution, settled);
 			if (!outcome) {
 				await git(storeP, { kind: "rebase-abort" }).catch(() => undefined);
 				return resolution;
@@ -564,7 +582,8 @@ export async function resolveConflict(conflict: RebaseConflict, options: Resolve
 		// The merge's own report: what was settled, by what, and how lint judged
 		// it — committed on the branch, so the merge is reviewable and
 		// forgettable exactly like the dream it merges.
-		const stamp = `${conflict.branch.slice("dream/".length)}-merge`;
+		const dreamStampMerged = conflict.branch.slice("dream/".length);
+		const stamp = `${dreamStampMerged}-merge`;
 		const report = emptyReport({
 			stamp,
 			scope: scope.scope,
@@ -575,6 +594,28 @@ export async function resolveConflict(conflict: RebaseConflict, options: Resolve
 		report.inputHead = (await git(scope.path, { kind: "rev-parse", target: "HEAD" })).stdout.trim();
 		report.finished = options.now.toISOString();
 		report.notes.push(`merge of ${conflict.branch} onto ${onto}`);
+
+		// The watermark travels with the merge. Its report is the newest complete
+		// one once remembered, so `orient` reads the next range from *it* — and a
+		// merge report with an empty `journal_through` would range the next dream
+		// over the entire journal history, re-offering years of consumed entries
+		// and throwing away every per-host watermark the dreams had accumulated.
+		// The merged dream's own report rode the rebase and is in the worktree;
+		// its watermark, and its held-out list, are this merge's too.
+		const mergedReport = readReportFile(storeP, dreamStampMerged);
+		if (mergedReport !== undefined) {
+			report.journalThrough = mergedReport.journalThrough;
+			report.heldOut = mergedReport.heldOut;
+			if (mergedReport.previousInputHead !== undefined) report.previousInputHead = mergedReport.previousInputHead;
+		} else {
+			// Without it, the safe watermark is the one already on the store's
+			// branch: never advanced past, never reset.
+			const previous = latestReport(scope.path);
+			if (previous !== undefined) report.journalThrough = previous.journalThrough;
+			resolution.notes.push(
+				`the report of ${conflict.branch} could not be read; its watermark was carried from ${previous?.stamp ?? "nowhere"}`,
+			);
+		}
 		for (const entry of settled) {
 			report.consolidated.push({ topic: entry.topic, added: entry.added.length, superseded: 0, addedIds: entry.added });
 			report.notes.push(`${entry.topic}: ${entry.residue} residue pair(s) settled by a merge dream`);
@@ -636,6 +677,7 @@ export async function resolveConflict(conflict: RebaseConflict, options: Resolve
  */
 async function resolveRebaseStops(
 	storeP: string,
+	prefix: string,
 	options: ResolveOptions,
 	resolution: MergeResolution,
 	settled: Array<{ topic: string; residue: number; added: string[] }>,
@@ -644,7 +686,11 @@ async function resolveRebaseStops(
 		const conflicts = await conflictedPaths(storeP);
 		if (conflicts.length === 0) return true;
 
-		for (const path of conflicts) {
+		for (const fullPath of conflicts) {
+			// `git status` reports repo-root-relative paths whatever directory it
+			// runs in; classification happens store-relative, stages are read by
+			// the full path, and writes land at the store-relative one.
+			const path = storeRelative(fullPath, prefix);
 			if (path.startsWith("journal/")) {
 				// Per-host files make this impossible by construction.
 				resolution.problems.push(`a conflict in ${path} is a bug to report, not something to resolve`);
@@ -657,21 +703,21 @@ async function resolveRebaseStops(
 			if (path === "MEMORY.md") {
 				// Derived; regenerated after the rebase. The store's side stands
 				// in so the rebase can continue.
-				const ours = await stageOf(storeP, 2, path);
+				const ours = await stageOf(storeP, 2, fullPath);
 				writeFileSync(join(storeP, path), ours ?? "");
 				continue;
 			}
 			if (path === "supersessions.md") {
 				// Append-only, so the union is always right and never a loss.
-				const ours = parseSupersessions((await stageOf(storeP, 2, path)) ?? "");
-				const theirs = parseSupersessions((await stageOf(storeP, 3, path)) ?? "");
+				const ours = parseSupersessions((await stageOf(storeP, 2, fullPath)) ?? "");
+				const theirs = parseSupersessions((await stageOf(storeP, 3, fullPath)) ?? "");
 				const rows = [...ours.byClaim.values(), ...theirs.byClaim.values()];
 				writeFileSync(join(storeP, path), "");
 				appendSupersessions(storeP, rows);
 				continue;
 			}
 			if (path.startsWith("topics/") && path.endsWith(".md")) {
-				const settledTopic = await settleTopic(storeP, path, options, resolution);
+				const settledTopic = await settleTopic(storeP, path, fullPath, options, resolution);
 				if (settledTopic === undefined) return false;
 				settled.push(settledTopic);
 				continue;
@@ -701,13 +747,14 @@ async function resolveRebaseStops(
 async function settleTopic(
 	storeP: string,
 	path: string,
+	fullPath: string,
 	options: ResolveOptions,
 	resolution: MergeResolution,
 ): Promise<{ topic: string; residue: number; added: string[] } | undefined> {
 	const slug = path.slice("topics/".length, -".md".length);
-	const base = parseTopic((await stageOf(storeP, 1, path)) ?? "", slug);
-	const ours = parseTopic((await stageOf(storeP, 2, path)) ?? "", slug);
-	const theirs = parseTopic((await stageOf(storeP, 3, path)) ?? "", slug);
+	const base = parseTopic((await stageOf(storeP, 1, fullPath)) ?? "", slug);
+	const ours = parseTopic((await stageOf(storeP, 2, fullPath)) ?? "", slug);
+	const theirs = parseTopic((await stageOf(storeP, 3, fullPath)) ?? "", slug);
 
 	const merged = mergeTopic({ base, ours, theirs });
 	resolution.notes.push(...merged.notes.map((note) => `${slug}: ${note}`));
@@ -757,8 +804,39 @@ async function settleTopic(
 	}
 
 	mkdirSync(join(storeP, "topics"), { recursive: true });
-	writeFileSync(join(storeP, path.slice("topics/".length) === "" ? path : `topics/${slug}.md`), formatTopic(file));
+	writeFileSync(join(storeP, "topics", `${slug}.md`), formatTopic(file));
 	return { topic: slug, residue: merged.residue.length, added };
+}
+
+/**
+ * The store's location inside its repository, as a path prefix ending in `/`.
+ *
+ * Empty for a store that is its own repository. Canonical on both sides, the
+ * same as the worktree module's narrowing — the toplevel git reports is the
+ * path the filesystem opens, which on macOS is not the string the store's own
+ * path says.
+ */
+async function storePrefix(scope: ActiveScope): Promise<string> {
+	if (!scope.inRepo) return "";
+	const repo = await repositoryFor(scope);
+	const root = canonicalPath(repo);
+	const store = canonicalPath(scope.path);
+	if (root === undefined || store === undefined || root === store) return "";
+	return `${relative(root, store).split(sep).join("/")}/`;
+}
+
+/** A repo-root-relative path, as the store sees it. */
+function storeRelative(path: string, prefix: string): string {
+	return prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path;
+}
+
+/** A dream's report as it stands in a worktree, or nothing. */
+function readReportFile(storePath: string, stamp: string) {
+	try {
+		return parseReport(readFileSync(join(storePath, reportPath(stamp)), "utf-8"), stamp);
+	} catch {
+		return undefined;
+	}
 }
 
 /** A conflicted file's content at an index stage, or nothing when the side lacks it. */

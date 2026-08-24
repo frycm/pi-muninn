@@ -225,11 +225,17 @@ async function applyForget(
 
 	const remembered = await rememberedDreams(scope.path);
 	// Resolve a bare timestamp to the full host-qualified stamp: the report path
-	// is derived from it, so a partial match has to be completed, not just found.
-	const match =
-		remembered.has(stamp) && stamp.includes("/")
-			? ([stamp, remembered.get(stamp) as string] as const)
-			: [...remembered.entries()].find(([key]) => key === stamp || key.endsWith(`/${stamp}`));
+	// is derived from it, so a partial match has to be completed, not just found
+	// — and an *ambiguous* one has to be refused. Two hosts dreaming the same
+	// minute is the design's normal case, and "first match wins" would revert
+	// whichever host's dream the log happened to yield first.
+	const exact = remembered.has(stamp) ? ([stamp, remembered.get(stamp) as string] as const) : undefined;
+	const suffix = [...remembered.entries()].filter(([key]) => key.endsWith(`/${stamp}`));
+	if (exact === undefined && suffix.length > 1) {
+		result.problems.push(`"${stamp}" is ambiguous: ${suffix.map(([key]) => key).join(", ")}`);
+		return result;
+	}
+	const match = exact ?? suffix[0];
 	if (match === undefined) {
 		result.problems.push(`no remembered dream ${stamp} in this store`);
 		return result;

@@ -329,8 +329,9 @@ async function runPhases(options: DreamOptions, context: LockedContext, prepared
 
 		progress?.("consolidate");
 		report.model = options.model?.id ?? "none";
+		let ran = new Set<string>();
 		if (options.model !== undefined) {
-			await consolidateAll(worktree.storePath, gathered, orientation, options, report);
+			ran = await consolidateAll(worktree.storePath, gathered, orientation, options, report);
 		} else if (gathered.jobs.length > 0) {
 			report.notes.push(`${gathered.jobs.length} topic(s) had new evidence but no dreamer model was configured`);
 		}
@@ -343,11 +344,7 @@ async function runPhases(options: DreamOptions, context: LockedContext, prepared
 		// as seen would drop them out of every future range: a hold-out would
 		// become a deletion, and a model outage would quietly eat a day's
 		// evidence.
-		report.journalThrough = journalThrough(
-			inRange,
-			notConsumed(gathered, report, options.model !== undefined),
-			orientation.previousJournalThrough,
-		);
+		report.journalThrough = journalThrough(inRange, notConsumed(gathered, ran), orientation.previousJournalThrough);
 
 		progress?.("lint");
 		const linted = lint({
@@ -424,9 +421,10 @@ async function consolidateAll(
 	orientation: Orientation,
 	options: DreamOptions,
 	report: DreamReport,
-): Promise<void> {
+): Promise<Set<string>> {
+	const ran = new Set<string>();
 	const model = options.model;
-	if (model === undefined) return;
+	if (model === undefined) return ran;
 
 	// Source and date per journal claim, for the fact's own source and for
 	// turning "yesterday" into a date. Built once: every job asks about the
@@ -488,6 +486,7 @@ async function consolidateAll(
 			report.skipped.push({ topic: gatheredJob.topic, reason: outcome.reason });
 			continue;
 		}
+		ran.add(gatheredJob.topic);
 		if (outcome.retries > 0) report.notes.push(`${gatheredJob.topic}: ${outcome.retries} retry`);
 		if (outcome.applied.added.length === 0 && outcome.applied.superseded.length === 0) continue;
 
@@ -502,6 +501,7 @@ async function consolidateAll(
 			addedIds: outcome.applied.added.map((fact) => fact.id),
 		});
 	}
+	return ran;
 }
 
 /** Write the report into the worktree, creating `dreams/` on first use. */
@@ -594,11 +594,16 @@ export function echoClaims(storePath: string, orientation: Orientation): Set<str
  * are on disk and cited by nothing, so leaving them out of the watermark is
  * what keeps them in the next dream's range.
  */
-function notConsumed(gathered: GatherResult, report: DreamReport, hadModel: boolean): Set<string> {
+function notConsumed(gathered: GatherResult, ran: ReadonlySet<string>): Set<string> {
 	const excluded = new Set(gathered.withheld);
-	const consolidated = new Set(report.consolidated.map((change) => change.topic));
 	for (const job of gathered.jobs) {
-		if (hadModel && consolidated.has(job.topic)) continue;
+		// `ran` is "the job completed", not "the job changed something". A model
+		// that legitimately answers "keep everything" has consumed its evidence
+		// — the entries were considered and found to add nothing — and using
+		// `report.consolidated` as the proxy pinned the watermark at that job's
+		// first entry forever: the identical job rebuilt every dream, the
+		// identical no-op answer, a livelock with a model bill.
+		if (ran.has(job.topic)) continue;
 		for (const entry of job.entries) excluded.add(entry.id);
 	}
 	return excluded;

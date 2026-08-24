@@ -6,13 +6,16 @@
  * losing a fact. Until this existed, `merge.ts` had no caller at all — it was
  * tested in isolation and unreachable from the transaction that needs it.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resetCommitDebounce } from "../../src/capture/commit.ts";
 import { dream } from "../../src/dream/dream.ts";
 import type { DreamModel } from "../../src/dream/model.ts";
+import { latestReport } from "../../src/dream/orient.ts";
 import { remember, resolveConflict } from "../../src/dream/remember.ts";
 import { git } from "../../src/git.ts";
 import { newHostId } from "../../src/ids.ts";
@@ -22,6 +25,8 @@ import type { HostIdentity } from "../../src/store/host.ts";
 import { ensureStore } from "../../src/store/init.ts";
 import type { ActiveScope } from "../../src/store/scopes.ts";
 import { parseTopic } from "../../src/topics/format.ts";
+
+const execFileAsync = promisify(execFile);
 
 let home: string;
 let agentDir: string;
@@ -172,6 +177,44 @@ describe("two dreams that rewrote the same topic", () => {
 		expect(topics.size).toBe(2);
 	}, 60_000);
 
+	it("carries the dream's watermark onto the merge report", async () => {
+		// The merge report is the newest complete one once remembered, so the
+		// next dream reads its range from *it*. An empty journal_through there
+		// ranged the next dream over the entire journal history — every consumed
+		// entry re-offered, every per-host watermark lost.
+		await note("Tests need pnpm test --run.");
+		const first = await dream(options(new Date("2026-08-23T03:00:00Z"), citing("Tests need --run.")));
+		const second = await dream(options(new Date("2026-08-23T04:00:00Z"), citing("Watch mode hangs CI.")));
+		expect(Object.keys(second.report.journalThrough)).toHaveLength(1);
+		await remember({ scope, agentDir, host, branch: first.branch });
+
+		const result = await remember({
+			scope,
+			agentDir,
+			host,
+			branch: second.branch,
+			resolve: (conflict) =>
+				resolveConflict(conflict, {
+					scope,
+					agentDir,
+					host,
+					storeId: "s",
+					model: merger,
+					settings: DEFAULT_SETTINGS,
+					now: new Date("2026-08-23T05:00:00Z"),
+				}),
+		});
+		expect(result.ok).toBe(true);
+
+		const latest = latestReport(storePath);
+		expect(latest?.stamp).toContain("-merge");
+		expect(latest?.journalThrough).toEqual(second.report.journalThrough);
+
+		// And the next dream's range really does start there: nothing to gather.
+		const third = await dream(options(new Date("2026-08-23T06:00:00Z"), citing("Anything.")));
+		expect(third.report.gathered.join(" ")).toContain("0 entry/entries in range");
+	}, 60_000);
+
 	it("reports the conflict rather than guessing when there is no model to settle it", async () => {
 		await note("Tests need pnpm test --run.");
 		const first = await dream(options(new Date("2026-08-23T03:00:00Z"), citing("Tests need --run.")));
@@ -184,6 +227,67 @@ describe("two dreams that rewrote the same topic", () => {
 		// And the store is exactly as it was.
 		expect((await git(storePath, { kind: "status-porcelain", paths: [] })).stdout.trim()).toBe("");
 		expect(existsSync(join(storePath, ".remember"))).toBe(false);
+	}, 60_000);
+
+	it("resolves conflicts in an in-repo store, where paths carry the repository prefix", async () => {
+		// `git status` reports repo-root-relative paths, so an in-repo store's
+		// conflicts arrive as `.pi/muninn/topics/….md`. Classifying them without
+		// stripping the prefix matched nothing, and the resolver could settle
+		// nothing at all for exactly the store layout that most needs it.
+		const toplevel = join(home, "project");
+		const inRepoStore = join(toplevel, ".pi", "muninn");
+		mkdirSync(toplevel, { recursive: true });
+		await execFileAsync("git", ["init", toplevel]);
+		await execFileAsync("git", ["-C", toplevel, "symbolic-ref", "HEAD", "refs/heads/main"]);
+		await execFileAsync("git", ["-C", toplevel, "config", "user.email", "a@b"]);
+		await execFileAsync("git", ["-C", toplevel, "config", "user.name", "a"]);
+		writeFileSync(join(toplevel, "README.md"), "# project\n");
+		await execFileAsync("git", ["-C", toplevel, "add", "-A"]);
+		await execFileAsync("git", ["-C", toplevel, "commit", "-qm", "init"]);
+
+		await ensureStore(inRepoStore, { host, inRepo: true });
+		const inRepo: ActiveScope = { scope: "project", path: inRepoStore, exists: true, inRepo: true, slug: "p" };
+		await appendEntry(
+			{ source: "user", prose: "Note.", claims: ["Tests need pnpm test --run."], cue: "the tests" },
+			{ storePath: inRepoStore, hostId: host.id },
+		);
+		resetCommitDebounce();
+
+		const opts = (now: Date, model: DreamModel) => ({
+			scope: inRepo,
+			agentDir,
+			host,
+			storeId: "in-repo",
+			settings: DEFAULT_SETTINGS,
+			now,
+			model,
+		});
+		const first = await dream(opts(new Date("2026-08-23T03:00:00Z"), citing("Tests need --run.")));
+		const second = await dream(opts(new Date("2026-08-23T04:00:00Z"), citing("Watch mode hangs CI.")));
+		expect(first.ok).toBe(true);
+		expect(second.ok).toBe(true);
+		expect((await remember({ scope: inRepo, agentDir, host, branch: first.branch })).ok).toBe(true);
+
+		const result = await remember({
+			scope: inRepo,
+			agentDir,
+			host,
+			branch: second.branch,
+			resolve: (conflict) =>
+				resolveConflict(conflict, {
+					scope: inRepo,
+					agentDir,
+					host,
+					storeId: "in-repo",
+					model: merger,
+					settings: DEFAULT_SETTINGS,
+					now: new Date("2026-08-23T05:00:00Z"),
+				}),
+		});
+		expect(result.problems).toEqual([]);
+		expect(result.ok).toBe(true);
+		// And the project's own files were never part of it.
+		expect(readFileSync(join(toplevel, "README.md"), "utf-8")).toBe("# project\n");
 	}, 60_000);
 
 	it("sends a rules.md conflict to a human, never to a model", async () => {
