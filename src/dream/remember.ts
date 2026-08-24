@@ -247,8 +247,7 @@ async function applyRemember(
 
 		// One retry, and only one: a `main` that keeps moving under us is a busy
 		// store, not a broken one, and the answer is to come back rather than to
-		// spin holding the lock. A merge dream replaces the branch being applied,
-		// so the loop runs over `current` rather than the branch asked for.
+		// spin holding the lock.
 		const current = branch;
 		let applied = false;
 		for (let attempt = 0; attempt < 3; attempt++) {
