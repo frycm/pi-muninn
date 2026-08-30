@@ -147,9 +147,9 @@ function fsyncDirectory(dir: string): void {
  * one forgotten caller is enough to write a credential into a repository that
  * syncs — so it happens here, where every entry must pass.
  *
- * Applied to prose, claims and `cue`. Never to ids, `task`, `session` or the
- * derivation lists: those are identifiers Muninn resolves later, and a
- * redacted id is a broken pointer.
+ * Applied to prose, claims and `cue`. Never to ids, `task` or `session`: those
+ * are identifiers Muninn resolves later, and a redacted id is a broken
+ * pointer.
  */
 function scrub(entry: NewJournalEntry): NewJournalEntry {
 	const prose = redact(entry.prose);

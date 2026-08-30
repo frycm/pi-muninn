@@ -49,22 +49,13 @@ function manifestOf(): Manifest {
 }
 
 describe("StoreIndex.open", () => {
-	it("indexes the journal, MEMORY.md, topics and rules", () => {
+	it("indexes journal claims and their context", () => {
 		writeDaily("2026-08-22", entryText(ENTRY_A, "vitest watch mode hangs the CI job."));
-		writeFileSync(join(store, "MEMORY.md"), "# Memory\n\n- Testing: use `pnpm test --run`.\n");
-		mkdirSync(join(store, "topics"), { recursive: true });
-		writeFileSync(
-			join(store, "topics", "testing.md"),
-			"# Testing\n\n## Facts\n\n- **Never watch mode.** id: f-testing-01a02e1c-1234-7abc-8def-1234567890ab · source: user\n",
-		);
-		writeFileSync(join(store, "rules.md"), "# Rules\n\n- R-014 · phase: test · source: user\n  Use --run in CI.\n");
 
 		const { index, result } = StoreIndex.open(store);
 		expect(result.kind).toBe("full");
 		expect(index.search("vitest watch")[0]?.id).toBe(`${ENTRY_A}.1`);
-		expect(index.search("watch mode", { kind: ["fact"] })).toHaveLength(1);
-		expect(index.search("pnpm", { kind: ["memory"] })).toHaveLength(1);
-		expect(index.search("--run", { kind: ["rule"] })).toHaveLength(1);
+		expect(index.search("Some context", { kind: ["prose"] })[0]?.id).toBe(`${ENTRY_A}#prose`);
 	});
 
 	it("writes a manifest and a serialised index, and reopens without rebuilding", () => {

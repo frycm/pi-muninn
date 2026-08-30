@@ -4,7 +4,6 @@ import { snippet, Tier0Index } from "../../src/index/tier0.ts";
 
 const ENTRY_A = "j-01a02e19-f1c6-7142-bcb1-2806083bd725";
 const ENTRY_B = "j-01a02e1b-655b-7317-bf15-3bba2f63f9c1";
-const FACT = "f-testing-01a02e1c-1234-7abc-8def-1234567890ab";
 
 function chunk(overrides: Partial<Chunk> & { id: string }): Chunk {
 	return {
@@ -14,6 +13,7 @@ function chunk(overrides: Partial<Chunk> & { id: string }): Chunk {
 		headingPath: "journal › 2026-08-22 › 14:32",
 		body: "",
 		tags: "claim user",
+		entry: ENTRY_A,
 		links: [],
 		...overrides,
 	};
@@ -73,46 +73,25 @@ describe("Tier0Index.search", () => {
 	});
 });
 
-describe("Tier0Index — active-only", () => {
+describe("Tier0Index — journal filters", () => {
 	const claim = chunk({ id: `${ENTRY_A}.1`, body: "vitest watch mode hangs CI" });
 	const prose = chunk({ id: `${ENTRY_A}#prose`, kind: "prose", body: "vitest was hanging while we looked at CI" });
 
-	it("does not match context chunks by default", () => {
+	it("searches both claims and entry context by default", () => {
 		expect(
 			indexOf(claim, prose)
 				.search("vitest")
 				.map((hit) => hit.id),
-		).toEqual([`${ENTRY_A}.1`]);
-	});
-
-	it("matches them when the caller asks for history", () => {
-		const ids = indexOf(claim, prose)
-			.search("vitest", { history: true })
-			.map((hit) => hit.id);
-		expect(ids).toContain(`${ENTRY_A}#prose`);
-	});
-
-	it("drops a claim listed in supersessions.md, and returns it under history", () => {
-		const index = indexOf(claim);
-		const superseded = new Set([`${ENTRY_A}.1`]);
-		expect(index.search("vitest", { superseded })).toEqual([]);
-		const withHistory = index.search("vitest", { superseded, history: true });
-		expect(withHistory[0]?.superseded).toBe(true);
-	});
-
-	it("drops a fact the file itself marks superseded", () => {
-		const index = indexOf(chunk({ id: FACT, kind: "fact", body: "tests run with pnpm test", superseded: true }));
-		expect(index.search("pnpm test")).toEqual([]);
-		expect(index.search("pnpm test", { history: true })).toHaveLength(1);
+		).toEqual(expect.arrayContaining([`${ENTRY_A}.1`, `${ENTRY_A}#prose`]));
 	});
 
 	it("filters by kind, phase and source", () => {
 		const index = indexOf(
 			chunk({ id: `${ENTRY_A}.1`, body: "vitest note", phase: "test", source: "user" }),
 			chunk({ id: `${ENTRY_B}.1`, body: "vitest note", phase: "ops", source: "agent" }),
-			chunk({ id: FACT, kind: "fact", body: "vitest note", phase: "test", source: "agent" }),
+			chunk({ id: `${ENTRY_A}#prose`, kind: "prose", body: "vitest context", phase: "test", source: "agent" }),
 		);
-		expect(index.search("vitest", { kind: ["fact"] }).map((hit) => hit.id)).toEqual([FACT]);
+		expect(index.search("vitest", { kind: ["prose"] }).map((hit) => hit.id)).toEqual([`${ENTRY_A}#prose`]);
 		expect(index.search("vitest", { phase: "ops" }).map((hit) => hit.id)).toEqual([`${ENTRY_B}.1`]);
 		expect(index.search("vitest", { source: "user" }).map((hit) => hit.id)).toEqual([`${ENTRY_A}.1`]);
 	});
@@ -122,10 +101,10 @@ describe("Tier0Index — the link graph", () => {
 	it("records what a chunk points at, and who points back", () => {
 		const index = indexOf(
 			chunk({ id: `${ENTRY_B}.1`, body: `supersedes ${ENTRY_A}.1`, links: [`${ENTRY_A}.1`] }),
-			chunk({ id: FACT, kind: "fact", body: "evidence", links: [`${ENTRY_A}.1`] }),
+			chunk({ id: `${ENTRY_B}.2`, body: "evidence", links: [`${ENTRY_A}.1`] }),
 		);
 		expect(index.linksFrom(`${ENTRY_B}.1`)).toEqual([`${ENTRY_A}.1`]);
-		expect(index.backlinksTo(`${ENTRY_A}.1`)).toEqual([FACT, `${ENTRY_B}.1`]);
+		expect(index.backlinksTo(`${ENTRY_A}.1`)).toEqual([`${ENTRY_B}.1`, `${ENTRY_B}.2`]);
 	});
 
 	it("forgets a chunk's edges when it is discarded", () => {
@@ -138,10 +117,10 @@ describe("Tier0Index — the link graph", () => {
 
 describe("Tier0Index — persistence", () => {
 	it("round-trips through its serialised form, links included", () => {
-		const index = indexOf(chunk({ id: `${ENTRY_A}.1`, body: "vitest watch hangs", links: [FACT] }));
+		const index = indexOf(chunk({ id: `${ENTRY_A}.1`, body: "vitest watch hangs", links: [`${ENTRY_B}.1`] }));
 		const loaded = Tier0Index.load(JSON.parse(JSON.stringify(index.toJSON())));
 		expect(loaded.search("vitest").map((hit) => hit.id)).toEqual([`${ENTRY_A}.1`]);
-		expect(loaded.backlinksTo(FACT)).toEqual([`${ENTRY_A}.1`]);
+		expect(loaded.backlinksTo(`${ENTRY_B}.1`)).toEqual([`${ENTRY_A}.1`]);
 		expect(loaded.size).toBe(1);
 	});
 

@@ -2,13 +2,12 @@
  * The store lock.
  *
  * One exclusive lock per store. Capture holds it per append for milliseconds;
- * remember, sync, erase and migrate hold it for their whole duration. Two
- * operations on one host are excluded by it; two hosts are not, and meet at
- * sync.
+ * sync and migration hold it for their whole duration. Two operations on one
+ * host are excluded by it; two hosts are not, and meet at sync.
  *
  * `proper-lockfile` does the locking — the same library, and so the same
  * semantics, pi uses for `settings.json`. It refreshes the lock's mtime while
- * held, which is what keeps a long dream from being mistaken for a dead one.
+ * held, which keeps a long migration from being mistaken for a dead writer.
  *
  * The holder's identity lives in a *sibling* file, `.lock.json`, not inside the
  * lock directory: proper-lockfile removes its lock with a non-recursive
@@ -19,21 +18,18 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
 
-export type LockOperation = "append" | "commit" | "init" | "sync" | "dream" | "remember" | "erase" | "migrate";
+export type LockOperation = "append" | "commit" | "init" | "sync" | "migrate";
 
 /**
  * How long a held lock may go without an mtime refresh before another process
  * treats it as dead. Appends take milliseconds, so 30 s already means "the
- * writer died"; a dream is a long job and gets the design's 2 h.
+ * writer died"; a migration may be a long job and gets a 2 h window.
  */
 const STALE_MS: Record<LockOperation, number> = {
 	append: 30_000,
 	commit: 60_000,
 	init: 30_000,
 	sync: 120_000,
-	dream: 7_200_000,
-	remember: 120_000,
-	erase: 120_000,
 	migrate: 7_200_000,
 };
 

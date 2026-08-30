@@ -18,7 +18,7 @@ describe("rebuildState", () => {
 	it("falls back to pi's session id when there is no start delta", () => {
 		// A session that ran before Muninn was loaded still needs a task group:
 		// it is what the evaluate phase holds out.
-		expect(rebuildState([], TASK)).toEqual({ task: TASK, recalled: [], written: [] });
+		expect(rebuildState([], TASK)).toEqual({ task: TASK, written: [] });
 	});
 
 	it("folds deltas in order", () => {
@@ -26,14 +26,12 @@ describe("rebuildState", () => {
 			[
 				entry({ kind: "start", task: TASK }),
 				entry({ kind: "written", ids: ["j-a"] }),
-				entry({ kind: "recalled", ids: ["f-x-1", "f-x-2"] }),
 				entry({ kind: "written", ids: ["j-b"] }),
 			],
 			"ignored",
 		);
 		expect(state.task).toBe(TASK);
 		expect(state.written).toEqual(["j-a", "j-b"]);
-		expect(state.recalled).toEqual(["f-x-1", "f-x-2"]);
 	});
 
 	it("survives a resume: written ids are still listed", () => {

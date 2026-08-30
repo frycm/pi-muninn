@@ -138,9 +138,8 @@ export function hostDisplayName(store: StoreMd, hostId: string): string {
  * Union-merge two host registries.
  *
  * The one merge Phase 1 knows how to do, and the only conflict sync can
- * normally hit: journal files are per host, derived files change only through
- * a remembered dream, so the single file two hosts write concurrently is the
- * registry they both add themselves to. Union is the right resolution because
+ * normally hit: journal files are per host, so the single file two hosts write
+ * concurrently is the registry they both add themselves to. Union is the right resolution because
  * a host registration is an *addition* — neither side is asserting anything
  * about the other's hosts.
  *

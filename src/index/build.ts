@@ -21,12 +21,12 @@
  * where a race would cost data.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { JournalEntryWithContext } from "../journal/read.ts";
 import { listJournalFiles, readDailyFile } from "../journal/read.ts";
 import { SCHEMA_VERSION } from "../store/store-md.ts";
-import { type Chunk, chunkFile, chunkJournalEntry } from "./chunk.ts";
+import { type Chunk, chunkJournalEntry } from "./chunk.ts";
 import { type Hit, type QueryOptions, type StoredChunk, type Tier0Data, Tier0Index } from "./tier0.ts";
 
 /**
@@ -87,8 +87,8 @@ function emptyManifest(): Manifest {
 /**
  * A store's Tier 0 index, with the manifest that says what is in it.
  *
- * Opened per session and kept for its lifetime: recall queries it every turn,
- * and capture adds to it as entries are appended.
+ * Opened per session and kept for its lifetime: tools query it on demand, and
+ * capture adds to it as entries are appended.
  */
 export class StoreIndex {
 	readonly storePath: string;
@@ -146,7 +146,7 @@ export class StoreIndex {
 		return this.index.search(query, options);
 	}
 
-	/** One chunk by id — a claim, a fact, a rule, or a slice of a file. */
+	/** One journal chunk by id. */
 	get(id: string): StoredChunk | undefined {
 		return this.index.get(id);
 	}
@@ -201,21 +201,6 @@ export class StoreIndex {
 				chunks.push(...chunkJournalEntry(withContext, path));
 			}
 			this.replace(path, hashOf(text), chunks, stamp);
-			result.changed.push(path);
-		}
-
-		for (const path of derivedFiles(this.storePath)) {
-			seen.add(path);
-			const full = join(this.storePath, path);
-			const stamp = this.unchanged(path, full);
-			if (stamp === true) continue;
-			const text = readText(full, result.problems);
-			if (text === undefined) continue;
-			if (this.manifest.files[path]?.hash === hashOf(text)) {
-				this.restamp(path, stamp);
-				continue;
-			}
-			this.replace(path, hashOf(text), chunkFile(path, text), stamp);
 			result.changed.push(path);
 		}
 
@@ -289,24 +274,6 @@ export class StoreIndex {
 		writeAtomic(join(dir, "manifest.json"), `${JSON.stringify(this.manifest, null, "\t")}\n`);
 		this.dirty = false;
 	}
-}
-
-/** `MEMORY.md`, `rules.md` and every topic file that exists. */
-function derivedFiles(storePath: string): string[] {
-	const paths: string[] = [];
-	for (const name of ["MEMORY.md", "rules.md"]) {
-		if (existsSync(join(storePath, name))) paths.push(name);
-	}
-	let topics: string[];
-	try {
-		topics = readdirSync(join(storePath, "topics"));
-	} catch {
-		return paths;
-	}
-	for (const name of topics.sort()) {
-		if (name.endsWith(".md")) paths.push(`topics/${name}`);
-	}
-	return paths;
 }
 
 function readText(path: string, problems: string[]): string | undefined {

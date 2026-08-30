@@ -196,25 +196,27 @@ describe("sync", () => {
 		await git(root, ["clone", "--quiet", remote, two]);
 		await ensureStore(two, { host: hostTwo });
 
-		// A hand-edited MEMORY.md on both sides: exactly the case the design says
-		// sync must refuse rather than guess at.
-		writeFileSync(join(one, "MEMORY.md"), "# Memory\n\n- laptop one's line\n");
-		await git(one, ["commit", "--quiet", "-m", "memory", "--", "MEMORY.md"]);
+		// An unrelated hand-edited file on both sides: sync must refuse rather
+		// than guess at a merge it does not own.
+		writeFileSync(join(one, "notes.txt"), "laptop one's line\n");
+		await git(one, ["add", "notes.txt"]);
+		await git(one, ["commit", "--quiet", "-m", "notes", "--", "notes.txt"]);
 		await sync({ storePath: one, hostId: hostOne.id, hostName: hostOne.name, remote });
 
-		writeFileSync(join(two, "MEMORY.md"), "# Memory\n\n- laptop two's line\n");
-		await git(two, ["commit", "--quiet", "-m", "memory", "--", "MEMORY.md"]);
+		writeFileSync(join(two, "notes.txt"), "laptop two's line\n");
+		await git(two, ["add", "notes.txt"]);
+		await git(two, ["commit", "--quiet", "-m", "notes", "--", "notes.txt"]);
 		const head = (await git(two, ["rev-parse", "HEAD"])).trim();
 
 		const result = await sync({ storePath: two, hostId: hostTwo.id, hostName: hostTwo.name, remote });
 
-		expect(result.problem).toContain("MEMORY.md");
+		expect(result.problem).toContain("notes.txt");
 		expect(result.stoppedAt).toBe("rebase");
 		expect(result.pushed).toBe(false);
 		// The store is exactly where it was: no rebase in progress, same HEAD.
 		expect((await git(two, ["rev-parse", "HEAD"])).trim()).toBe(head);
 		expect((await git(two, ["status", "--porcelain"])).trim()).toBe("");
-		expect(readFileSync(join(two, "MEMORY.md"), "utf-8")).toContain("laptop two's line");
+		expect(readFileSync(join(two, "notes.txt"), "utf-8")).toContain("laptop two's line");
 	});
 
 	it("commits locally and says so when the network is out", async () => {
@@ -394,7 +396,7 @@ describe("sync never throws", () => {
 
 	it("reports a store another process holds the lock on", async () => {
 		await ensureStore(one, { host: hostOne });
-		await withStoreLock(one, "dream", { host: hostTwo.id }, async () => {
+		await withStoreLock(one, "migrate", { host: hostTwo.id }, async () => {
 			const result = await sync({ storePath: one, hostId: hostOne.id, hostName: hostOne.name, remote });
 			expect(result.problem).toContain("busy");
 			expect(result.stoppedAt).toBe("commit");

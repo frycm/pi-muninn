@@ -12,85 +12,29 @@
  * Project settings are **tighten-only**. A `.pi/settings.json` travels with a
  * repository, so a cloned project must not be able to widen what Muninn does on
  * the machine that clones it: it cannot raise a budget, re-enable something the
- * user disabled globally, point recall at a network endpoint, or name the remote
- * that memory is pushed to. It can always ask for *less*.
+ * user disabled globally or name the remote that history is pushed to. It can
+ * always ask for *less*.
  */
 
 /** Where a project store lives, or `false` to disable project scope entirely. */
 export type ProjectScopeSetting = false | "auto" | "separate" | "in-repo";
 
-/** Retrieval tier. `"auto"` picks the best that loads; `"0"` and `"1"` pin it. */
-export type IndexTierSetting = "auto" | "0" | "1";
-
-/** A provider + model pair naming an endpoint in pi's model registry. */
-export interface ProviderModelRef {
-	provider: string;
-	model: string;
-}
-
 export interface MuninnSettings {
 	scopes: {
 		global: boolean;
 		project: ProjectScopeSetting;
-		team: { remote: string | null; pin: string | null };
 	};
 	sync: { remote: string | null; onShutdown: boolean };
 	capture: {
 		corrections: boolean;
 		outcomes: boolean;
-		toolFacts: boolean;
-		externalPerSession: number;
-	};
-	recall: {
-		factsPerTurn: number;
-		tokenBudget: number;
-		indexTier: IndexTierSetting;
-		snapshotLines: { total: number; global: number; project: number; team: number };
-		embedding: ProviderModelRef | null;
-		rerank: ProviderModelRef | null;
-	};
-	dream: {
-		model: string | null;
-		auto: boolean;
-		autoRemember: boolean;
-		minHours: number;
-		minEntries: number;
-		maxEntriesBeforeForce: number;
-		evalSessions: number;
-		canaries: string;
-		rulesCap: number;
-		retireAfterDays: number;
 	};
 }
 
 export const DEFAULT_SETTINGS: MuninnSettings = {
-	scopes: { global: true, project: "auto", team: { remote: null, pin: null } },
+	scopes: { global: true, project: "auto" },
 	sync: { remote: null, onShutdown: true },
-	// `toolFacts` is off: nothing reads it yet. Tool-derived facts are deferred
-	// until the classifier budget is understood, and a setting that defaults to
-	// true while no code path honours it tells the operator that environment
-	// discoveries are being remembered when they are not.
-	capture: { corrections: true, outcomes: true, toolFacts: false, externalPerSession: 10 },
-	recall: {
-		factsPerTurn: 8,
-		tokenBudget: 1500,
-		indexTier: "auto",
-		snapshotLines: { total: 200, global: 120, project: 60, team: 20 },
-		embedding: null,
-		rerank: null,
-	},
-	dream: {
-		model: null,
-		auto: false,
-		autoRemember: false,
-		minHours: 24,
-		minEntries: 5,
-		maxEntriesBeforeForce: 50,
-		evalSessions: 5,
-		canaries: "eval/canaries.md",
-		rulesCap: 60,
-		retireAfterDays: 90,
-	},
+	capture: { corrections: true, outcomes: true },
 };
 
 export type SettingsScope = "global" | "project";
@@ -104,7 +48,7 @@ export type SettingsWarningKind =
 	| "not-tightening";
 
 export interface SettingsWarning {
-	/** Dotted path of the offending key, e.g. `recall.factsPerTurn`. */
+	/** Dotted path of the offending key, e.g. `capture.outcomes`. */
 	path: string;
 	scope: SettingsScope;
 	kind: SettingsWarningKind;
@@ -124,26 +68,20 @@ export interface LoadedSettings {
  * What a project settings file may do to a field.
  *
  * `lower-only` — the project value must be no *wider* than the global one.
- *   Width is a rank: numbers rank by value, booleans false < true, index tiers
- *   "0" < "1" < "auto". Disabling a capture kind, shrinking a budget and
- *   pinning a lower retrieval tier are all the same operation under this rule.
+ *   Width is a rank: booleans false < true. Disabling a capture kind is a
+ *   tightening operation under this rule.
  *
  * `global-only` — the project file may not set it at all. Used where a project
  *   value would widen behaviour in a way no ranking captures: naming a sync
- *   remote (where memory would be pushed), naming an embedding or rerank
- *   endpoint (where memory would be sent), or choosing the dreamer model (which
- *   model gets to read the whole store).
+ *   remote, which decides where project history is pushed.
  */
 type FieldPolicy = "lower-only" | "global-only";
 
-type FieldType = "boolean" | "number" | "string" | "string-or-null" | "index-tier" | "project-scope" | "provider-model";
+type FieldType = "boolean" | "string-or-null" | "project-scope";
 
 interface FieldSpec {
 	type: FieldType;
 	policy: FieldPolicy;
-	/** Numbers only: inclusive bounds. */
-	min?: number;
-	max?: number;
 }
 
 /**
@@ -159,43 +97,13 @@ interface FieldSpec {
 const FIELDS: Record<string, FieldSpec> = {
 	"scopes.global": { type: "boolean", policy: "lower-only" },
 	"scopes.project": { type: "project-scope", policy: "lower-only" },
-	"scopes.team.remote": { type: "string-or-null", policy: "global-only" },
-	"scopes.team.pin": { type: "string-or-null", policy: "global-only" },
-
 	"sync.remote": { type: "string-or-null", policy: "global-only" },
 	"sync.onShutdown": { type: "boolean", policy: "lower-only" },
 
 	"capture.corrections": { type: "boolean", policy: "lower-only" },
 	"capture.outcomes": { type: "boolean", policy: "lower-only" },
-	"capture.toolFacts": { type: "boolean", policy: "lower-only" },
-	"capture.externalPerSession": { type: "number", policy: "lower-only", min: 0, max: 1000 },
-
-	"recall.factsPerTurn": { type: "number", policy: "lower-only", min: 0, max: 100 },
-	"recall.tokenBudget": { type: "number", policy: "lower-only", min: 0, max: 100_000 },
-	"recall.indexTier": { type: "index-tier", policy: "lower-only" },
-	"recall.snapshotLines.total": { type: "number", policy: "lower-only", min: 0, max: 10_000 },
-	"recall.snapshotLines.global": { type: "number", policy: "lower-only", min: 0, max: 10_000 },
-	"recall.snapshotLines.project": { type: "number", policy: "lower-only", min: 0, max: 10_000 },
-	"recall.snapshotLines.team": { type: "number", policy: "lower-only", min: 0, max: 10_000 },
-	"recall.embedding": { type: "provider-model", policy: "global-only" },
-	"recall.rerank": { type: "provider-model", policy: "global-only" },
-
-	// Phase 1 reads but does not act on `dream`. Every field is global-only for
-	// now; per-field tightening semantics are decided in Phase 2, when dreams
-	// exist and the fields mean something.
-	"dream.model": { type: "string-or-null", policy: "global-only" },
-	"dream.auto": { type: "boolean", policy: "global-only" },
-	"dream.autoRemember": { type: "boolean", policy: "global-only" },
-	"dream.minHours": { type: "number", policy: "global-only", min: 0, max: 8760 },
-	"dream.minEntries": { type: "number", policy: "global-only", min: 0, max: 100_000 },
-	"dream.maxEntriesBeforeForce": { type: "number", policy: "global-only", min: 0, max: 100_000 },
-	"dream.evalSessions": { type: "number", policy: "global-only", min: 0, max: 1000 },
-	"dream.canaries": { type: "string", policy: "global-only" },
-	"dream.rulesCap": { type: "number", policy: "global-only", min: 0, max: 10_000 },
-	"dream.retireAfterDays": { type: "number", policy: "global-only", min: 0, max: 3650 },
 };
 
-const INDEX_TIER_RANK: Record<IndexTierSetting, number> = { "0": 0, "1": 1, auto: 2 };
 const PROJECT_SCOPE_VALUES: ReadonlyArray<ProjectScopeSetting> = [false, "auto", "separate", "in-repo"];
 
 // ---------------------------------------------------------------------------
@@ -258,19 +166,6 @@ function validate(
 	switch (spec.type) {
 		case "boolean":
 			return typeof value === "boolean" ? { ok: true, value } : bad("invalid-type", `"${path}" must be a boolean`);
-		case "number": {
-			if (typeof value !== "number" || !Number.isFinite(value)) {
-				return bad("invalid-type", `"${path}" must be a number`);
-			}
-			const min = spec.min ?? Number.NEGATIVE_INFINITY;
-			const max = spec.max ?? Number.POSITIVE_INFINITY;
-			if (value < min || value > max) {
-				return bad("invalid-value", `"${path}" must be between ${min} and ${max}`);
-			}
-			return { ok: true, value };
-		}
-		case "string":
-			return typeof value === "string" ? { ok: true, value } : bad("invalid-type", `"${path}" must be a string`);
 		case "string-or-null":
 			if (typeof value !== "string" && value !== null) return bad("invalid-type", `"${path}" must be a string or null`);
 			// A remote is handed to git. `ext::` runs a command and a leading `-`
@@ -280,21 +175,10 @@ function validate(
 				return bad("invalid-value", `"${path}" is not a git remote muninn will use: ${JSON.stringify(value)}`);
 			}
 			return { ok: true, value };
-		case "index-tier":
-			return value === "auto" || value === "0" || value === "1"
-				? { ok: true, value }
-				: bad("invalid-value", `"${path}" must be one of "auto", "0", "1"`);
 		case "project-scope":
 			return PROJECT_SCOPE_VALUES.includes(value as ProjectScopeSetting)
 				? { ok: true, value }
 				: bad("invalid-value", `"${path}" must be one of false, "auto", "separate", "in-repo"`);
-		case "provider-model": {
-			if (value === null) return { ok: true, value };
-			if (!isPlainObject(value) || typeof value.provider !== "string" || typeof value.model !== "string") {
-				return bad("invalid-type", `"${path}" must be null or { provider, model }`);
-			}
-			return { ok: true, value: { provider: value.provider, model: value.model } };
-		}
 	}
 }
 
@@ -309,10 +193,6 @@ function rank(spec: FieldSpec, value: unknown): number | null {
 	switch (spec.type) {
 		case "boolean":
 			return value === true ? 1 : 0;
-		case "number":
-			return typeof value === "number" ? value : null;
-		case "index-tier":
-			return INDEX_TIER_RANK[value as IndexTierSetting] ?? null;
 		default:
 			return null;
 	}

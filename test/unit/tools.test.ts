@@ -27,7 +27,7 @@ beforeEach(() => {
 	global = mkdtempSync(join(tmpdir(), "muninn-tools-global-"));
 	project = mkdtempSync(join(tmpdir(), "muninn-tools-project-"));
 	host = newHostId();
-	state = { task: "0198f2b0-1111-7000-8000-000000000001", recalled: [], written: [] };
+	state = { task: "0198f2b0-1111-7000-8000-000000000001", written: [] };
 });
 
 afterEach(() => {
@@ -104,12 +104,8 @@ describe("tool schemas", () => {
 		expect(JSON.parse(JSON.stringify(tool.parameters))).toMatchInlineSnapshot(`
 			{
 			  "properties": {
-			    "history": {
-			      "description": "Include superseded memories and the surrounding context of entries. Default false — memory answers with what is current.",
-			      "type": "boolean",
-			    },
 			    "kind": {
-			      "description": "Restrict to these kinds. 'claim' is journal evidence, 'fact' is a consolidated topic fact, 'rule' is procedure. Default: everything that carries an assertion.",
+			      "description": "Restrict to journal claims or entry prose. Default: both.",
 			      "items": {
 			        "anyOf": [
 			          {
@@ -118,22 +114,6 @@ describe("tool schemas", () => {
 			          },
 			          {
 			            "const": "prose",
-			            "type": "string",
-			          },
-			          {
-			            "const": "memory",
-			            "type": "string",
-			          },
-			          {
-			            "const": "fact",
-			            "type": "string",
-			          },
-			          {
-			            "const": "topic",
-			            "type": "string",
-			          },
-			          {
-			            "const": "rule",
 			            "type": "string",
 			          },
 			        ],
@@ -212,11 +192,11 @@ describe("tool schemas", () => {
 			{
 			  "properties": {
 			    "id": {
-			      "description": "A memory id from memory_search: an entry (j-…), a claim (j-….1), a fact (f-…), a rule (R-…), or a session: pointer taken from an entry's session field.",
+			      "description": "A journal entry (j-…), claim (j-….1), or session pointer taken from an entry.",
 			      "type": "string",
 			    },
 			    "path": {
-			      "description": "A path inside a memory store, such as MEMORY.md, rules.md or topics/testing.md.",
+			      "description": "A path inside an active journal store.",
 			      "type": "string",
 			    },
 			    "range": {
@@ -327,25 +307,12 @@ describe("memory_search", () => {
 		expect(textOf(await run(tool, { query: "pnpm node", scope: "project" }))).not.toContain("never npm");
 	});
 
-	it("is active-only by default and says how to see the rest", async () => {
-		const written = await seed(project, { claims: ["Tests run with `pnpm test`."] });
-		writeFileSync(join(project, "supersessions.md"), `- ${written.claimIds[0]} · valid_to: 2026-08-23\n`);
-		const tool = memorySearchTool(runtimeFor(sessionContext()));
-
-		const active = textOf(await run(tool, { query: "tests run" }));
-		expect(active).toContain("No active memories match");
-		expect(active).toContain("history: true");
-
-		const history = textOf(await run(tool, { query: "tests run", history: true }));
-		expect(history).toContain("superseded: true");
-	});
-
 	it("honours the limit", async () => {
 		for (let index = 0; index < 5; index++) {
 			await seed(project, { claims: [`Claim number ${index} about the CI runner.`] });
 		}
 		const tool = memorySearchTool(runtimeFor(sessionContext()));
-		expect(textOf(await run(tool, { query: "CI runner", limit: 2 }))).toContain("2 memories");
+		expect(textOf(await run(tool, { query: "CI runner", limit: 2 }))).toContain("2 journal records");
 	});
 });
 
@@ -378,28 +345,20 @@ describe("memory_read", () => {
 		expect(text).toMatch(new RegExp(`→ ${written.id.replace(/[-.]/g, "\\$&")}\\.2`));
 	});
 
-	it("labels a superseded claim rather than hiding it", async () => {
-		const written = await seed(project, { claims: ["Tests run with `pnpm test`."] });
-		writeFileSync(join(project, "supersessions.md"), `- ${written.claimIds[0]} · valid_to: 2026-08-23\n`);
-		const tool = memoryReadTool(runtimeFor(sessionContext()));
-
-		expect(textOf(await run(tool, { id: written.id }))).toContain("[superseded]");
-	});
-
 	it("fails by name on an id nothing has", async () => {
 		const tool = memoryReadTool(runtimeFor(sessionContext()));
 		await expect(run(tool, { id: "j-01a02e19-f1c6-7142-bcb1-2806083bd725" })).rejects.toThrow(/no journal entry/);
 	});
 
-	it("reads a memory file, with line numbers, and a range of one", async () => {
-		writeFileSync(join(project, "MEMORY.md"), "# Memory\n\n- one\n- two\n- three\n");
+	it("reads a journal-store file, with line numbers, and a range", async () => {
+		writeFileSync(join(project, "store.md"), "# Store\n\n- one\n- two\n- three\n");
 		const tool = memoryReadTool(runtimeFor(sessionContext()));
 
-		const whole = textOf(await run(tool, { path: "MEMORY.md" }));
-		expect(whole).toContain("project:MEMORY.md");
+		const whole = textOf(await run(tool, { path: "store.md" }));
+		expect(whole).toContain("project:store.md");
 		expect(whole).toContain("3  - one");
 
-		const range = textOf(await run(tool, { path: "MEMORY.md", range: "4-5" }));
+		const range = textOf(await run(tool, { path: "store.md", range: "4-5" }));
 		expect(range).toContain("lines 4–5");
 		expect(range).not.toContain("- one");
 	});
@@ -547,13 +506,6 @@ describe("memory_note", () => {
 		await run(tool, { text: "Always use pnpm.", scope: "global" });
 		expect(readStoreJournal(global).entries).toHaveLength(1);
 		expect(readStoreJournal(project).entries).toEqual([]);
-	});
-
-	it("records what had been recalled, so a dream can tell an echo from evidence", async () => {
-		state.recalled = ["j-01a02e19-f1c6-7142-bcb1-2806083bd725.1"];
-		const tool = memoryNoteTool(runtimeFor(sessionContext()));
-		await run(tool, { text: "The runner has no TTY." });
-		expect(readStoreJournal(project).entries[0]?.recalled).toEqual(["j-01a02e19-f1c6-7142-bcb1-2806083bd725.1"]);
 	});
 
 	it("fails loudly on a read-only store instead of writing somewhere else", async () => {

@@ -34,8 +34,6 @@ cue: <when would a future session need this? one short line>
 - <a durable claim>
 - <another durable claim>
 
-used: <comma-separated ids from "Memories in context", or omit this line entirely>
-
 Rules for the claims, which are the part that gets remembered:
 - Write what a future session would need to KNOW, not what happened chronologically.
 - Prefer specifics that will still be true next week: commands, flags, file paths, constraints, causes.
@@ -47,8 +45,6 @@ Rules for the claims, which are the part that gets remembered:
 export interface OutcomeRequest {
 	buffer: RunBuffer;
 	state: MuninnSessionState;
-	/** Texts of the memories Muninn recalled, by id. Populated once recall exists. */
-	recalledTexts?: ReadonlyMap<string, string>;
 }
 
 export interface ParsedOutcome {
@@ -56,7 +52,6 @@ export interface ParsedOutcome {
 	cue?: string;
 	prose: string;
 	claims: string[];
-	used: string[];
 }
 
 export interface ParseFailure {
@@ -67,18 +62,7 @@ export type ParseResult = { ok: true; outcome: ParsedOutcome } | { ok: false; er
 
 /** The prompt shown to the outcome model for one run. */
 export function buildOutcomePrompt(request: OutcomeRequest): string {
-	const parts: string[] = [];
-
-	if (request.state.recalled.length > 0) {
-		const lines = request.state.recalled.map((id) => {
-			const text = request.recalledTexts?.get(id);
-			return text ? `- ${id}: ${text}` : `- ${id}`;
-		});
-		parts.push(`Memories in context (cite in "used:" only those that actually mattered):\n${lines.join("\n")}`);
-	}
-
-	parts.push(`Transcript:\n\n${renderRun(request.buffer, RUN_TOKEN_BUDGET)}`);
-	return parts.join("\n\n");
+	return `Transcript:\n\n${renderRun(request.buffer, RUN_TOKEN_BUDGET)}`;
 }
 
 function isPhase(value: string): value is Phase {
@@ -104,7 +88,6 @@ export function parseOutcome(reply: string): ParseResult {
 	const lines = text.split("\n");
 	let phase: Phase | undefined;
 	let cue: string | undefined;
-	let used: string[] = [];
 	const body: string[] = [];
 
 	for (const line of lines) {
@@ -119,14 +102,6 @@ export function parseOutcome(reply: string): ParseResult {
 		}
 		if (cue === undefined && lower.startsWith("cue:")) {
 			cue = trimmed.slice("cue:".length).trim();
-			continue;
-		}
-		if (lower.startsWith("used:")) {
-			used = trimmed
-				.slice("used:".length)
-				.split(",")
-				.map((id) => id.trim())
-				.filter((id) => id !== "" && id.toLowerCase() !== "none");
 			continue;
 		}
 		body.push(line);
@@ -151,52 +126,9 @@ export function parseOutcome(reply: string): ParseResult {
 			.replace(/\n{3,}/g, "\n\n")
 			.trim(),
 		claims: claims.filter((claim) => claim !== ""),
-		used,
 	};
 	if (cue !== undefined && cue !== "") outcome.cue = cue;
 	return { ok: true, outcome };
-}
-
-// ---------------------------------------------------------------------------
-// Echoes
-// ---------------------------------------------------------------------------
-
-const ECHO_THRESHOLD = 0.8;
-
-function tokenSet(text: string): Set<string> {
-	return new Set(
-		text
-			.toLowerCase()
-			.split(/[^a-z0-9_.-]+/)
-			.filter((token) => token !== ""),
-	);
-}
-
-export function jaccard(a: string, b: string): number {
-	const left = tokenSet(a);
-	const right = tokenSet(b);
-	if (left.size === 0 || right.size === 0) return 0;
-	let shared = 0;
-	for (const token of left) if (right.has(token)) shared++;
-	return shared / (left.size + right.size - shared);
-}
-
-/**
- * Ids of recalled memories that a claim merely restates.
- *
- * An echo is journaled — it is useful as a usage signal — but the gather phase
- * never counts it toward recurrence, and it can never be the sole evidence for
- * a fact. Without this a fact would corroborate itself: recalled, restated in
- * the outcome, observed again next session, promoted on `use_count`.
- */
-export function findEchoes(claims: readonly string[], recalledTexts: ReadonlyMap<string, string>): string[] {
-	const echoes = new Set<string>();
-	for (const claim of claims) {
-		for (const [id, text] of recalledTexts) {
-			if (jaccard(claim, text) >= ECHO_THRESHOLD) echoes.add(id);
-		}
-	}
-	return [...echoes];
 }
 
 // ---------------------------------------------------------------------------
@@ -230,13 +162,6 @@ export function outcomeEntry(
 	request: OutcomeRequest,
 	base: { channel: NewJournalEntry["channel"]; session?: string | undefined },
 ): NewJournalEntry {
-	const recalled = [...new Set([...request.state.recalled, ...request.buffer.recalled])];
-	// `used` is the only input to use_count, so it is filtered to ids that were
-	// really in context — a model naming something it never saw must not inflate
-	// that count.
-	const used = outcome.used.filter((id) => recalled.includes(id));
-	const echoes = findEchoes(outcome.claims, request.recalledTexts ?? new Map());
-
 	const entry: NewJournalEntry = {
 		source: "agent",
 		task: request.state.task,
@@ -248,8 +173,5 @@ export function outcomeEntry(
 	if (base.session) entry.session = base.session;
 	if (request.state.continues) entry.continues = request.state.continues;
 	if (outcome.cue) entry.cue = outcome.cue;
-	if (recalled.length > 0) entry.recalled = recalled;
-	if (used.length > 0) entry.used = used;
-	if (echoes.length > 0) entry.echo = echoes;
 	return entry;
 }

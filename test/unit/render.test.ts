@@ -18,7 +18,6 @@ function hit(overrides: Partial<SearchHit> = {}): SearchHit {
 		source: "user",
 		scope: "project",
 		storePath: "/store",
-		superseded: false,
 		score: 1,
 		...overrides,
 	};
@@ -27,20 +26,15 @@ function hit(overrides: Partial<SearchHit> = {}): SearchHit {
 describe("renderHits", () => {
 	it("gives the model the full id and provenance of each hit", () => {
 		const text = renderHits([hit({ cue: "when CI hangs", phase: "test" })]);
-		expect(text).toContain("1 memory:");
+		expect(text).toContain("1 journal record:");
 		expect(text).toContain("- Run `pnpm test --run`");
 		expect(text).toContain(
 			`id: ${ENTRY}.1 · date: 2026-08-22 · source: user · scope: project · kind: claim · phase: test · cue: when CI hangs`,
 		);
 	});
 
-	it("marks a superseded hit, which only history asks for", () => {
-		expect(renderHits([hit({ superseded: true })], { history: true })).toContain("superseded: true");
-	});
-
-	it("says how to widen an empty active-only search", () => {
-		expect(renderHits([])).toContain("history: true");
-		expect(renderHits([], { history: true })).toBe("No memories match, including superseded ones.");
+	it("suggests changing an empty search", () => {
+		expect(renderHits([])).toContain("different words or filters");
 	});
 });
 
@@ -85,30 +79,28 @@ describe("renderEntry", () => {
 		expect(text).toContain("file: journal/h/2026-08-22.md");
 	});
 
-	it("marks the claim that was asked for, and any that are superseded", () => {
+	it("marks the claim that was asked for", () => {
 		const parsed = parseEntry(block);
 		if (!parsed.entry) throw new Error(parsed.problems.join("; "));
 		const text = renderEntry(parsed.entry, {
 			scope: "project",
 			path: "journal/h/2026-08-22.md",
 			claim: `${ENTRY}.2`,
-			superseded: new Set([`${ENTRY}.1`]),
 		});
 
 		expect(text).toContain(`→ ${ENTRY}.2`);
-		expect(text).toContain(`[superseded] ${ENTRY}.1`);
 	});
 });
 
 describe("renderFile", () => {
 	it("numbers lines so a follow-up range means something", () => {
-		const text = renderFile("project:MEMORY.md", "# Memory\n\n- one\n- two\n");
-		expect(text).toContain("project:MEMORY.md (4 lines)");
+		const text = renderFile("project:journal/host/2026-08-22.md", "# Journal\n\n- one\n- two\n");
+		expect(text).toContain("project:journal/host/2026-08-22.md (4 lines)");
 		expect(text).toContain("3  - one");
 	});
 
 	it("names the slice it returned", () => {
-		const text = renderFile("project:MEMORY.md", "a\nb\nc\nd\n", { from: 2, to: 3 });
+		const text = renderFile("project:journal/host/2026-08-22.md", "a\nb\nc\nd\n", { from: 2, to: 3 });
 		expect(text).toContain("lines 2–3 of 4");
 		expect(text).not.toMatch(/^1 {2}a/m);
 	});
@@ -130,7 +122,7 @@ describe("trailer", () => {
 			title: "",
 			headingPath: "",
 			body: "",
-			superseded: false,
+			entry: ENTRY,
 		});
 		expect(text).toBe(`id: ${ENTRY}.1 · kind: claim`);
 	});

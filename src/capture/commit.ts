@@ -2,7 +2,7 @@
  * Committing the journal.
  *
  * Capture commits `journal/` on this host's behalf — at `agent_settled`, at
- * `session_shutdown`, and immediately before a sync or a dream. One commit per
+ * `session_shutdown`, and immediately before a sync. One commit per
  * batch, never one per entry: a session that journals a correction and an
  * outcome should leave one commit, not two.
  *

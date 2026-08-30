@@ -8,16 +8,11 @@
  * and is treated as authoritative when it arrives, because it is pi's own view
  * rather than one reconstructed from parts.
  *
- * Muninn's own injected messages are stripped here rather than downstream. The
- * outcome model must never see them: a fact Muninn recalled, restated by the
- * model, and then journaled as a fresh observation would corroborate itself —
- * recalled, restated, observed again next session, promoted on `use_count`.
- * That loop is designed out at the only point where it could start.
+ * Journal content is not injected into runs. If the model searches the journal,
+ * the resulting tool call and bounded result are ordinary, visible evidence in
+ * this buffer.
  */
 import { estimateTokens } from "../tokens.ts";
-
-/** The `customType` Muninn injects recalled memories under. */
-export const MUNINN_MESSAGE_TYPE = "muninn";
 
 export interface RunMessage {
 	role: string;
@@ -28,33 +23,16 @@ export interface RunMessage {
 
 export interface RunBuffer {
 	messages: RunMessage[];
-	/** Ids of Muninn memories that were in the model's context during this run. */
-	recalled: string[];
 	toolCallCount: number;
 	turnCount: number;
 }
 
 interface MessageLike {
 	role?: unknown;
-	customType?: unknown;
 	content?: unknown;
-	details?: unknown;
 	output?: unknown;
 	command?: unknown;
 	summary?: unknown;
-}
-
-function isMuninnMessage(message: MessageLike): boolean {
-	return message.role === "custom" && message.customType === MUNINN_MESSAGE_TYPE;
-}
-
-/** Ids a Muninn message declares it injected, so they can go to `recalled:`. */
-function recalledIdsOf(message: MessageLike): string[] {
-	const details = message.details;
-	if (typeof details !== "object" || details === null) return [];
-	const ids = (details as { ids?: unknown }).ids;
-	if (!Array.isArray(ids)) return [];
-	return ids.filter((id): id is string => typeof id === "string");
 }
 
 /** Flatten a message's visible text. Thinking is excluded; the user never saw it. */
@@ -118,20 +96,14 @@ function toolCallsOf(message: MessageLike): string[] {
 	return calls;
 }
 
-function convert(message: unknown): { run?: RunMessage; recalled: string[] } {
-	if (typeof message !== "object" || message === null) return { recalled: [] };
+function convert(message: unknown): RunMessage | undefined {
+	if (typeof message !== "object" || message === null) return undefined;
 	const typed = message as MessageLike;
-
-	if (isMuninnMessage(typed)) return { recalled: recalledIdsOf(typed) };
 
 	const text = messageText(typed).trim();
 	const toolCalls = toolCallsOf(typed);
-	if (text === "" && toolCalls.length === 0) return { recalled: [] };
-
-	return {
-		run: { role: typeof typed.role === "string" ? typed.role : "unknown", text, toolCalls },
-		recalled: [],
-	};
+	if (text === "" && toolCalls.length === 0) return undefined;
+	return { role: typeof typed.role === "string" ? typed.role : "unknown", text, toolCalls };
 }
 
 /**
@@ -142,7 +114,6 @@ function convert(message: unknown): { run?: RunMessage; recalled: string[] } {
  */
 export class RunAccumulator {
 	private messages: RunMessage[] = [];
-	private readonly recalled = new Set<string>();
 	private turns = 0;
 	/** Set once `agent_end` has spoken, so later turn_ends do not re-append. */
 	private sealed = false;
@@ -169,9 +140,8 @@ export class RunAccumulator {
 		if (this.sealed) return;
 		this.turns++;
 		for (const candidate of [message, ...toolResults]) {
-			const { run, recalled } = convert(candidate);
+			const run = convert(candidate);
 			if (run) this.messages.push(run);
-			for (const id of recalled) this.recalled.add(id);
 		}
 	}
 
@@ -182,9 +152,8 @@ export class RunAccumulator {
 	onAgentEnd(messages: readonly unknown[]): void {
 		const replaced: RunMessage[] = [];
 		for (const candidate of messages) {
-			const { run, recalled } = convert(candidate);
+			const run = convert(candidate);
 			if (run) replaced.push(run);
-			for (const id of recalled) this.recalled.add(id);
 		}
 		this.messages = replaced;
 		this.turns = Math.max(this.turns, replaced.filter((message) => message.role === "assistant").length);
@@ -195,7 +164,6 @@ export class RunAccumulator {
 	peek(): RunBuffer {
 		return {
 			messages: [...this.messages],
-			recalled: [...this.recalled],
 			toolCallCount: this.messages.reduce((total, message) => total + message.toolCalls.length, 0),
 			turnCount: this.turns,
 		};
@@ -210,7 +178,6 @@ export class RunAccumulator {
 
 	reset(): void {
 		this.messages = [];
-		this.recalled.clear();
 		this.turns = 0;
 		this.sealed = false;
 	}

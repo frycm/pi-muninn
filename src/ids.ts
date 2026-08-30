@@ -15,7 +15,6 @@
 import { randomBytes } from "node:crypto";
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const TOPIC_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /** Counter state for RFC 9562 method 1 (replace leftmost random bits with a counter). */
 let lastMs = -1;
@@ -102,15 +101,6 @@ export function isStoreId(value: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Dreams
-// ---------------------------------------------------------------------------
-
-/** A globally unique identity for one dream run. */
-export function newDreamId(): string {
-	return uuidv7();
-}
-
-// ---------------------------------------------------------------------------
 // Journal entries and claims
 // ---------------------------------------------------------------------------
 
@@ -125,8 +115,7 @@ export function isEntryId(value: string): boolean {
 /**
  * The address of one claim: `<entry id>.<ordinal>`, 1-based.
  *
- * Claims are the unit of everything downstream — indexed as their own chunk,
- * cited as evidence, superseded individually — so they are addressed, not
+ * Claims are indexed as their own chunks, so they are addressed rather than
  * merely counted.
  */
 export function claimId(entryId: string, ordinal: number): string {
@@ -151,31 +140,6 @@ export function isClaimId(value: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Facts (minted by dreams in Phase 2; the format is fixed here)
-// ---------------------------------------------------------------------------
-
-export function newFactId(topic: string): string {
-	if (!TOPIC_SLUG.test(topic)) throw new Error(`topic must be a lowercase slug: ${topic}`);
-	return `f-${topic}-${uuidv7()}`;
-}
-
-export function isFactId(value: string): boolean {
-	return parseFactId(value) !== null;
-}
-
-/** A topic may itself contain hyphens, so the uuid is taken from the end. */
-export function parseFactId(value: string): { topic: string; uuid: string } | null {
-	if (!value.startsWith("f-")) return null;
-	if (value.length < 2 + 1 + 1 + 36) return null;
-	const uuid = value.slice(-36);
-	if (!UUID_V7.test(uuid)) return null;
-	const topic = value.slice(2, -37);
-	if (value[value.length - 37] !== "-") return null;
-	if (!TOPIC_SLUG.test(topic)) return null;
-	return { topic, uuid };
-}
-
-// ---------------------------------------------------------------------------
 // Display
 // ---------------------------------------------------------------------------
 
@@ -186,7 +150,7 @@ export function parseFactId(value: string): { topic: string; uuid: string } | nu
  */
 export function shortenId(id: string, keepTail = 4): string {
 	// Keep the time-ordered prefix, which is what makes two ids visibly distinct.
-	const prefixLength = id.startsWith("j-") || id.startsWith("f-") ? 10 : 8;
+	const prefixLength = id.startsWith("j-") ? 10 : 8;
 	if (id.length <= prefixLength + keepTail + 1) return id;
 	return `${id.slice(0, prefixLength)}…${id.slice(-keepTail)}`;
 }

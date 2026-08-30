@@ -1,7 +1,7 @@
 {
 	"name": "pi-muninn",
 	"version": "0.1.0",
-	"description": "Journal, dream, remember — offline long-term memory for pi",
+	"description": "Searchable, local-first project journals for pi",
 	"type": "module",
 	"license": "MIT",
 	"main": "./src/index.ts",

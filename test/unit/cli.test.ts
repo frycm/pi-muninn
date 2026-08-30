@@ -89,10 +89,9 @@ describe("muninn (cli)", () => {
 	});
 
 	it("reports an unknown command with usage", async () => {
-		const result = await runCli(["ruminate"], cwd);
+		const result = await runCli(["frobnicate"], cwd);
 		expect(result.code).toBe(2);
-		expect(result.err.join("\n")).toContain('unknown command "ruminate"');
-		expect(result.err.join("\n")).toContain("muninn dream");
+		expect(result.err.join("\n")).toContain('unknown command "frobnicate"');
 	});
 
 	it("says when there is no store to work with", async () => {

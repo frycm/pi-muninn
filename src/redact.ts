@@ -110,8 +110,8 @@ const PATTERNS: PatternRule[] = [
 /** Tokens that look like key material but are identifiers Muninn depends on. */
 const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const HEX_ONLY = /^[0-9a-fA-F]+$/;
-/** Muninn's own ids: `j-<uuid>`, `f-<topic>-<uuid>`, and claim addresses. */
-const MUNINN_ID = /^[jf]-/;
+/** Muninn's own journal ids and claim addresses. */
+const MUNINN_ID = /^j-/;
 /**
  * Subresource-integrity and lockfile digests. They are base64 and they are
  * high entropy, but they are published in every lockfile — a hash of public

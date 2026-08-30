@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { newHostId } from "../../src/ids.ts";
 import { StoreIndex } from "../../src/index/build.ts";
-import { resetSupersessionCache, type ScopeIndex, SessionIndexes, search } from "../../src/index/search.ts";
+import { type ScopeIndex, SessionIndexes, search } from "../../src/index/search.ts";
 import type { ActiveScope } from "../../src/store/scopes.ts";
 
 const ENTRY_A = "j-01a02e19-f1c6-7142-bcb1-2806083bd725";
@@ -18,7 +18,6 @@ beforeEach(() => {
 	global = mkdtempSync(join(tmpdir(), "muninn-global-"));
 	project = mkdtempSync(join(tmpdir(), "muninn-project-"));
 	host = newHostId();
-	resetSupersessionCache();
 });
 
 afterEach(() => {
@@ -57,24 +56,6 @@ describe("search across scopes", () => {
 
 		const hits = search(scopes(), { query: "vitest", scope: "project" });
 		expect(hits.map((hit) => hit.id)).toEqual([`${ENTRY_B}.1`]);
-	});
-
-	it("applies each store's own supersessions, never another store's", () => {
-		writeEntry(global, ENTRY_A, "vitest watch mode hangs the CI job.");
-		writeEntry(project, ENTRY_B, "vitest watch mode hangs the CI job.");
-		// A dream in the project store cannot invalidate a global claim.
-		writeFileSync(join(project, "supersessions.md"), `- ${ENTRY_B}.1 · valid_to: 2026-08-23\n`);
-
-		const hits = search(scopes(), { query: "vitest" });
-		expect(hits.map((hit) => hit.id)).toEqual([`${ENTRY_A}.1`]);
-	});
-
-	it("returns superseded claims under history, marked as such", () => {
-		writeEntry(project, ENTRY_B, "vitest watch mode hangs the CI job.");
-		writeFileSync(join(project, "supersessions.md"), `- ${ENTRY_B}.1 · valid_to: 2026-08-23\n`);
-
-		const hits = search(scopes(), { query: "vitest", history: true });
-		expect(hits[0]?.superseded).toBe(true);
 	});
 
 	it("honours the overall limit after merging", () => {

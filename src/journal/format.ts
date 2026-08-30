@@ -6,8 +6,8 @@
  * thirty-line parser reads without a YAML library.
  *
  * The prose is *context*; the bullets are *claims*. Claims are the unit of
- * everything downstream — each is addressed as `<entry id>.<ordinal>`, indexed
- * as its own chunk, cited by facts as evidence, and superseded individually.
+ * everything downstream — each is addressed as `<entry id>.<ordinal>` and
+ * indexed as its own chunk.
  * An entry with no bullets has exactly one implicit claim, its prose, at `.1`.
  *
  * The heading carries a local `HH:MM` for a human reading the file. It is not
@@ -18,7 +18,7 @@
 import { isEntryId } from "../ids.ts";
 
 export const SOURCES = ["user", "agent", "tool", "external"] as const;
-export const CHANNELS = ["tui", "rpc", "sdk", "hook", "dream"] as const;
+export const CHANNELS = ["tui", "rpc", "sdk", "hook"] as const;
 export const PHASES = ["locate", "reproduce", "fix", "test", "review", "ops", "other"] as const;
 
 export type Source = (typeof SOURCES)[number];
@@ -36,12 +36,9 @@ export interface JournalEntry {
 	session?: string;
 	phase?: Phase;
 	cue?: string;
-	recalled?: string[];
-	used?: string[];
-	echo?: string[];
 	redacted?: boolean;
 	promotedFrom?: string;
-	/** Context. Never evidence on its own, never matched by active-only filtering. */
+	/** Context around the claims, indexed as a separate prose chunk. */
 	prose: string;
 	/** Evidence, in order. Addressed `<id>.1`, `<id>.2`, … */
 	claims: string[];
@@ -58,14 +55,9 @@ const FIELD_ORDER = [
 	"session",
 	"phase",
 	"cue",
-	"recalled",
-	"used",
-	"echo",
 	"promoted_from",
 	"redacted",
 ] as const;
-
-const LIST_SEPARATOR = ", ";
 
 function isSource(value: string): value is Source {
 	return (SOURCES as readonly string[]).includes(value);
@@ -99,9 +91,6 @@ export function formatEntry(entry: JournalEntry): string {
 	if (entry.session) fields.set("session", entry.session);
 	if (entry.phase) fields.set("phase", entry.phase);
 	if (entry.cue) fields.set("cue", entry.cue);
-	if (entry.recalled?.length) fields.set("recalled", entry.recalled.join(LIST_SEPARATOR));
-	if (entry.used?.length) fields.set("used", entry.used.join(LIST_SEPARATOR));
-	if (entry.echo?.length) fields.set("echo", entry.echo.join(LIST_SEPARATOR));
 	if (entry.promotedFrom) fields.set("promoted_from", entry.promotedFrom);
 	if (entry.redacted) fields.set("redacted", "true");
 	for (const [key, value] of Object.entries(entry.extra ?? {})) {
@@ -267,13 +256,6 @@ export function parseEntry(block: string): ParseEntryResult {
 	if (promotedFrom) entry.promotedFrom = promotedFrom;
 	if (fields.get("redacted") === "true") entry.redacted = true;
 
-	const recalled = parseList(fields.get("recalled"));
-	if (recalled) entry.recalled = recalled;
-	const used = parseList(fields.get("used"));
-	if (used) entry.used = used;
-	const echo = parseList(fields.get("echo"));
-	if (echo) entry.echo = echo;
-
 	const known = new Set<string>([...FIELD_ORDER]);
 	const extra: Record<string, string> = {};
 	for (const [key, value] of fields) {
@@ -282,15 +264,6 @@ export function parseEntry(block: string): ParseEntryResult {
 	if (Object.keys(extra).length > 0) entry.extra = extra;
 
 	return { entry, problems };
-}
-
-function parseList(value: string | undefined): string[] | undefined {
-	if (value === undefined) return undefined;
-	const items = value
-		.split(",")
-		.map((item) => item.trim())
-		.filter((item) => item !== "");
-	return items.length > 0 ? items : undefined;
 }
 
 /**

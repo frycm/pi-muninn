@@ -97,14 +97,14 @@ describe("a write that cannot happen", () => {
 		// An append that skipped the lock could interleave with another and tear
 		// a daily file in half — the one failure the journal format cannot
 		// repair. Waiting and then failing is the correct trade.
-		await withStoreLock(store, "dream", { host }, async () => {
+		await withStoreLock(store, "migrate", { host }, async () => {
 			const failure = await appendEntry(
 				{ source: "user", prose: "", claims: ["Blocked."] },
 				{ storePath: store, hostId: host },
 			).catch((error: Error) => error);
 
 			expect((failure as Error).name).toBe("LockBusyError");
-			expect((failure as Error).message).toContain("dream");
+			expect((failure as Error).message).toContain("migrate");
 		});
 
 		expect(readStoreJournal(store).entries).toEqual([]);

@@ -37,21 +37,14 @@ export function trailer(chunk: StoredChunk & { scope?: string }): string {
 	parts.push(`kind: ${chunk.kind}`);
 	if (chunk.phase) parts.push(`phase: ${chunk.phase}`);
 	if (chunk.cue) parts.push(`cue: ${chunk.cue}`);
-	// Superseded results only appear under `history: true`, and when they do the
-	// model must be able to see which ones they are.
-	if (chunk.superseded) parts.push("superseded: true");
 	return parts.join(" · ");
 }
 
 /** `memory_search` results, best first. */
-export function renderHits(hits: readonly SearchHit[], options: { history?: boolean } = {}): string {
-	if (hits.length === 0) {
-		return options.history
-			? "No memories match, including superseded ones."
-			: "No active memories match. Try `history: true` to include superseded ones, or different words.";
-	}
+export function renderHits(hits: readonly SearchHit[]): string {
+	if (hits.length === 0) return "No journal records match. Try different words or filters.";
 
-	const header = `${hits.length} ${hits.length === 1 ? "memory" : "memories"}${options.history ? " (including superseded)" : ""}:`;
+	const header = `${hits.length} journal ${hits.length === 1 ? "record" : "records"}:`;
 	const blocks = hits.map((hit) => `- ${truncate(hit.snippet || hit.body, HIT_CHARS)}\n  ${trailer(hit)}`);
 	return truncate([header, "", ...blocks].join("\n"), TOOL_OUTPUT_CHARS);
 }
@@ -87,13 +80,12 @@ export interface EntryContext {
 	date?: string;
 	/** The claim that was asked for, when the read was addressed to one. */
 	claim?: string;
-	superseded?: ReadonlySet<string>;
 }
 
 /**
  * A whole journal entry: its metadata, its prose, and its claims by address.
  *
- * The prose is included even though recall never matches it. A human or a
+ * The prose is included because a human or a
  * model reading an entry wants the situation the claims came out of — that is
  * the entire reason `memory_read` exists next to `memory_search`.
  */
@@ -109,9 +101,6 @@ export function renderEntry(entry: JournalEntry, context: EntryContext): string 
 	if (entry.task) fields.push(`task: ${entry.task}`);
 	if (entry.continues) fields.push(`continues: ${entry.continues}`);
 	if (entry.session) fields.push(`session: ${entry.session}`);
-	if (entry.recalled?.length) fields.push(`recalled: ${entry.recalled.join(", ")}`);
-	if (entry.used?.length) fields.push(`used: ${entry.used.join(", ")}`);
-	if (entry.echo?.length) fields.push(`echo: ${entry.echo.join(", ")}`);
 	if (entry.redacted) fields.push("redacted: true");
 	lines.push(fields.join(" · "), `file: ${context.path}`);
 
@@ -121,10 +110,8 @@ export function renderEntry(entry: JournalEntry, context: EntryContext): string 
 	if (claims.length > 0) {
 		lines.push("", "Claims:");
 		for (const claim of claims) {
-			const marks = [context.claim === claim.id ? "→" : " ", context.superseded?.has(claim.id) ? "[superseded]" : ""]
-				.filter((mark) => mark !== "")
-				.join(" ");
-			lines.push(`${marks} ${claim.id}`, `    ${claim.text}`);
+			const marker = context.claim === claim.id ? "→" : " ";
+			lines.push(`${marker} ${claim.id}`, `    ${claim.text}`);
 		}
 	}
 

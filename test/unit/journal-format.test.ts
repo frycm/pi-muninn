@@ -42,15 +42,8 @@ describe("formatEntry", () => {
 		expect(formatEntry(entry({ prose: "", claims: [] }))).toMatch(/\n\n$/);
 	});
 
-	it("joins list fields with commas", () => {
-		const text = formatEntry(entry({ recalled: ["j-a.1", "f-t-b"], used: ["j-a.1"] }));
-		expect(text).toContain("recalled: j-a.1, f-t-b");
-		expect(text).toContain("used: j-a.1");
-	});
-
 	it("omits empty optional fields rather than writing blanks", () => {
-		const text = formatEntry(entry({ recalled: [], cue: "" }));
-		expect(text).not.toContain("recalled:");
+		const text = formatEntry(entry({ cue: "" }));
 		expect(text).not.toContain("cue:");
 	});
 
@@ -69,9 +62,6 @@ describe("parseEntry", () => {
 			session: "~/.pi/agent/sessions/--x--/y.jsonl#e5f6",
 			phase: "test",
 			cue: "when vitest hangs in CI",
-			recalled: ["j-a.1", "j-b.2"],
-			used: ["j-a.1"],
-			echo: ["f-testing-c"],
 			redacted: true,
 			promotedFrom: "app/j-old",
 			claims: ["one", "two", "three"],

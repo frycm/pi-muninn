@@ -24,41 +24,14 @@ export interface StatusInput {
 	uncommitted?: number;
 	/** Per-scope index size. Absent while the index is still being opened. */
 	index?: ScopeIndexStats[];
-	/** What recall has actually put in front of the model this session. */
-	recall?: RecallStats;
 	/** Where memory is pushed, and what the last sync in this session did. */
 	sync?: SyncStats;
-	dream?: DreamStats;
-}
-
-export interface DreamStats {
-	/** Entries written since the last complete dream's `journal_through`. */
-	sinceLastDream: number;
-	/** The last complete dream's stamp, when there has been one. */
-	last?: string;
-	/** Branches waiting to be remembered. */
-	pending: number;
-	/** Blocking lint findings in the newest pending dream. */
-	blocking: number;
-	/** A `.remember` marker on disk, which should never outlive a store open. */
-	interrupted: boolean;
-	/** `dream.model`, or nothing when the session's own model would be used. */
-	model: string | null;
 }
 
 export interface SyncStats {
 	remote: string | null;
 	/** Absent until a sync has run in this session. */
 	last?: string;
-}
-
-export interface RecallStats {
-	/** Lines of the frozen `MEMORY.md` snapshot in the system prompt. */
-	snapshotLines: number;
-	/** Lines the snapshot budget left out. */
-	snapshotTrimmed: number;
-	/** Distinct memories injected per-turn so far. */
-	recalled: number;
 }
 
 export interface ScopeIndexStats {
@@ -87,7 +60,7 @@ export function formatStatus(input: StatusInput): string {
 	lines.push(`host      ${host.name} · ${host.id}`);
 
 	if (scopes.active.length === 0) {
-		lines.push("stores    none active — nothing is captured or recalled");
+		lines.push("stores    none active — nothing is captured or searchable");
 	} else {
 		scopes.active.forEach((scope, index) => {
 			// The arrow marks the capture target: the one scope this session writes to.
@@ -103,11 +76,6 @@ export function formatStatus(input: StatusInput): string {
 		settings.capture.outcomes ? "outcomes" : null,
 	].filter((kind): kind is string => kind !== null);
 	lines.push(`capture   ${captureKinds.length > 0 ? captureKinds.join(", ") : "nothing (all kinds disabled)"}`);
-	if (settings.capture.toolFacts) {
-		// Listing it as a capture kind would say environment discoveries are being
-		// remembered. They are not: nothing reads this flag yet.
-		lines.push("          ! capture.toolFacts is on, but tool-derived facts are not implemented yet");
-	}
 	if (input.uncommitted) {
 		lines.push(
 			`          ${input.uncommitted} ${input.uncommitted === 1 ? "entry" : "entries"} written, not yet committed`,
@@ -144,36 +112,6 @@ export function formatStatus(input: StatusInput): string {
 					`${label} ${stats.scope}: ${stats.chunks} ${stats.chunks === 1 ? "chunk" : "chunks"} from ${stats.files} ${stats.files === 1 ? "file" : "files"}`,
 				);
 			});
-		}
-	}
-
-	lines.push(
-		`recall    ${settings.recall.factsPerTurn} facts/turn · ${settings.recall.tokenBudget} tokens · tier ${settings.recall.indexTier}`,
-	);
-	if (input.recall) {
-		const snapshot =
-			input.recall.snapshotLines === 0
-				? "no snapshot (MEMORY.md is empty)"
-				: `snapshot ${input.recall.snapshotLines} line(s)${input.recall.snapshotTrimmed > 0 ? `, ${input.recall.snapshotTrimmed} trimmed` : ""}`;
-		lines.push(
-			`          ${snapshot} · ${input.recall.recalled} memor${input.recall.recalled === 1 ? "y" : "ies"} recalled`,
-		);
-	}
-
-	if (input.dream) {
-		const dream = input.dream;
-		lines.push(
-			`dream     ${dream.model ?? "session model (dream.model is unset)"} · ${dream.sinceLastDream} entr${dream.sinceLastDream === 1 ? "y" : "ies"} since ${dream.last ?? "the store was created"}`,
-		);
-		if (dream.pending > 0) {
-			lines.push(
-				`          ${dream.pending} dream(s) waiting${dream.blocking > 0 ? `, ${dream.blocking} blocking lint finding(s)` : ""} — /muninn dreams`,
-			);
-		}
-		if (dream.interrupted) {
-			// Recovery runs at every store open, so seeing this means the marker
-			// outlived one — which is a bug, and worth saying so plainly.
-			lines.push("          ! a .remember marker is present; a remember was interrupted and not recovered");
 		}
 	}
 

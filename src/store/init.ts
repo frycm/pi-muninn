@@ -8,7 +8,6 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { recoverRemember } from "../dream/remember.ts";
 import { type GitIdentity, git, gitToplevel } from "../git.ts";
 import { newStoreId } from "../ids.ts";
 import type { HostIdentity } from "./host.ts";
@@ -31,17 +30,7 @@ const GITIGNORE = [
 	".index/",
 	".lock",
 	".lock.json",
-	".remember",
-	".dreaming",
 	"host.json",
-	"",
-].join("\n");
-
-const MEMORY_HEADER = [
-	"<!-- The index a session reads at start. Write what you like here; dreams add a generated",
-	"     section below a marker line and never touch anything above it. -->",
-	"",
-	"# Memory",
 	"",
 ].join("\n");
 
@@ -141,7 +130,7 @@ export async function ensureStore(
 		// Everything the store owns goes into the first commit, not only what
 		// this call wrote; otherwise the branch stays unborn and can never sync.
 		if (fresh) {
-			for (const name of [".gitignore", "store.md", "MEMORY.md"]) {
+			for (const name of [".gitignore", "store.md"]) {
 				if (existsSync(join(storePath, name))) staged.add(name);
 			}
 		}
@@ -177,22 +166,9 @@ export async function ensureStore(
 			staged.add("store.md");
 		}
 
-		if (!existsSync(join(storePath, "MEMORY.md"))) {
-			writeFileSync(join(storePath, "MEMORY.md"), MEMORY_HEADER);
-			staged.add("MEMORY.md");
-		}
-
 		// This host's journal directory. Git does not track empty directories, so
 		// nothing is staged for it; the first append is what puts it in history.
 		mkdirSync(join(storePath, "journal", options.host.id), { recursive: true });
-
-		// A remember that died left a marker, and the process that would have
-		// cleaned it up is by definition not running. Every store open is
-		// therefore the recovery point — before anything reads a derived file.
-		if (!fresh) {
-			const recovery = await recoverRemember(storePath);
-			if (recovery.message !== undefined) problems.push(`muninn: ${recovery.message}`);
-		}
 
 		if (staged.size > 0) {
 			const paths = [...staged];
