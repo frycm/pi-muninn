@@ -12,15 +12,16 @@ The design is local-first and composable: append-only JSONL, Git synchronization
 retrieval and no hosted service in the storage or search path.
 
 > [!IMPORTANT]
-> Phase 3 is underway. Its logical-project resolver is implemented: linked Git worktrees now
-> share one user-owned project UUID and store. The journal inside that store is still the
-> migration-input Markdown format and the temporary tools remain `memory_search`,
-> `memory_read` and `memory_note`. Later Phase 3 slices replace those directly with the JSONL
-> journal and interfaces described below. Journal content is never injected into prompts.
+> Phase 3 is underway. Logical-project resolution, the sharded JSONL engine, restartable
+> Markdown migration, correction projection, canonical query/index service and the
+> `journal_*` model tools are implemented. Automatic capture, attended/headless commands and
+> synchronization are being moved onto that foundation in the remaining slices. Journal
+> content is never injected into prompts.
 
-The current Markdown contract is [docs/journal-format.md](docs/journal-format.md). The Phase
-3 target format is [docs/project-journal-format.md](docs/project-journal-format.md), and the
-implementation sequence is [docs/phase-3-plan.md](docs/phase-3-plan.md).
+The legacy Markdown migration-input contract is
+[docs/journal-format.md](docs/journal-format.md). The JSONL contract is
+[docs/project-journal-format.md](docs/project-journal-format.md), and the implementation
+sequence is [docs/phase-3-plan.md](docs/phase-3-plan.md).
 The implemented identity and registry contract is
 [docs/project-registry.md](docs/project-registry.md).
 
@@ -46,14 +47,14 @@ This leads to three rules:
 
 ## Current foundation
 
-The repository keeps the parts needed for Phase 3:
+The repository now includes these Phase 3 foundations:
 
-- provenance-aware capture of explicit notes, direct user corrections and bounded outcomes;
-- append-only Markdown journal files with crash-safe writes and secret redaction;
-- lexical indexing over journal entries and claims;
-- explicit model search, read and note tools;
-- attended status, note, promote, search, reindex and sync commands;
-- per-host journal paths, store locking and reviewable Git synchronization;
+- a validated, canonically serialized, append-only JSONL record contract;
+- writer-owned member/host/month shards with single-write, fsync-backed appends;
+- restartable and idempotent import of legacy Markdown stores;
+- correction, supersession and annotation graphs with explicit trust labels;
+- one bounded canonical query service with a disposable lexical candidate index;
+- explicit model search, read, context and note tools;
 - a user-owned logical-project registry with atomic updates and stable member/project UUIDs;
 - canonical Git common-directory resolution across linked worktrees.
 
@@ -64,9 +65,10 @@ Current model tools:
 
 | Tool | Purpose |
 |---|---|
-| `memory_search` | Search active global and logical-project journals. |
-| `memory_read` | Read an entry, claim, journal file or referenced local pi transcript. |
-| `memory_note` | Append an agent-authored note. |
+| `journal_search` | Search this logical project's journal with bounded filters and pagination. |
+| `journal_read` | Read one record by stable ID with a bounded relation neighborhood. |
+| `journal_context` | Batch records already selected by stable ID under a hard output budget. |
+| `journal_note` | Append an agent-authored note or annotation; never a user correction. |
 
 Current attended commands:
 
@@ -95,7 +97,7 @@ muninn project unlink [PATH]
 the resolver reason. `unlink` removes the local mapping, not the store or retained project
 record. See the [registry contract](docs/project-registry.md) for relinking and recovery.
 
-## Remaining Phase 3 target
+## Phase 3 design and remaining integration
 
 ### One logical project across worktrees
 
@@ -139,20 +141,25 @@ This preserves a useful team history without publishing every prompt, tool resul
 
 ### Explicit model interface
 
-Phase 3 renames and narrows the model surface around the journal:
+Phase 3 narrows the implemented model surface around the journal:
 
 ```ts
 journal_search({
-  query: string,
-  project?: string,
+  query?: string,
+  ids?: string[],
   type?: string[],
   source?: string[],
-  member?: string,
-  branch?: string,
-  path?: string,
+  member?: string[],
+  host?: string[],
+  branch?: string[],
+  path?: string[],
+  tag?: string[],
+  status?: string[],
   since?: string,
   until?: string,
-  limit?: number
+  relatedTo?: string,
+  limit?: number,
+  cursor?: string
 })
 
 journal_read({
@@ -168,7 +175,9 @@ journal_context({
 journal_note({
   text: string,
   cue?: string,
-  tags?: string[]
+  tags?: string[],
+  paths?: string[],
+  relations?: Array<{ type: "annotates", target: string }>
 })
 ```
 

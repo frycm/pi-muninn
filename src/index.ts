@@ -31,14 +31,21 @@ import {
 import { type CommandOutput, type CommandRuntime, runMuninnCommand } from "./commands/muninn.ts";
 import { SessionIndexes } from "./index/search.ts";
 import { type AppendResult, appendEntry } from "./journal/append.ts";
+import type { AppendJournalResult } from "./journal/jsonl.ts";
+import { collectGitProvenance } from "./journal/provenance.ts";
+import { JournalQueryService } from "./journal/query.ts";
+import type { JournalSessionPointer, NewJournalRecord } from "./journal/record.ts";
+import { appendAuthorizedJournalRecord } from "./journal/writer.ts";
 import { buildSessionContext, journalStats, type SessionContext } from "./session.ts";
 import { formatStatus, formatStatusLine, formatWarning } from "./status.ts";
 import { storeIdentity } from "./store/init.ts";
 import type { CaptureTarget } from "./store/scopes.ts";
 import { describeSync, type SyncResult, sync } from "./sync/sync.ts";
-import { memoryNoteTool } from "./tools/memory-note.ts";
-import { memoryReadTool } from "./tools/memory-read.ts";
-import { memorySearchTool } from "./tools/memory-search.ts";
+import { journalContextTool } from "./tools/journal-context.ts";
+import { journalNoteTool } from "./tools/journal-note.ts";
+import { journalReadTool } from "./tools/journal-read.ts";
+import type { JournalToolRuntime } from "./tools/journal-runtime.ts";
+import { journalSearchTool } from "./tools/journal-search.ts";
 import type { ToolRuntime } from "./tools/runtime.ts";
 import { MUNINN_VERSION } from "./version.ts";
 
@@ -60,6 +67,14 @@ function describeRuntime(): string {
 	const bunVersion = (globalThis as { Bun?: { version: string } }).Bun?.version;
 	if (bunVersion) return `bun ${bunVersion}`;
 	return `node ${process.versions.node}`;
+}
+
+function journalSessionPointer(pointer: string | undefined): JournalSessionPointer | undefined {
+	if (!pointer) return undefined;
+	const hash = pointer.lastIndexOf("#");
+	if (hash === -1) return { file: pointer };
+	const last = pointer.slice(hash + 1);
+	return { file: pointer.slice(0, hash), ...(last ? { last } : {}) };
 }
 
 export default function (pi: ExtensionAPI): void {
@@ -95,6 +110,8 @@ export default function (pi: ExtensionAPI): void {
 	const pendingTotal = (): number => [...pending.values()].reduce((total, count) => total + count, 0);
 	/** One Tier 0 index per active scope, opened once and kept for the session. */
 	let indexes: SessionIndexes | undefined;
+	/** Phase 3 canonical query service for the active logical project. */
+	let journal: JournalQueryService | undefined;
 	/** What sync did this session, for the status report's "last sync" line. */
 	let lastSync: string | undefined;
 	/**
@@ -158,6 +175,30 @@ export default function (pi: ExtensionAPI): void {
 		pi.appendEntry(STATE_CUSTOM_TYPE, { kind: "written", ids: [written.id] } satisfies StateDelta);
 	};
 
+	const afterJournalAppend = (
+		currentState: MuninnSessionState,
+		storePath: string,
+		written: AppendJournalResult,
+	): void => {
+		currentState.written.push(written.id);
+		pending.set(storePath, (pending.get(storePath) ?? 0) + 1);
+		journal?.add(written.record);
+		refreshStatus();
+		pi.appendEntry(STATE_CUSTOM_TYPE, { kind: "written", ids: [written.id] } satisfies StateDelta);
+	};
+
+	const queryJournal = (): JournalQueryService => {
+		const current = session;
+		if (!current?.project) throw new Error("muninn: no logical project journal is active in this session");
+		journal ??= new JournalQueryService({
+			storePath: current.project.storePath,
+			localMember: current.project.member.id,
+			mode: "index",
+			maxChars: 16_000,
+		});
+		return journal;
+	};
+
 	/**
 	 * Open (and rebuild what is stale in) every active scope's index.
 	 *
@@ -207,9 +248,46 @@ export default function (pi: ExtensionAPI): void {
 		},
 	};
 
-	pi.registerTool(memorySearchTool(toolRuntime));
-	pi.registerTool(memoryReadTool(toolRuntime));
-	pi.registerTool(memoryNoteTool(toolRuntime));
+	const journalRuntime: JournalToolRuntime = {
+		settle: () => queue.flush(),
+		session: () => session,
+		state: () => state,
+		query: queryJournal,
+		async append(record, context) {
+			const current = session;
+			const currentState = state;
+			if (!current?.project) throw new Error("muninn: no logical project journal is active in this session");
+			const projectScope = current.scopes.active.find((scope) => scope.scope === "project");
+			if (!projectScope) throw new Error("muninn: the project journal is not active in this session");
+
+			const provenance = await collectGitProvenance(context.cwd ?? current.project.root);
+			const pointer = journalSessionPointer(sessionPointer(context.sessionManager));
+			const deterministic: NewJournalRecord = {
+				...record,
+				channel: channelForMode(context.mode),
+				...(pointer ? { session: pointer } : {}),
+				...(provenance ? { git: provenance } : {}),
+			};
+			const written = await appendAuthorizedJournalRecord(
+				{ authority: "model", record: deterministic },
+				{
+					storePath: projectScope.path,
+					project: current.project.id,
+					member: current.project.member.id,
+					host: current.host.id,
+				},
+			);
+			if (currentState) afterJournalAppend(currentState, projectScope.path, written);
+			commitPending(true);
+			await queue.flush();
+			return written;
+		},
+	};
+
+	pi.registerTool(journalSearchTool(journalRuntime));
+	pi.registerTool(journalReadTool(journalRuntime));
+	pi.registerTool(journalContextTool(journalRuntime));
+	pi.registerTool(journalNoteTool(journalRuntime));
 
 	/**
 	 * The `/muninn` report, assembled from what only this file knows: versions,
@@ -284,6 +362,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("session_start", async (event, ctx) => {
 		session = undefined;
 		indexes = undefined;
+		journal = undefined;
 		pending.clear();
 		previousAssistantText = undefined;
 		const current = await load(ctx.cwd, ctx.isProjectTrusted(), true);
@@ -517,7 +596,10 @@ export default function (pi: ExtensionAPI): void {
 			// session holds its index open. Without this, `/muninn sync` followed
 			// by a search misses exactly the memory the sync just fetched. A fetch
 			// that rebased nothing changed no file and needs no refresh.
-			if (result.rebased) indexes?.refresh(scope.path);
+			if (result.rebased) {
+				indexes?.refresh(scope.path);
+				if (scope.scope === "project") journal?.refresh();
+			}
 			outcomes.push({ scope: scope.scope, result });
 			lastSync = `${scope.scope}: ${describeSync(result)}`;
 		}
