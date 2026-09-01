@@ -82,6 +82,8 @@ export interface NewJournalRecord {
 	session?: JournalSessionPointer;
 	git?: JournalGitProvenance;
 	legacy?: JournalLegacyOrigin;
+	/** Preserved only by trusted import paths; ordinary writers cannot choose it. */
+	redacted?: true;
 }
 
 export interface JournalRecordIdentity {
@@ -292,7 +294,7 @@ function scrub(input: NewJournalRecord): NewJournalRecord & { redacted?: true } 
 		body: body.text,
 		...(cue ? { cue: cue.text } : {}),
 		tags: tags.map((tag) => tag.text),
-		...(hits > 0 ? { redacted: true } : {}),
+		...(hits > 0 || input.redacted ? { redacted: true } : {}),
 	};
 }
 
