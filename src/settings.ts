@@ -16,8 +16,8 @@
  * always ask for *less*.
  */
 
-/** Where a project store lives, or `false` to disable project scope entirely. */
-export type ProjectScopeSetting = false | "auto" | "separate" | "in-repo";
+/** Automatically use a user-owned logical-project store, or disable it. */
+export type ProjectScopeSetting = false | "auto";
 
 export interface MuninnSettings {
 	scopes: {
@@ -89,10 +89,8 @@ interface FieldSpec {
  * reported rather than silently ignored — a typo in `settings.json` should not
  * look like a working setting.
  *
- * `scopes.project` is the one field whose policy is not a rank: where a project
- * store lives is the project's own business, so any location is accepted — but
- * a project may not enable project scope when it is globally off. That is
- * handled in `applyProjectScope`, not by a rank.
+ * A project may disable its journal but cannot select its UUID, filesystem
+ * path, or remote. Those are user-owned registry decisions outside the repo.
  */
 const FIELDS: Record<string, FieldSpec> = {
 	"scopes.global": { type: "boolean", policy: "lower-only" },
@@ -104,7 +102,7 @@ const FIELDS: Record<string, FieldSpec> = {
 	"capture.outcomes": { type: "boolean", policy: "lower-only" },
 };
 
-const PROJECT_SCOPE_VALUES: ReadonlyArray<ProjectScopeSetting> = [false, "auto", "separate", "in-repo"];
+const PROJECT_SCOPE_VALUES: ReadonlyArray<ProjectScopeSetting> = [false, "auto"];
 
 // ---------------------------------------------------------------------------
 // Parsing
@@ -178,7 +176,7 @@ function validate(
 		case "project-scope":
 			return PROJECT_SCOPE_VALUES.includes(value as ProjectScopeSetting)
 				? { ok: true, value }
-				: bad("invalid-value", `"${path}" must be one of false, "auto", "separate", "in-repo"`);
+				: bad("invalid-value", `"${path}" must be false or "auto"`);
 	}
 }
 
@@ -302,9 +300,8 @@ export function resolveSettings(globalRaw: unknown, projectRaw: unknown): Loaded
 }
 
 /**
- * Where a project store lives is the project's own business, so any location is
- * accepted — but a project may not switch project scope back on when the user
- * turned it off globally.
+ * A project may switch its own journal off, but may not switch it back on when
+ * the user turned it off globally.
  */
 function applyProjectScope(
 	settings: Record<string, unknown>,

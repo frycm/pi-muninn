@@ -23,6 +23,7 @@ import { isEntryId, parseClaimId } from "../ids.ts";
 import type { SessionIndexes } from "../index/search.ts";
 import type { AppendResult, NewJournalEntry } from "../journal/append.ts";
 import { findEntry } from "../journal/lookup.ts";
+import { formatResolvedProject } from "../project/command.ts";
 import type { SessionContext } from "../session.ts";
 import { formatScopes } from "../status.ts";
 import type { CaptureTarget } from "../store/scopes.ts";
@@ -73,6 +74,7 @@ export const USAGE = [
 	"  /muninn promote <id>             copy a project entry into the global journal",
 	"  /muninn search [--limit n] <query>",
 	"  /muninn scope                    which scopes are active here, and why",
+	"  /muninn project                  logical project id, member and aliases",
 	"  /muninn reindex                  rebuild the index from the files",
 	"  /muninn sync [--no-push]         commit, fetch, rebase, push",
 ].join("\n");
@@ -127,6 +129,8 @@ export async function runMuninnCommand(args: string, runtime: CommandRuntime): P
 			return status(runtime);
 		case "scope":
 			return scope(runtime);
+		case "project":
+			return project(rest, runtime);
 		case "reindex":
 			return reindex(runtime);
 		case "note":
@@ -157,6 +161,20 @@ async function status(runtime: CommandRuntime): Promise<CommandOutput> {
 async function scope(runtime: CommandRuntime): Promise<CommandOutput> {
 	const session = await runtime.load({ createStores: false });
 	return { level: "info", text: formatScopes(session) };
+}
+
+async function project(args: string, runtime: CommandRuntime): Promise<CommandOutput> {
+	if (args !== "" && args !== "show") {
+		return {
+			level: "warning",
+			text: "muninn: /muninn project only shows the active mapping; use `muninn project link|unlink` in a shell to change it",
+		};
+	}
+	const session = await runtime.load({ createStores: false });
+	if (!session.project) {
+		return { level: "warning", text: "muninn: no logical project is linked for this session" };
+	}
+	return { level: "info", text: formatResolvedProject(session.project).join("\n") };
 }
 
 async function reindex(runtime: CommandRuntime): Promise<CommandOutput> {
@@ -231,8 +249,7 @@ async function promote(args: string, runtime: CommandRuntime): Promise<CommandOu
 		};
 	}
 
-	const project = session.scopes.active.find((active) => active.scope === "project");
-	const origin = `${project?.slug ?? "project"}/${entryId}`;
+	const origin = `${session.project?.id ?? "project"}/${entryId}`;
 	const source = found.entry;
 	const copy: NewJournalEntry = {
 		source: source.source,

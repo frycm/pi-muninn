@@ -15,6 +15,8 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { StoreIndex } from "../../src/index/build.ts";
 import { readStoreJournal } from "../../src/journal/read.ts";
+import { readProjectRegistry } from "../../src/project/registry.ts";
+import { projectStorePath } from "../../src/store/paths.ts";
 import { type MockProvider, startMockProvider } from "../fixtures/mock-provider.ts";
 
 const execFileAsync = promisify(execFile);
@@ -72,10 +74,9 @@ async function pi(prompt: string, extra: string[] = []): Promise<string> {
 }
 
 function projectStore(): string {
-	const projects = join(agentDir, "muninn-projects");
-	const entries = existsSync(projects) ? readdirSync(projects) : [];
-	expect(entries).toHaveLength(1);
-	return join(projects, entries[0] as string);
+	const registry = readProjectRegistry(agentDir);
+	expect(registry?.projects).toHaveLength(1);
+	return projectStorePath(agentDir, registry?.projects[0]?.id as string);
 }
 
 function sessionFiles(): string[] {

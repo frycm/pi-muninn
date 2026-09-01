@@ -2,10 +2,8 @@
 /**
  * `muninn` — the headless half.
  *
- * Two commands, no pi session: `muninn sync` for a cron job or a shell, and
- * `muninn status` for looking at a store without starting an agent. Both use
- * the same modules the extension does, so there is one implementation of "what
- * does sync do" and one of "what is in this store".
+ * Headless status, sync, and logical-project registry commands. They use the
+ * same resolver and store modules as a pi session.
  *
  * Runnable straight from source: Node ≥ 22.19 strips the types, which is also
  * how pi loads the extension itself.
@@ -13,9 +11,10 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { CONFIG_DIR, resolveAgentDir } from "./agent-dir.ts";
-import { gitToplevel } from "./git.ts";
 import { claimsOf } from "./journal/format.ts";
 import { readStoreJournal } from "./journal/read.ts";
+import { runProjectCommand } from "./project/command.ts";
+import { type ResolvedProject, resolveLogicalProject } from "./project/resolver.ts";
 import { loadSettings } from "./settings-io.ts";
 import { loadHostIdentity } from "./store/host.ts";
 import { storeIdentity } from "./store/init.ts";
@@ -29,10 +28,12 @@ const USAGE = [
 	"",
 	"  muninn sync [--scope global|project] [--no-push]   commit, fetch, rebase, push",
 	"  muninn status [--scope global|project]             what is in the store",
+	"  muninn project link [path] [--id UUID] [--name NAME] [--force]",
+	"  muninn project show [path]",
+	"  muninn project unlink [path]",
 	"",
 	"Runs without a pi session. The store is chosen the way a session would choose",
-	"it: global always, project when the working directory is inside a git",
-	"repository that already has one.",
+	"it: global always, project through the user-owned logical-project registry.",
 ].join("\n");
 
 export interface CliResult {
@@ -53,23 +54,35 @@ export async function runCli(argv: readonly string[], cwd: string = process.cwd(
 
 	if (command === "help" || command === "--help" || command === "-h") return { code: 0, out: [USAGE], err };
 	if (command === "version" || command === "--version") return { code: 0, out: [MUNINN_VERSION], err };
+	if (command === "project") {
+		const agentDir = resolveAgentDir();
+		const host = loadHostIdentity(agentDir);
+		const result = await runProjectCommand(args, { agentDir, cwd, hostId: host.id });
+		return { code: result.code, out: result.out, err: result.err };
+	}
 	if (command !== "sync" && command !== "status") {
 		return { code: 2, out, err: [`muninn: unknown command "${command}"`, "", USAGE] };
 	}
+	const agentDir = resolveAgentDir();
+	const host = loadHostIdentity(agentDir);
 
 	const wanted = scopeFlag(args);
 	if (wanted === "invalid") return { code: 2, out, err: ['muninn: --scope takes "global" or "project"'] };
 	const noPush = args.includes("--no-push");
 
-	const agentDir = resolveAgentDir();
-	const host = loadHostIdentity(agentDir);
 	const loaded = loadSettings({ agentDir, cwd, configDirName: CONFIG_DIR });
-	const toplevel = await gitToplevel(cwd);
+	let project: ResolvedProject | undefined;
+	if (loaded.settings.scopes.project !== false) {
+		try {
+			project = await resolveLogicalProject({ agentDir, cwd, hostId: host.id, create: false });
+		} catch (error) {
+			err.push(error instanceof Error ? error.message : String(error));
+		}
+	}
 	const scopes = resolveScopes({
 		settings: loaded.settings,
 		agentDir,
-		configDirName: CONFIG_DIR,
-		toplevel,
+		project,
 		// There is no session to prompt for trust, so the CLI only ever touches a
 		// project store that already exists — which is a store this machine has
 		// already decided to have.
@@ -88,6 +101,11 @@ export async function runCli(argv: readonly string[], cwd: string = process.cwd(
 		out.push(`${scope.scope}: ${scope.path}`);
 
 		if (command === "status") {
+			if (scope.scope === "project" && project) {
+				out.push(`  project: ${project.name} · ${project.id}`);
+				out.push(`  selected: ${project.reasonDetail}`);
+				for (const location of project.locations) out.push(`  alias: ${location.root}`);
+			}
 			const journal = readStoreJournal(scope.path);
 			const claims = journal.entries.reduce((total, entry) => total + claimsOf(entry).length, 0);
 			out.push(`  ${journal.entries.length} entries, ${claims} claims`);
@@ -103,12 +121,11 @@ export async function runCli(argv: readonly string[], cwd: string = process.cwd(
 			storePath: scope.path,
 			hostId: host.id,
 			hostName: host.name,
-			// See `sync.ts`: the setting is the global store's remote; a project
-			// store uses the `origin` it already has, and never an in-repo one.
+			// The setting is the global store's remote. A project store uses the
+			// `origin` already configured on that user-owned repository.
 			remote: scope.scope === "global" ? loaded.settings.sync.remote : null,
-			useExistingRemote: !scope.inRepo,
 			...(noPush ? { noPush: true } : {}),
-			...(scope.inRepo ? {} : { identity: storeIdentity(host) }),
+			identity: storeIdentity(host),
 		});
 		for (const note of result.notes) out.push(`  ${note}`);
 		out.push(`  ${describeSync(result)}`);

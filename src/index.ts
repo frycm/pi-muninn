@@ -468,7 +468,7 @@ export default function (pi: ExtensionAPI): void {
 					hostName: current.host.name,
 					entries,
 					force,
-					...(scope.inRepo ? {} : { identity: storeIdentity(current.host) }),
+					identity: storeIdentity(current.host),
 				});
 				if (result.committed) {
 					pending.set(storePath, 0);
@@ -500,12 +500,10 @@ export default function (pi: ExtensionAPI): void {
 				hostName: current.host.name,
 				// `sync.remote` is the global store's remote. A project store has
 				// no setting of its own — a project file may not name one — so it
-				// syncs with the `origin` it already has, and an in-repo store is
-				// never pushed by Muninn at all.
+				// syncs with the `origin` its user-owned store already has.
 				remote: scope.scope === "global" ? current.loaded.settings.sync.remote : null,
-				useExistingRemote: !scope.inRepo,
 				entries: pending.get(scope.path) ?? 0,
-				...(scope.inRepo ? {} : { identity: storeIdentity(current.host) }),
+				identity: storeIdentity(current.host),
 				...(options.noPush ? { noPush: true } : {}),
 				...(options.signal ? { signal: options.signal } : {}),
 			});
@@ -567,7 +565,7 @@ export default function (pi: ExtensionAPI): void {
 		// that reaches the network, and a shutdown must not hang on one. The cap
 		// stops the transaction between steps and kills a hanging fetch or push;
 		// a rebase, once started, always finishes.
-		// Gated on the setting alone: a separate project store syncs with the
+		// Gated on the setting alone: a project store syncs with the
 		// `origin` it already has, so requiring a *global* remote here would
 		// silently exclude it. Each scope decides for itself whether it has
 		// anywhere to push.

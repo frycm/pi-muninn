@@ -16,14 +16,14 @@ describe("resolveSettings — global settings", () => {
 	it("applies valid capture, scope and sync values", () => {
 		const { settings, warnings } = resolveSettings(
 			{
-				scopes: { project: "separate" },
+				scopes: { project: "auto" },
 				capture: { corrections: false },
 				sync: { remote: "git@example.com:team/journal.git", onShutdown: false },
 			},
 			undefined,
 		);
 
-		expect(settings.scopes.project).toBe("separate");
+		expect(settings.scopes.project).toBe("auto");
 		expect(settings.capture.corrections).toBe(false);
 		expect(settings.sync).toEqual({ remote: "git@example.com:team/journal.git", onShutdown: false });
 		expect(warnings).toEqual([]);
@@ -70,13 +70,12 @@ describe("resolveSettings — project settings tighten only", () => {
 		expect(warnings[0]).toMatchObject({ path: "sync.remote", scope: "project", kind: "not-tightening" });
 	});
 
-	it("lets a project choose or disable its own store", () => {
-		expect(resolveSettings(undefined, { scopes: { project: "in-repo" } }).settings.scopes.project).toBe("in-repo");
+	it("lets a project disable its journal without choosing a path", () => {
 		expect(resolveSettings(undefined, { scopes: { project: false } }).settings.scopes.project).toBe(false);
 	});
 
 	it("does not let a project re-enable project scope", () => {
-		const { settings, warnings } = resolveSettings({ scopes: { project: false } }, { scopes: { project: "in-repo" } });
+		const { settings, warnings } = resolveSettings({ scopes: { project: false } }, { scopes: { project: "auto" } });
 		expect(settings.scopes.project).toBe(false);
 		expect(warnings[0]).toMatchObject({ path: "scopes.project", kind: "not-tightening" });
 	});

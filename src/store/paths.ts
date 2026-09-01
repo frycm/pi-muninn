@@ -1,16 +1,13 @@
 /**
  * Where stores live.
  *
- * Global is one directory under pi's agent dir. A project store is, by default,
- * a *separate* repository keyed by the project's git toplevel — memory is not
- * automatically something you commit into the project everyone clones. The
- * in-repo layout stays available for projects that do want memory in their
- * history, chosen with `scopes.project: "in-repo"`.
+ * Global is one directory under pi's agent dir. Logical project stores are
+ * user-owned repositories named by an opaque project UUID; checkout paths are
+ * aliases in the registry, never durable identity or store names.
  */
-import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 export type ScopeName = "global" | "project" | "team";
 
@@ -24,32 +21,17 @@ export function hostFilePath(agentDir: string): string {
 	return join(agentDir, "muninn", "host.json");
 }
 
-/**
- * A stable, human-readable directory name for a project's separate store.
- *
- * The slug is for the human reading `ls`; the hash is what makes it unique. Two
- * checkouts of the same repository at different paths are deliberately
- * *different* stores: they may be different worktrees of different branches,
- * and silently sharing memory between them would be a surprise.
- */
-export function projectStoreSlug(toplevel: string): string {
-	const hash = createHash("sha256").update(toplevel).digest("hex").slice(0, 12);
-	const name = basename(toplevel)
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, "-")
-		.replace(/^-+|-+$/g, "")
-		.slice(0, 32);
-	return name === "" ? hash : `${name}-${hash}`;
+/** User-owned registry and project stores. Repository content never selects this root. */
+export function projectsRootPath(agentDir: string): string {
+	return join(agentDir, "muninn-projects");
 }
 
-/** The separate project store for a git toplevel. */
-export function separateProjectStorePath(agentDir: string, toplevel: string): string {
-	return join(agentDir, "muninn-projects", projectStoreSlug(toplevel));
+export function projectRegistryPath(agentDir: string): string {
+	return join(projectsRootPath(agentDir), "registry.json");
 }
 
-/** The in-repo project store for a git toplevel. */
-export function inRepoProjectStorePath(toplevel: string, configDirName: string): string {
-	return join(toplevel, configDirName, "muninn");
+export function projectStorePath(agentDir: string, projectId: string): string {
+	return join(projectsRootPath(agentDir), projectId);
 }
 
 /**

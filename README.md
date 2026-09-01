@@ -12,15 +12,17 @@ The design is local-first and composable: append-only JSONL, Git synchronization
 retrieval and no hosted service in the storage or search path.
 
 > [!IMPORTANT]
-> Phase 3 is planned, not implemented. The cleaned foundation currently writes per-checkout
-> Markdown journals and exposes explicit `memory_search`, `memory_read` and `memory_note`
-> tools. It does not inject journal content into model prompts. Phase 3 replaces the
-> checkout-scoped format with one JSONL journal for the logical project and adds the human
-> and team interfaces described below.
+> Phase 3 is underway. Its logical-project resolver is implemented: linked Git worktrees now
+> share one user-owned project UUID and store. The journal inside that store is still the
+> migration-input Markdown format and the temporary tools remain `memory_search`,
+> `memory_read` and `memory_note`. Later Phase 3 slices replace those directly with the JSONL
+> journal and interfaces described below. Journal content is never injected into prompts.
 
 The current Markdown contract is [docs/journal-format.md](docs/journal-format.md). The Phase
 3 target format is [docs/project-journal-format.md](docs/project-journal-format.md), and the
 implementation sequence is [docs/phase-3-plan.md](docs/phase-3-plan.md).
+The implemented identity and registry contract is
+[docs/project-registry.md](docs/project-registry.md).
 
 ## Why a project journal
 
@@ -51,16 +53,18 @@ The repository keeps the parts needed for Phase 3:
 - lexical indexing over journal entries and claims;
 - explicit model search, read and note tools;
 - attended status, note, promote, search, reindex and sync commands;
-- per-host journal paths, store locking and reviewable Git synchronization.
+- per-host journal paths, store locking and reviewable Git synchronization;
+- a user-owned logical-project registry with atomic updates and stable member/project UUIDs;
+- canonical Git common-directory resolution across linked worktrees.
 
-The current project store is resolved from the checkout top-level, so linked worktrees use
-different project stores. Phase 3 fixes that identity boundary and migrates the records.
+The project store is now `<agent-dir>/muninn-projects/<project-id>/`. Checkout roots, Git
+common directories and paths are registry aliases or provenance, never durable identity.
 
 Current model tools:
 
 | Tool | Purpose |
 |---|---|
-| `memory_search` | Search active global and checkout-scoped journals. |
+| `memory_search` | Search active global and logical-project journals. |
 | `memory_read` | Read an entry, claim, journal file or referenced local pi transcript. |
 | `memory_note` | Append an agent-authored note. |
 
@@ -72,6 +76,7 @@ Current attended commands:
 /muninn promote ID
 /muninn search [--limit N] QUERY
 /muninn scope
+/muninn project
 /muninn reindex
 /muninn sync [--no-push]
 ```
@@ -81,19 +86,29 @@ Current headless commands:
 ```text
 muninn status [--scope global|project]
 muninn sync [--scope global|project] [--no-push]
+muninn project link [PATH] [--id UUID] [--name NAME] [--force]
+muninn project show [PATH]
+muninn project unlink [PATH]
 ```
 
-## Phase 3 target
+`project show` and `/muninn project` display the project UUID, member UUID, store, aliases and
+the resolver reason. `unlink` removes the local mapping, not the store or retained project
+record. See the [registry contract](docs/project-registry.md) for relinking and recovery.
+
+## Remaining Phase 3 target
 
 ### One logical project across worktrees
 
-A Git worktree is a checkout, not a project identity. Phase 3 resolves a logical project in
-this order:
+A Git worktree is a checkout, not a project identity. The implemented resolver selects a
+logical project in this order:
 
 1. an explicit mapping in the user-owned Muninn registry;
 2. the canonical `git rev-parse --git-common-dir` shared by linked worktrees;
 3. a newly minted local project UUID for an unregistered Git common directory or non-Git
    root.
+
+A committed `.pi/muninn-project.json` may suggest a UUID to an explicit `muninn project link`
+command. Automatic and untrusted sessions ignore it; it cannot choose a path or remote.
 
 The checkout root, working directory, branch and commit remain on each record as provenance.
 They do not choose the store. Two concurrent pi sessions in linked worktrees therefore append
@@ -270,8 +285,9 @@ The current foundation reads the `muninn` object from pi's settings:
 ```
 
 Project settings are tighten-only. They may disable behavior but cannot name a sync remote or
-re-enable a globally disabled capability. Phase 3 will add identity and query settings only
-where user-owned registry state is insufficient.
+re-enable a globally disabled capability. Identity is not a project setting: only the
+user-owned registry can choose a project UUID or store. Later query settings will be added
+only where registry state is insufficient.
 
 ## Roadmap
 
@@ -283,9 +299,10 @@ temporary migration input, not the final project-journal layout.
 
 ### Phase 3 — logical project journal
 
-Resolve linked worktrees to one project UUID, introduce the sharded JSONL schema, migrate
-existing journal entries, capture deterministic Git provenance, add user correction
-relations, and ship model/human/Unix query interfaces over one service.
+Logical project UUID resolution, linked-worktree discovery, member identity and explicit
+link/show/unlink commands are implemented. The remaining work introduces the sharded JSONL
+schema, migrates existing entries, captures deterministic Git provenance, adds user
+correction relations, and ships model/human/Unix query interfaces over one service.
 
 ### Phase 4 — distributed team journal
 

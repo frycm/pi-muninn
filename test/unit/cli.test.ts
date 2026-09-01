@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,9 +9,10 @@ import { AGENT_DIR_ENV, CONFIG_DIR, resolveAgentDir } from "../../src/agent-dir.
 import { resetCommitDebounce } from "../../src/capture/commit.ts";
 import { runCli } from "../../src/cli.ts";
 import { appendEntry } from "../../src/journal/append.ts";
+import { readProjectRegistry } from "../../src/project/registry.ts";
 import { loadHostIdentity } from "../../src/store/host.ts";
 import { ensureStore } from "../../src/store/init.ts";
-import { globalStorePath } from "../../src/store/paths.ts";
+import { globalStorePath, projectStorePath } from "../../src/store/paths.ts";
 
 const execFileAsync = promisify(execFile);
 const CLI = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
@@ -92,6 +93,34 @@ describe("muninn (cli)", () => {
 		const result = await runCli(["frobnicate"], cwd);
 		expect(result.code).toBe(2);
 		expect(result.err.join("\n")).toContain('unknown command "frobnicate"');
+	});
+
+	it("links, shows, and unlinks a logical project", async () => {
+		const linked = await runCli(["project", "link", "--name", "operations"], cwd);
+		expect(linked.code).toBe(0);
+		expect(linked.out.join("\n")).toContain("operations");
+
+		const shown = await runCli(["project", "show"], cwd);
+		expect(shown.code).toBe(0);
+		expect(shown.out.join("\n")).toContain("selected");
+		expect(shown.out.join("\n")).toContain("aliases");
+
+		const unlinked = await runCli(["project", "unlink"], cwd);
+		expect(unlinked.code).toBe(0);
+		expect((await runCli(["project", "show"], cwd)).code).toBe(1);
+	});
+
+	it("shows the logical project UUID, alias, and resolution reason in status", async () => {
+		await runCli(["project", "link", "--name", "operations"], cwd);
+		const project = readProjectRegistry(agentDir)?.projects[0];
+		expect(project).toBeDefined();
+		await ensureStore(projectStorePath(agentDir, project?.id as string), { host: loadHostIdentity(agentDir) });
+
+		const result = await runCli(["status", "--scope", "project"], cwd);
+		expect(result.code).toBe(0);
+		expect(result.out.join("\n")).toContain(project?.id);
+		expect(result.out.join("\n")).toContain(`alias: ${realpathSync(cwd)}`);
+		expect(result.out.join("\n")).toContain("canonical root mapping");
 	});
 
 	it("says when there is no store to work with", async () => {

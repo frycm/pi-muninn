@@ -58,6 +58,13 @@ export function formatStatus(input: StatusInput): string {
 	lines.push(`⟡ muninn ${input.muninnVersion} · pi ${input.piVersion} · ${input.runtime}`);
 	lines.push("");
 	lines.push(`host      ${host.name} · ${host.id}`);
+	if (input.session.project) {
+		const project = input.session.project;
+		lines.push(`project   ${project.name} · ${project.id}`);
+		lines.push(`member    ${project.member.name} · ${project.member.id}`);
+		lines.push(`resolved  ${project.reasonDetail}`);
+		for (const location of project.locations) lines.push(`alias     ${location.root}`);
+	}
 
 	if (scopes.active.length === 0) {
 		lines.push("stores    none active — nothing is captured or searchable");

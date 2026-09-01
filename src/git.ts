@@ -17,7 +17,8 @@
  * unguarded.)
  */
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -36,7 +37,10 @@ export type GitCommand =
 	| { kind: "add"; paths: string[] }
 	| { kind: "commit"; message: string; paths: string[] }
 	| { kind: "status-porcelain"; paths: string[] }
-	| { kind: "rev-parse"; target: "--show-toplevel" | "--is-inside-work-tree" | "HEAD" }
+	| {
+			kind: "rev-parse";
+			target: "--show-toplevel" | "--git-common-dir" | "--is-inside-work-tree" | "HEAD";
+	  }
 	| { kind: "log-count" }
 	/** The branch HEAD points at — works on an unborn branch, fails when detached. */
 	| { kind: "current-branch" }
@@ -149,10 +153,8 @@ export function toArgv(command: GitCommand): string[] {
 			if (command.message.trim() === "") throw new Error("git commit needs a message");
 			for (const path of command.paths) assertStageable(path);
 			if (command.paths.length === 0) throw new Error("git commit needs a pathspec");
-			// The pathspec is not decoration. An in-repo store lives inside the
-			// user's own repository, where a bare `git commit` would sweep up
-			// whatever they had staged for their own work. Limiting the commit to
-			// Muninn's paths makes that impossible.
+			// The pathspec is not decoration: limiting the commit to Muninn's
+			// allowlisted files makes the boundary independently enforceable.
 			return ["commit", "--quiet", "--no-gpg-sign", "-m", command.message, "--", ...command.paths];
 		}
 		case "status-porcelain":
@@ -231,8 +233,7 @@ export interface GitOptions {
 	 * Passed through the environment rather than written to the repository's
 	 * config: it is needed only by the commands that create commits, and
 	 * supplying it there means no subprocess has to run on every session start
-	 * to make sure a config value is still set. A store Muninn owns gets the
-	 * muninn identity; an in-repo store passes nothing and keeps the project's.
+	 * to make sure a config value is still set.
 	 */
 	identity?: GitIdentity;
 	/**
@@ -329,11 +330,53 @@ export async function gitToplevel(cwd: string): Promise<string | undefined> {
 	}
 }
 
+export interface GitProjectContext {
+	/** Canonical worktree root. Absent for a bare repository. */
+	worktreeRoot?: string;
+	/** Canonical directory shared by every linked worktree. */
+	commonDir: string;
+}
+
+/**
+ * The Git identity inputs for a logical project.
+ *
+ * `--show-toplevel` changes between linked worktrees; `--git-common-dir` does
+ * not. Both outputs are canonicalized before they cross the registry boundary,
+ * including a relative common-dir result and symlinked session paths.
+ */
+export async function gitProjectContext(cwd: string): Promise<GitProjectContext | undefined> {
+	let commonText: string;
+	try {
+		commonText = (await git(cwd, { kind: "rev-parse", target: "--git-common-dir" })).stdout.trim();
+	} catch (error) {
+		if (error instanceof GitMissingError) throw error;
+		return undefined;
+	}
+	if (commonText === "") return undefined;
+
+	const commonCandidate = isAbsolute(commonText) ? commonText : resolve(cwd, commonText);
+	let commonDir: string;
+	try {
+		commonDir = realpathSync(commonCandidate);
+	} catch {
+		return undefined;
+	}
+
+	let worktreeRoot: string | undefined;
+	try {
+		const text = (await git(cwd, { kind: "rev-parse", target: "--show-toplevel" })).stdout.trim();
+		if (text !== "") worktreeRoot = realpathSync(text);
+	} catch {
+		// A bare repository has a common directory but no worktree root.
+	}
+
+	return { commonDir, ...(worktreeRoot ? { worktreeRoot } : {}) };
+}
+
 /**
  * True when any of `paths` has staged or unstaged changes.
  *
- * Always pass a pathspec for a store that might be in-repo: an unscoped status
- * there reports the user's own work as if it were Muninn's.
+ * Always pass a pathspec so a status check stays inside Muninn-owned files.
  */
 export async function hasChanges(cwd: string, paths: string[]): Promise<boolean> {
 	const { stdout } = await git(cwd, { kind: "status-porcelain", paths });

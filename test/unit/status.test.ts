@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ResolvedProject } from "../../src/project/resolver.ts";
 import type { SessionContext } from "../../src/session.ts";
 import { DEFAULT_SETTINGS, type SettingsWarning } from "../../src/settings.ts";
 import type { LoadedSettingsWithSources } from "../../src/settings-io.ts";
@@ -6,6 +7,25 @@ import { formatScopes, formatStatus, formatStatusLine } from "../../src/status.t
 import type { ScopeDecision } from "../../src/store/scopes.ts";
 
 const HOST_ID = "0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b01";
+
+function project(): ResolvedProject {
+	return {
+		id: "0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b02",
+		name: "app",
+		storePath: "/home/u/.pi/agent/muninn-projects/0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b02",
+		registryPath: "/home/u/.pi/agent/muninn-projects/registry.json",
+		member: {
+			id: "0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b03",
+			name: "martin",
+			createdAt: "2026-09-01T00:00:00.000Z",
+		},
+		root: "/src/app",
+		gitCommonDir: "/src/app/.git",
+		locations: [{ root: "/src/app", gitCommonDir: "/src/app/.git", linkedAt: "2026-09-01T00:00:00.000Z" }],
+		reason: "root",
+		reasonDetail: "canonical root mapping /src/app",
+	};
+}
 
 function loaded(overrides: Partial<LoadedSettingsWithSources> = {}): LoadedSettingsWithSources {
 	return {
@@ -22,8 +42,8 @@ function loaded(overrides: Partial<LoadedSettingsWithSources> = {}): LoadedSetti
 function scopes(overrides: Partial<ScopeDecision> = {}): ScopeDecision {
 	return {
 		active: [
-			{ scope: "global", path: "/home/u/.pi/agent/muninn", exists: true, inRepo: false },
-			{ scope: "project", path: "/home/u/.pi/agent/muninn-projects/app-abc123", exists: true, inRepo: false },
+			{ scope: "global", path: "/home/u/.pi/agent/muninn", exists: true },
+			{ scope: "project", path: "/home/u/.pi/agent/muninn-projects/project-id", exists: true },
 		],
 		captureTarget: "project",
 		reasons: ["global: active", "project: active, separate store at /p", "capture target: project"],
@@ -59,6 +79,14 @@ describe("formatStatus", () => {
 		// Ids are never truncated in anything that could be copied into a file or
 		// a tool call; only the renderer's own shortening does that.
 		expect(status()).toContain(`mbp · ${HOST_ID}`);
+	});
+
+	it("shows project, member, aliases, and why the resolver selected them", () => {
+		const report = status({ project: project() });
+		expect(report).toContain("project   app · 0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b02");
+		expect(report).toContain("member    martin · 0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b03");
+		expect(report).toContain("resolved  canonical root mapping /src/app");
+		expect(report).toContain("alias     /src/app");
 	});
 
 	it("marks which store is the capture target", () => {

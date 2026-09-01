@@ -7,9 +7,7 @@
  * outcome should leave one commit, not two.
  *
  * Nothing here touches any path but `journal/`. That is enforced by `git.ts`'s
- * allow-list rather than by convention, and the commit carries a pathspec, so
- * an in-repo store cannot sweep up work the developer had staged for
- * themselves.
+ * allow-list rather than by convention, and the commit carries a pathspec.
  */
 import { GitError, type GitIdentity, GitMissingError, git, hasChanges, isGitRepository } from "../git.ts";
 import { withStoreLock } from "../store/lock.ts";
@@ -35,7 +33,7 @@ export interface CommitOptions {
 	entries: number;
 	/** Skip the debounce. The shutdown path does; the per-run path does not. */
 	force?: boolean;
-	/** The identity to commit under. Absent for an in-repo store, which keeps the project's. */
+	/** The identity to commit under. */
 	identity?: GitIdentity;
 	/** Overrides the clock. Tests use it. */
 	now?: number;

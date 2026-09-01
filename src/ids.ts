@@ -89,6 +89,26 @@ export function isHostId(value: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Member and logical project
+// ---------------------------------------------------------------------------
+
+export function newMemberId(): string {
+	return uuidv7();
+}
+
+export function isMemberId(value: string): boolean {
+	return UUID_V7.test(value);
+}
+
+export function newProjectId(): string {
+	return uuidv7();
+}
+
+export function isProjectId(value: string): boolean {
+	return UUID_V7.test(value);
+}
+
+// ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 

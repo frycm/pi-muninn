@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { MuninnSessionState } from "../../src/capture/session-state.ts";
 import { type CommandRuntime, parseFlags, runMuninnCommand, USAGE } from "../../src/commands/muninn.ts";
@@ -20,6 +20,7 @@ let created: number;
 let synced: number;
 
 const SESSION_POINTER = "/sessions/2026-08-22_0198f2b0.jsonl#e5f6g7h8";
+const PROJECT_ID = "0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b02";
 
 beforeEach(() => {
 	global = mkdtempSync(join(tmpdir(), "muninn-cmd-global-"));
@@ -48,11 +49,27 @@ function sessionContext(
 				project: { path: "/src/app/.pi/settings.json", present: false, hasMuninnBlock: false },
 			},
 		},
+		project: {
+			id: PROJECT_ID,
+			name: "app",
+			storePath: project,
+			registryPath: "/home/u/.pi/agent/muninn-projects/registry.json",
+			member: {
+				id: "0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b03",
+				name: "martin",
+				createdAt: "2026-09-01T00:00:00.000Z",
+			},
+			root: "/src/app",
+			gitCommonDir: "/src/app/.git",
+			locations: [{ root: "/src/app", gitCommonDir: "/src/app/.git", linkedAt: "2026-09-01T00:00:00.000Z" }],
+			reason: "root",
+			reasonDetail: "canonical root mapping /src/app",
+		},
 		scopes: {
 			active: names.map((name) =>
 				name === "global"
-					? { scope: "global" as const, path: global, exists: true, inRepo: false }
-					: { scope: "project" as const, path: project, exists: true, inRepo: false, slug: `app-${basename(project)}` },
+					? { scope: "global" as const, path: global, exists: true }
+					: { scope: "project" as const, path: project, exists: true, projectId: "project-id" },
 			),
 			captureTarget: options.captureTarget === undefined ? "project" : options.captureTarget,
 			reasons: ["global: active", "project: active, separate store at /p", "capture target: project"],
@@ -153,6 +170,14 @@ describe("/muninn", () => {
 		expect(output.text).toContain("project: sync: committed");
 		expect(output.text).toContain("no sync.remote configured");
 	});
+
+	it("shows the active logical project and aliases without creating a store", async () => {
+		const output = await runMuninnCommand("project", runtimeFor(sessionContext()));
+		expect(output.level).toBe("info");
+		expect(output.text).toContain(PROJECT_ID);
+		expect(output.text).toContain("git common dir: /src/app/.git");
+		expect(created).toBe(0);
+	});
 });
 
 describe("/muninn scope", () => {
@@ -225,7 +250,7 @@ describe("/muninn promote", () => {
 		expect(promoted?.cue).toBe("when CI hangs");
 		expect(promoted?.phase).toBe("test");
 		expect(promoted?.session).toBe(SESSION_POINTER);
-		expect(promoted?.promotedFrom).toBe(`${session.scopes.active[1]?.slug}/${written.id}`);
+		expect(promoted?.promotedFrom).toBe(`${PROJECT_ID}/${written.id}`);
 		// A copy, not a move: the journal is append-only.
 		expect(readStoreJournal(project).entries).toHaveLength(1);
 	});

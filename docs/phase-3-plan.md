@@ -263,7 +263,7 @@ goal.
 Done when active source/tests/docs contain no obsolete surface and the branch is one clean
 commit relative to `main`.
 
-### PR 1 — logical project resolver
+### PR 1 — logical project resolver (implemented)
 
 - Add user-owned project registry schema and atomic writes.
 - Resolve canonical Git common directory and worktree root.
@@ -276,6 +276,10 @@ untrusted hints, corrupted registry and concurrent registry update.
 
 Done when two linked worktrees resolve to the same project UUID and store without using the
 code-remote URL as identity.
+
+Implemented with a locked, atomically replaced user registry, UUID-only external stores,
+canonical root/common-directory aliases, member identity, attended status and explicit CLI
+link/show/unlink commands. The resolver suite covers every case listed above.
 
 ### PR 2 — JSONL schema and append engine
 

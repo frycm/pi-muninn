@@ -67,9 +67,9 @@ The implemented store contains:
 these entries into [project-journal-format.md](project-journal-format.md) while preserving
 IDs, timestamps, source, body, task grouping and session pointers.
 
-The current project-scope identity is the canonical checkout top-level. This is the known
-boundary Phase 3 replaces: linked worktrees must resolve to one logical project UUID while
-their individual paths remain record provenance.
+Phase 1 originally used the canonical checkout top-level as project identity. Phase 3 PR 1
+has replaced that boundary with a logical project UUID and Git-common-directory resolver;
+the temporary Markdown store now lives at that UUID path while migration is pending.
 
 ## Foundation acceptance
 

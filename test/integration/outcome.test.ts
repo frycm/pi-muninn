@@ -7,13 +7,15 @@
  * prompt — in particular, one with none of Muninn's own messages in it.
  */
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readStoreJournal } from "../../src/journal/read.ts";
+import { readProjectRegistry } from "../../src/project/registry.ts";
+import { projectStorePath } from "../../src/store/paths.ts";
 import { type MockProvider, type MockScript, startMockProvider } from "../fixtures/mock-provider.ts";
 
 const execFileAsync = promisify(execFile);
@@ -69,10 +71,9 @@ async function pi(prompt: string, extra: string[] = []): Promise<{ stdout: strin
 }
 
 function projectStore(): string {
-	const projects = join(agentDir, "muninn-projects");
-	const entries = existsSync(projects) ? readdirSync(projects) : [];
-	expect(entries).toHaveLength(1);
-	return join(projects, entries[0] as string);
+	const registry = readProjectRegistry(agentDir);
+	expect(registry?.projects).toHaveLength(1);
+	return projectStorePath(agentDir, registry?.projects[0]?.id as string);
 }
 
 async function setUp(
