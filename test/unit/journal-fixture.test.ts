@@ -20,7 +20,7 @@ describe("a real day's journal", () => {
 		expect(read.problems[0]?.kind).toBe("truncated");
 	});
 
-	it("keeps provenance, task grouping and derivation", () => {
+	it("keeps provenance and task grouping", () => {
 		const [first, second, third] = readDailyFile(FIXTURE).entries;
 
 		expect(first?.source).toBe("user");
@@ -30,8 +30,6 @@ describe("a real day's journal", () => {
 
 		expect(second?.source).toBe("tool");
 		expect(second?.task).toBe(first?.task);
-		expect(second?.recalled).toEqual([`${first?.id}.1`]);
-		expect(second?.used).toEqual([`${first?.id}.1`]);
 
 		expect(third?.redacted).toBe(true);
 	});

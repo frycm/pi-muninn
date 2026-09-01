@@ -1,15 +1,13 @@
 /**
  * `memory_read` — one memory, in full, by the id a search returned.
  *
- * Four things can be read, because memory has four layers and a model chasing
- * a claim should not have to care which one it is in:
+ * A model can read:
  *
  *  - `j-<uuid>` — a whole journal entry: its metadata, the prose that gives it
  *    a situation, and every claim it carries with its address.
  *  - `j-<uuid>.<n>` — one claim, shown inside its entry, because a claim
  *    without its context is exactly the thing this project refuses to trust.
- *  - a store-relative path — `MEMORY.md`, a topic file, `rules.md`, a daily
- *    file — with an optional line range.
+ *  - a store-relative journal file, with an optional line range.
  *  - a `session:` pointer — pi's own transcript underneath an entry, which is
  *    the evidence the journal deliberately does not copy.
  *
@@ -26,7 +24,6 @@ import { type Static, Type } from "typebox";
 import { messageText } from "../capture/accumulate.ts";
 import { isEntryId, parseClaimId } from "../ids.ts";
 import { findEntry, referencedSessionFiles, splitSessionPointer } from "../journal/lookup.ts";
-import { readSupersessions } from "../journal/supersessions.ts";
 import type { SessionContext } from "../session.ts";
 import { canonicalPath, isInside } from "../store/paths.ts";
 import { renderEntry, renderFile, TOOL_OUTPUT_CHARS, trailer, truncate } from "./render.ts";
@@ -39,13 +36,12 @@ const SESSION_ENTRY_CHARS = 1_200;
 export const MEMORY_READ_PARAMETERS = Type.Object({
 	id: Type.Optional(
 		Type.String({
-			description:
-				"A memory id from memory_search: an entry (j-…), a claim (j-….1), a fact (f-…), a rule (R-…), or a session: pointer taken from an entry's session field.",
+			description: "A journal entry (j-…), claim (j-….1), or session pointer taken from an entry.",
 		}),
 	),
 	path: Type.Optional(
 		Type.String({
-			description: "A path inside a memory store, such as MEMORY.md, rules.md or topics/testing.md.",
+			description: "A path inside an active journal store.",
 		}),
 	),
 	range: Type.Optional(Type.String({ description: "Line range for a path read, as first-last (for example 20-80)." })),
@@ -54,9 +50,8 @@ export const MEMORY_READ_PARAMETERS = Type.Object({
 export type MemoryReadParams = Static<typeof MEMORY_READ_PARAMETERS>;
 
 export const MEMORY_READ_DESCRIPTION = [
-	"Read one memory in full: a journal entry with the situation it came from, a single claim inside its entry, a memory file, or the pi session transcript an entry points at.",
-	"Takes an id from memory_search, or a path inside a memory store.",
-	"Superseded claims are shown and labelled rather than hidden — this is the tool for looking at what memory used to say.",
+	"Read a journal entry with its context, a single claim inside its entry, a journal file, or the pi session transcript an entry points at.",
+	"Takes an id from memory_search, or a path inside an active journal store.",
 ].join(" ");
 
 export function memoryReadTool(runtime: ToolRuntime) {
@@ -103,10 +98,8 @@ function readById(runtime: ToolRuntime, id: string): string {
 	const entryId = claim?.entryId ?? (isEntryId(id) ? id : undefined);
 	if (entryId) return readEntry(indexes, entryId, claim ? id : undefined);
 
-	// A fact, a rule, or a chunk of a memory file: the index already holds its
-	// text and knows which file it came from.
 	const found = indexes.find(id);
-	if (!found) throw new Error(`muninn: nothing in memory has the id ${id}`);
+	if (!found) throw new Error(`muninn: no journal record has the id ${id}`);
 	return truncate(
 		[trailer({ ...found.chunk, scope: found.scope.scope }), `file: ${found.chunk.path}`, "", found.chunk.body].join(
 			"\n",
@@ -120,7 +113,6 @@ function readEntry(indexes: NonNullable<ReturnType<ToolRuntime["indexes"]>>, ent
 	return renderEntry(found.entry, {
 		scope: found.scope,
 		path: found.path,
-		superseded: readSupersessions(found.storePath).superseded,
 		...(found.date ? { date: found.date } : {}),
 		...(claim ? { claim } : {}),
 	});

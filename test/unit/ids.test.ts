@@ -3,13 +3,10 @@ import {
 	claimId,
 	isClaimId,
 	isEntryId,
-	isFactId,
 	isUuidV7,
 	newEntryId,
-	newFactId,
 	newHostId,
 	parseClaimId,
-	parseFactId,
 	shortenId,
 	uuidv7,
 	uuidv7Timestamp,
@@ -90,24 +87,6 @@ describe("entry and claim ids", () => {
 		expect(parseClaimId(`${entry}.01`)).toBeNull();
 		expect(parseClaimId(`${entry}.x`)).toBeNull();
 		expect(parseClaimId(`${entry}.`)).toBeNull();
-	});
-});
-
-describe("fact ids", () => {
-	it("round-trips a topic that itself contains hyphens", () => {
-		const id = newFactId("deploy-pipeline");
-		expect(isFactId(id)).toBe(true);
-		expect(parseFactId(id)?.topic).toBe("deploy-pipeline");
-	});
-
-	it("refuses a topic that is not a slug", () => {
-		expect(() => newFactId("Deploy Pipeline")).toThrow();
-		expect(() => newFactId("")).toThrow();
-	});
-
-	it("rejects a fact id whose tail is not a uuidv7", () => {
-		expect(isFactId("f-testing-not-a-uuid")).toBe(false);
-		expect(isFactId(newEntryId())).toBe(false);
 	});
 });
 

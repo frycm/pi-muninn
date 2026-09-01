@@ -5,12 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { newHostId } from "../../src/ids.ts";
 import { appendEntry } from "../../src/journal/append.ts";
 import { listJournalFiles, readStoreJournal } from "../../src/journal/read.ts";
-import {
-	emptySupersessions,
-	formatSupersession,
-	parseSupersessions,
-	readSupersessions,
-} from "../../src/journal/supersessions.ts";
 
 let store: string;
 
@@ -88,57 +82,5 @@ describe("readStoreJournal", () => {
 
 	it("returns nothing for an empty store", () => {
 		expect(readStoreJournal(store)).toEqual({ entries: [], problems: [] });
-	});
-});
-
-describe("supersessions", () => {
-	it("treats an absent file as nothing superseded", () => {
-		expect(readSupersessions(store)).toEqual(emptySupersessions());
-		expect(readSupersessions(store).superseded.size).toBe(0);
-	});
-
-	it("parses the documented line shape", () => {
-		const line = `- ${ID_A}.1 · valid_to: 2026-08-22 · by: ${ID_B}.1 · fact: f-testing-01a02e19-f1c6-7142-bcb1-2806083bd725`;
-		const result = parseSupersessions(line);
-		expect(result.problems).toEqual([]);
-		expect(result.superseded.has(`${ID_A}.1`)).toBe(true);
-		expect(result.byClaim.get(`${ID_A}.1`)).toEqual({
-			claim: `${ID_A}.1`,
-			validTo: "2026-08-22",
-			by: `${ID_B}.1`,
-			fact: "f-testing-01a02e19-f1c6-7142-bcb1-2806083bd725",
-		});
-	});
-
-	it("keys on a claim, never a whole entry", () => {
-		// One outcome entry routinely supports several independent facts;
-		// superseding one of them must not hide the others.
-		const result = parseSupersessions(`- ${ID_A}.1 · valid_to: 2026-08-22`);
-		expect(result.superseded.has(`${ID_A}.1`)).toBe(true);
-		expect(result.superseded.has(`${ID_A}.2`)).toBe(false);
-		expect(result.superseded.has(ID_A)).toBe(false);
-	});
-
-	it("reports a line whose key is not a claim id", () => {
-		const result = parseSupersessions(`- ${ID_A} · valid_to: 2026-08-22`);
-		expect(result.superseded.size).toBe(0);
-		expect(result.problems).toHaveLength(1);
-	});
-
-	it("ignores headings and blank lines", () => {
-		const result = parseSupersessions(`# Supersessions\n\n- ${ID_A}.1 · valid_to: 2026-08-22\n\n`);
-		expect(result.superseded.size).toBe(1);
-		expect(result.problems).toEqual([]);
-	});
-
-	it("round-trips a line it formatted", () => {
-		const entry = {
-			claim: `${ID_A}.2`,
-			validTo: "2026-08-22",
-			by: `${ID_B}.1`,
-			fact: "f-testing-01a02e19-f1c6-7142-bcb1-2806083bd725",
-		};
-		const parsed = parseSupersessions(formatSupersession(entry));
-		expect(parsed.byClaim.get(entry.claim)).toEqual(entry);
 	});
 });

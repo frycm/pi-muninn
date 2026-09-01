@@ -1,17 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { estimateTokens, MUNINN_MESSAGE_TYPE, RunAccumulator, renderRun } from "../../src/capture/accumulate.ts";
-import {
-	buildOutcomePrompt,
-	findEchoes,
-	jaccard,
-	outcomeEntry,
-	parseOutcome,
-	shouldWriteOutcome,
-} from "../../src/capture/outcome.ts";
+import { estimateTokens, RunAccumulator, renderRun } from "../../src/capture/accumulate.ts";
+import { buildOutcomePrompt, outcomeEntry, parseOutcome, shouldWriteOutcome } from "../../src/capture/outcome.ts";
 import { runOutcome } from "../../src/capture/outcome-run.ts";
 import type { MuninnSessionState } from "../../src/capture/session-state.ts";
 
-const STATE: MuninnSessionState = { task: "0198f2b0-1111-7000-8000-000000000001", recalled: [], written: [] };
+const STATE: MuninnSessionState = { task: "0198f2b0-1111-7000-8000-000000000001", written: [] };
 
 function assistant(text: string, toolCalls: string[] = []) {
 	return {
@@ -32,8 +25,6 @@ const GOOD_REPLY = [
 	"",
 	"- Run `pnpm test --run`; vitest watch mode hangs the CI job.",
 	"- The CI runner has no TTY, which is why watch mode never exits.",
-	"",
-	"used: j-0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b01.1",
 ].join("\n");
 
 describe("RunAccumulator", () => {
@@ -56,27 +47,7 @@ describe("RunAccumulator", () => {
 		expect(run.peek().messages.map((message) => message.text)).toEqual(["the task", "the answer"]);
 	});
 
-	it("strips Muninn's own messages and keeps their ids", () => {
-		// The outcome model must never see them: a recalled fact restated by the
-		// model and journaled as a fresh observation would corroborate itself.
-		const run = new RunAccumulator();
-		run.onAgentEnd([
-			{
-				role: "custom",
-				customType: MUNINN_MESSAGE_TYPE,
-				content: "Remember: always use pnpm",
-				details: { ids: ["f-testing-0198f2c2-0a1b-7c2d-8e3f-405162738495"] },
-			},
-			assistant("Using pnpm then."),
-		]);
-
-		const buffer = run.peek();
-		expect(buffer.messages).toHaveLength(1);
-		expect(buffer.messages[0]?.text).toBe("Using pnpm then.");
-		expect(buffer.recalled).toEqual(["f-testing-0198f2c2-0a1b-7c2d-8e3f-405162738495"]);
-	});
-
-	it("keeps another extension's custom messages", () => {
+	it("keeps custom messages as ordinary visible evidence", () => {
 		const run = new RunAccumulator();
 		run.onAgentEnd([{ role: "custom", customType: "someone-else", content: "their note" }]);
 		expect(run.peek().messages).toHaveLength(1);
@@ -122,7 +93,6 @@ describe("parseOutcome", () => {
 		expect(parsed.outcome.cue).toBe("when vitest hangs in CI");
 		expect(parsed.outcome.claims).toHaveLength(2);
 		expect(parsed.outcome.prose).toBe("The CI job hung until watch mode was disabled.");
-		expect(parsed.outcome.used).toEqual(["j-0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b01.1"]);
 	});
 
 	it("tolerates a code fence the model added anyway", () => {
@@ -162,42 +132,11 @@ describe("parseOutcome", () => {
 		if (!parsed.ok) return;
 		expect(parsed.outcome.claims).toEqual(["a claim that wrapped"]);
 	});
-
-	it("drops a `used: none`", () => {
-		const parsed = parseOutcome("phase: fix\n\n- a claim\n\nused: none");
-		expect(parsed.ok).toBe(true);
-		if (!parsed.ok) return;
-		expect(parsed.outcome.used).toEqual([]);
-	});
-});
-
-describe("echoes", () => {
-	it("scores identical text as 1 and unrelated text near 0", () => {
-		expect(jaccard("run pnpm test", "run pnpm test")).toBe(1);
-		expect(jaccard("run pnpm test", "the sky is blue")).toBeLessThan(0.2);
-	});
-
-	it("finds a claim that merely restates a recalled fact", () => {
-		// Without this a fact would corroborate itself: recalled, restated in the
-		// outcome, observed again next session, promoted on use_count.
-		const recalled = new Map([["f-testing-1", "Run `pnpm test --run`, never watch mode"]]);
-		expect(findEchoes(["Run `pnpm test --run`, never watch mode"], recalled)).toEqual(["f-testing-1"]);
-	});
-
-	it("does not flag a genuinely new claim", () => {
-		const recalled = new Map([["f-testing-1", "Run `pnpm test --run`, never watch mode"]]);
-		expect(findEchoes(["Integration tests need DATABASE_URL set"], recalled)).toEqual([]);
-	});
-
-	it("finds nothing when nothing was recalled", () => {
-		expect(findEchoes(["anything at all"], new Map())).toEqual([]);
-	});
 });
 
 describe("shouldWriteOutcome", () => {
 	const buffer = (toolCallCount: number, turnCount: number, messages = 2) => ({
 		messages: Array.from({ length: messages }, () => ({ role: "assistant", text: "x", toolCalls: [] })),
-		recalled: [],
 		toolCallCount,
 		turnCount,
 	});
@@ -226,40 +165,24 @@ describe("shouldWriteOutcome", () => {
 });
 
 describe("buildOutcomePrompt", () => {
-	it("lists recalled memories so the model can cite what mattered", () => {
-		const state = { ...STATE, recalled: ["f-testing-1"] };
+	it("contains the bounded run transcript and no implicit journal context", () => {
 		const prompt = buildOutcomePrompt({
 			buffer: {
 				messages: [{ role: "assistant", text: "did a thing", toolCalls: [] }],
-				recalled: [],
-				toolCallCount: 0,
-				turnCount: 1,
-			},
-			state,
-			recalledTexts: new Map([["f-testing-1", "always use pnpm"]]),
-		});
-		expect(prompt).toContain("f-testing-1: always use pnpm");
-		expect(prompt).toContain("did a thing");
-	});
-
-	it("omits the memories section when nothing was recalled", () => {
-		const prompt = buildOutcomePrompt({
-			buffer: {
-				messages: [{ role: "assistant", text: "x", toolCalls: [] }],
-				recalled: [],
 				toolCallCount: 0,
 				turnCount: 1,
 			},
 			state: STATE,
 		});
-		expect(prompt).not.toContain("Memories in context");
+		expect(prompt).toContain("did a thing");
+		expect(prompt).not.toContain("Journal context");
 	});
 });
 
 describe("outcomeEntry", () => {
 	const request = {
-		buffer: { messages: [], recalled: [], toolCallCount: 0, turnCount: 0 },
-		state: { ...STATE, recalled: ["f-testing-1", "f-testing-2"] },
+		buffer: { messages: [], toolCallCount: 0, turnCount: 0 },
+		state: STATE,
 	};
 
 	it("marks the entry as the agent's own inference", () => {
@@ -269,16 +192,6 @@ describe("outcomeEntry", () => {
 		expect(entry.source).toBe("agent");
 		expect(entry.phase).toBe("test");
 		expect(entry.task).toBe(STATE.task);
-		expect(entry.recalled).toEqual(["f-testing-1", "f-testing-2"]);
-	});
-
-	it("drops a `used` id that was never actually in context", () => {
-		// `used` is the only input to use_count. A model naming something it never
-		// saw must not be able to inflate it.
-		const parsed = parseOutcome("phase: fix\n\ncontext\n\n- a claim\n\nused: f-testing-1, f-invented-9");
-		if (!parsed.ok) throw new Error("fixture failed to parse");
-		const entry = outcomeEntry(parsed.outcome, request, { channel: "tui" });
-		expect(entry.used).toEqual(["f-testing-1"]);
 	});
 });
 
@@ -286,7 +199,6 @@ describe("runOutcome", () => {
 	const request = {
 		buffer: {
 			messages: [{ role: "assistant", text: "did a thing", toolCalls: ["bash"] }],
-			recalled: [],
 			toolCallCount: 1,
 			turnCount: 2,
 		},

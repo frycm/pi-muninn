@@ -4,15 +4,15 @@
  * Commit this host's journal → fetch → rebase onto the remote head → push.
  * That is the whole transaction, and it is conflict-free by construction:
  * journal files are per host directory, so no two machines ever write the same
- * file, and the derived layers change only through a remembered dream.
+ * file.
  *
  * Two consequences the code is shaped around:
  *
  *  - **The one conflict Phase 1 can resolve is `store.md`.** Two hosts
  *    registering themselves at the same time write the same registry file. That
  *    is a union of additions, so it is merged and the rebase continues. Any
- *    other conflict — a hand-edited topic file, two remembered dreams — aborts
- *    the rebase, leaves the store exactly where it was, and reports. Sync never
+ *    other conflict aborts the rebase, leaves the store exactly where it was,
+ *    and reports. Sync never
  *    force-pushes and never resolves a disagreement it does not understand.
  *  - **Offline is a normal outcome, not a failure.** A fetch that cannot reach
  *    the remote leaves the journal committed locally and says so once. The
@@ -25,7 +25,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
-import { DREAM_BRANCH_PREFIX } from "../dream/worktree.ts";
 import { GitError, type GitIdentity, GitMissingError, git, isGitRepository } from "../git.ts";
 import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import { formatStoreMd, mergeStoreMd, parseStoreMd, type StoreMd } from "../store/store-md.ts";
@@ -179,15 +178,6 @@ async function transaction(options: SyncOptions, result: SyncResult): Promise<Sy
 			// two unrelated memories, merged, on a remote neither of them owns.
 			const mismatch = await storeMismatch(options.storePath, remoteRef);
 			if (mismatch) return stop(result, "rebase", mismatch);
-			if (await historyRewritten(options.storePath, remoteRef)) {
-				return stop(
-					result,
-					"rebase",
-					`${remoteRef} shares no history with this clone — someone ran an erasure and rewrote it. ` +
-						"Rebasing would put the erased text back. Re-clone the store instead: " +
-						`move this directory aside and \`git clone <remote> ${options.storePath}\`.`,
-				);
-			}
 			if (options.signal?.aborted) return stop(result, "rebase", "sync ran out of time before rebasing");
 			result.stoppedAt = "rebase";
 			const rebased = await rebaseOnto(options.storePath, remoteRef, result, options.identity);
@@ -213,13 +203,6 @@ async function transaction(options: SyncOptions, result: SyncResult): Promise<Sy
 			result.pushed = true;
 			delete result.stoppedAt;
 			result.notes.push(`pushed to ${REMOTE_NAME}/${branch}`);
-			// Dream branches travel with the store, so `/muninn dreams` on the
-			// laptop lists the server's overnight dream and can remember it.
-			// Pushed after `main` and never allowed to fail the sync: a dream
-			// that did not travel is an inconvenience, an unsynced journal is a
-			// gap in memory.
-			const dreams = await pushDreamBranches(options, result);
-			if (dreams > 0) result.notes.push(`pushed ${dreams} dream branch(es)`);
 		} catch (error) {
 			result.stoppedAt = "push";
 			// A rejected push means another host pushed between our fetch and
@@ -230,38 +213,6 @@ async function transaction(options: SyncOptions, result: SyncResult): Promise<Sy
 
 		return result;
 	}
-}
-
-/**
- * Push every local dream branch, best effort.
- *
- * Each on its own, because one branch another host already has must not stop
- * the rest from travelling.
- */
-async function pushDreamBranches(options: SyncOptions, result: SyncResult): Promise<number> {
-	let pushed = 0;
-	let branches: string[] = [];
-	try {
-		branches = (await git(options.storePath, { kind: "branch-list", prefix: DREAM_BRANCH_PREFIX })).stdout
-			.split("\n")
-			.map((line) => line.trim())
-			.filter((line) => line !== "");
-	} catch {
-		return 0;
-	}
-	for (const branch of branches) {
-		try {
-			await git(
-				options.storePath,
-				{ kind: "push-ref", remote: REMOTE_NAME, ref: branch },
-				options.signal ? { signal: options.signal } : {},
-			);
-			pushed++;
-		} catch (error) {
-			result.notes.push(`dream branch ${branch} was not pushed: ${describe(error)}`);
-		}
-	}
-	return pushed;
 }
 
 function stop(result: SyncResult, step: SyncStep, problem: string): SyncResult {
@@ -371,24 +322,6 @@ async function currentBranch(storePath: string): Promise<string> {
  * The genuine first push has no `origin/<branch>` ref at all and never reaches
  * this function.
  */
-/**
- * Whether the remote's history and ours have diverged with no common ancestor.
- *
- * That is what an erasure looks like from the other side: `filter-repo` rewrote
- * every commit, so the remote shares no commit with this clone. Rebasing would
- * replay this host's whole journal on top of the rewritten history and put the
- * erased bytes straight back — which is precisely what erasure exists to
- * prevent. So it is detected and refused, with the one command that fixes it.
- */
-async function historyRewritten(storePath: string, remoteRef: string): Promise<boolean> {
-	try {
-		await git(storePath, { kind: "merge-base", a: "HEAD", b: remoteRef });
-		return false;
-	} catch {
-		return true;
-	}
-}
-
 async function storeMismatch(storePath: string, remoteRef: string): Promise<string | undefined> {
 	let ours: StoreMd | undefined;
 	try {

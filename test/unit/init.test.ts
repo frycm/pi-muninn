@@ -38,7 +38,6 @@ describe("ensureStore — creating", () => {
 
 		expect(existsSync(join(store, ".git"))).toBe(true);
 		expect(existsSync(join(store, "store.md"))).toBe(true);
-		expect(existsSync(join(store, "MEMORY.md"))).toBe(true);
 		expect(existsSync(join(store, ".gitignore"))).toBe(true);
 		expect(existsSync(join(store, "journal", host.id))).toBe(true);
 		expect(await log(store)).toBe("1");
@@ -113,13 +112,6 @@ describe("ensureStore — idempotence", () => {
 		expect(await log(store)).toBe("2");
 		expect(existsSync(join(store, "journal", other.id))).toBe(true);
 	});
-
-	it("keeps a hand-edited MEMORY.md", async () => {
-		await ensureStore(store, { host });
-		writeFileSync(join(store, "MEMORY.md"), "# Memory\n\n- something I wrote by hand\n");
-		await ensureStore(store, { host });
-		expect(readFileSync(join(store, "MEMORY.md"), "utf-8")).toContain("by hand");
-	});
 });
 
 describe("ensureStore — refusing to make things worse", () => {
@@ -145,9 +137,9 @@ describe("ensureStore — in-repo stores live in someone else's repository", () 
 		await git(repo, { kind: "init" });
 		await git(repo, { kind: "config", key: "user.name", value: "Real Developer" });
 		await git(repo, { kind: "config", key: "user.email", value: "dev@example.com" });
-		writeFileSync(join(repo, "MEMORY.md"), "project file that happens to share a name\n");
-		await git(repo, { kind: "add", paths: ["MEMORY.md"] });
-		await git(repo, { kind: "commit", message: "initial", paths: ["MEMORY.md"] });
+		writeFileSync(join(repo, "store.md"), "project file that happens to share a name\n");
+		await git(repo, { kind: "add", paths: ["store.md"] });
+		await git(repo, { kind: "commit", message: "initial", paths: ["store.md"] });
 		return repo;
 	}
 
@@ -164,14 +156,14 @@ describe("ensureStore — in-repo stores live in someone else's repository", () 
 		// whatever was already in the index. The pathspec on commit prevents it.
 		const repo = await makeProjectRepo();
 		writeFileSync(join(repo, "feature.txt"), "half-finished work\n");
-		await git(repo, { kind: "add", paths: ["MEMORY.md"] });
-		writeFileSync(join(repo, "MEMORY.md"), "developer's own edit, staged\n");
-		await git(repo, { kind: "add", paths: ["MEMORY.md"] });
+		await git(repo, { kind: "add", paths: ["store.md"] });
+		writeFileSync(join(repo, "store.md"), "developer's own edit, staged\n");
+		await git(repo, { kind: "add", paths: ["store.md"] });
 
 		await ensureStore(join(repo, ".pi", "muninn"), { host, inRepo: true });
 
-		const { stdout } = await git(repo, { kind: "status-porcelain", paths: ["MEMORY.md"] });
-		expect(stdout).toContain("MEMORY.md"); // still staged, not committed by muninn
+		const { stdout } = await git(repo, { kind: "status-porcelain", paths: ["store.md"] });
+		expect(stdout).toContain("store.md"); // still staged, not committed by muninn
 		expect(existsSync(join(repo, "feature.txt"))).toBe(true);
 	});
 
@@ -231,7 +223,6 @@ describe("a store that an older build let an enclosing repository adopt", () => 
 				join(nested, "store.md"),
 				"# muninn store\n\nschema: 1\nstore: 0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b01\ncreated: 2026-08-01\n\n## Hosts\n\n",
 			);
-			writeFileSync(join(nested, "MEMORY.md"), "# Memory\n");
 			writeFileSync(join(nested, ".gitignore"), ".index/\n");
 			await execFileAsync("git", ["add", "-A"], { cwd: outer });
 			await execFileAsync("git", ["commit", "--quiet", "-m", "adopted"], { cwd: outer });
@@ -241,7 +232,7 @@ describe("a store that an older build let an enclosing repository adopt", () => 
 			const { stdout: status } = await execFileAsync("git", ["status", "--porcelain"], { cwd: nested });
 			expect(status.trim()).toBe("");
 			const { stdout: tracked } = await execFileAsync("git", ["ls-tree", "--name-only", "HEAD"], { cwd: nested });
-			expect(tracked.trim().split("\n").sort()).toEqual([".gitignore", "MEMORY.md", "store.md"]);
+			expect(tracked.trim().split("\n").sort()).toEqual([".gitignore", "store.md"]);
 			const { stdout: branch } = await execFileAsync("git", ["symbolic-ref", "--short", "HEAD"], { cwd: nested });
 			expect(branch.trim()).toBe("main");
 		} finally {

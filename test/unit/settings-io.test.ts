@@ -36,7 +36,7 @@ describe("loadSettings", () => {
 	it("uses defaults and reports both files absent", () => {
 		const result = load();
 		expect(result.warnings).toEqual([]);
-		expect(result.settings.recall.factsPerTurn).toBe(8);
+		expect(result.settings.capture.outcomes).toBe(true);
 		expect(result.sources.global.present).toBe(false);
 		expect(result.sources.project.present).toBe(false);
 	});
@@ -50,10 +50,10 @@ describe("loadSettings", () => {
 	});
 
 	it("reads the muninn block from both files and tightens", () => {
-		writeGlobal(JSON.stringify({ defaultModel: "sonnet", muninn: { recall: { factsPerTurn: 12 } } }));
-		writeProject(JSON.stringify({ muninn: { recall: { factsPerTurn: 3 } } }));
+		writeGlobal(JSON.stringify({ defaultModel: "sonnet", muninn: { capture: { outcomes: true } } }));
+		writeProject(JSON.stringify({ muninn: { capture: { outcomes: false } } }));
 		const result = load();
-		expect(result.settings.recall.factsPerTurn).toBe(3);
+		expect(result.settings.capture.outcomes).toBe(false);
 		expect(result.sources.global.hasMuninnBlock).toBe(true);
 		expect(result.sources.project.hasMuninnBlock).toBe(true);
 		expect(result.warnings).toEqual([]);
@@ -62,9 +62,9 @@ describe("loadSettings", () => {
 	it("reports invalid JSON and falls back to defaults for that scope", () => {
 		// pi parses settings.json with plain JSON.parse, so a file with comments
 		// is broken for pi too; accepting it here would hide that.
-		writeGlobal('{ "muninn": { /* comment */ "recall": { "factsPerTurn": 3 } } }');
+		writeGlobal('{ "muninn": { /* comment */ "capture": { "outcomes": false } } }');
 		const result = load();
-		expect(result.settings.recall.factsPerTurn).toBe(8);
+		expect(result.settings.capture.outcomes).toBe(true);
 		expect(result.warnings[0]).toMatchObject({ kind: "parse-error", scope: "global" });
 		expect(result.warnings[0]?.message).toContain("not valid JSON");
 	});

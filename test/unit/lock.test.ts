@@ -47,7 +47,7 @@ describe("withStoreLock", () => {
 	});
 
 	it("excludes a second acquisition and names the holder when it gives up", async () => {
-		await withStoreLock(store, "dream", { host: "host-a" }, async () => {
+		await withStoreLock(store, "migrate", { host: "host-a" }, async () => {
 			const rejected = withStoreLock(store, "append", { host: "host-b", timeoutMs: 150 }, () => "never");
 			await expect(rejected).rejects.toBeInstanceOf(LockBusyError);
 			await expect(rejected).rejects.toThrow(/host-a/);
@@ -76,8 +76,8 @@ describe("withStoreLock", () => {
 	});
 
 	it("keeps the lock fresh while a long body runs", async () => {
-		// proper-lockfile refreshes the mtime while held. Without that, a dream
-		// holding the lock for hours would look dead to the next process.
+		// proper-lockfile refreshes the mtime while held. Without that, a long
+		// migration would look dead to the next process.
 		await withStoreLock(store, "append", { host: "h1", staleMs: 2_000 }, async () => {
 			const first = statSync(lockPath(store)).mtimeMs;
 			await new Promise((resolve) => setTimeout(resolve, 1_500));

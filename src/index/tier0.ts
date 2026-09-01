@@ -7,13 +7,12 @@
  * ("when vitest hangs in CI") is worth far more than the same words buried in
  * a body, because it was written to answer *when would I need this*.
  *
- * Two rules make a query "active-only", which is the default everywhere:
- * superseded claims and facts are dropped, and context chunks — entry prose,
- * topic prose — are not matched at all. `history: true` turns both off, which
- * is the only way to see what memory used to say.
+ * Search covers claims and their entry context. User-authored correction
+ * relations are part of the Phase 3 JSONL design; this baseline does not hide
+ * or mutate older journal evidence.
  */
 import MiniSearch, { type AsPlainObject } from "minisearch";
-import { type Chunk, type ChunkKind, EVIDENCE_KINDS } from "./chunk.ts";
+import type { Chunk, ChunkKind } from "./chunk.ts";
 
 /** Searched fields, and the weights the README fixes. */
 const SEARCH_FIELDS = ["title", "headingPath", "cue", "body", "tags"];
@@ -22,25 +21,11 @@ const BOOST = { title: 3, cue: 2.5, headingPath: 1.5, body: 1, tags: 1 };
 /**
  * Fields kept on the hit itself.
  *
- * `body` is stored so a result carries its own snippet: recall runs on every
- * turn, and re-opening a daily file per hit to cut 200 characters out of it
- * would make the index's one job — answering without touching the store —
- * false.
+ * `body` is stored so a result carries its own snippet. Re-opening a daily file
+ * per hit to cut 200 characters out of it would make the index's one job —
+ * answering without touching the store — false.
  */
-const STORE_FIELDS = [
-	"id",
-	"kind",
-	"path",
-	"title",
-	"headingPath",
-	"cue",
-	"body",
-	"date",
-	"source",
-	"phase",
-	"entry",
-	"superseded",
-];
+const STORE_FIELDS = ["id", "kind", "path", "title", "headingPath", "cue", "body", "date", "source", "phase", "entry"];
 
 /** Fractional fuzziness: within 0.2 × term length, so short terms stay exact. */
 const FUZZY = 0.2;
@@ -53,11 +38,7 @@ export interface QueryOptions {
 	kind?: readonly ChunkKind[];
 	phase?: string;
 	source?: string;
-	/** Include superseded claims and context chunks. Default false. */
-	history?: boolean;
 	limit?: number;
-	/** Claim and fact ids listed in `supersessions.md`. */
-	superseded?: ReadonlySet<string>;
 }
 
 /** A chunk as the index kept it: everything a result needs, without the file. */
@@ -73,7 +54,6 @@ export interface StoredChunk {
 	source?: string;
 	phase?: string;
 	entry?: string;
-	superseded: boolean;
 }
 
 export interface Hit extends StoredChunk {
@@ -140,7 +120,7 @@ export class Tier0Index {
 	 */
 	get(id: string): StoredChunk | undefined {
 		const stored = this.mini.getStoredFields(id);
-		return stored ? toStored(stored, new Set()) : undefined;
+		return stored ? toStored(stored) : undefined;
 	}
 
 	add(chunks: readonly Chunk[]): void {
@@ -172,7 +152,7 @@ export class Tier0Index {
 		return [...(this.outbound.get(id) ?? [])];
 	}
 
-	/** Which chunks point at this id — an entry, a claim, a fact or a rule. */
+	/** Which journal chunks point at this id. */
 	backlinksTo(id: string): string[] {
 		return [...(this.inbound.get(id) ?? [])].sort();
 	}
@@ -181,9 +161,7 @@ export class Tier0Index {
 		const terms = query.trim();
 		if (terms === "") return [];
 
-		const history = query_options.history === true;
-		const kinds = new Set<string>(query_options.kind ?? (history ? [] : EVIDENCE_KINDS));
-		const superseded = query_options.superseded ?? new Set<string>();
+		const kinds = new Set<string>(query_options.kind ?? []);
 		const limit = query_options.limit ?? DEFAULT_LIMIT;
 
 		const results = this.mini.search(terms, {
@@ -191,7 +169,6 @@ export class Tier0Index {
 				if (kinds.size > 0 && !kinds.has(result.kind as string)) return false;
 				if (query_options.phase !== undefined && result.phase !== query_options.phase) return false;
 				if (query_options.source !== undefined && result.source !== query_options.source) return false;
-				if (!history && (result.superseded === true || superseded.has(result.id as string))) return false;
 				return true;
 			},
 		});
@@ -199,11 +176,11 @@ export class Tier0Index {
 		// Rank the raw results first and materialise only the survivors: with
 		// prefix and fuzzy matching a multi-sentence prompt matches a large slice
 		// of the corpus, and building a snippet for a thousand hits to keep ten
-		// would be most of the cost of every turn's recall. minisearch orders by
+		// would be most of the cost of an interactive search. minisearch orders by
 		// score; the tie-break is ours, and it is date descending — between two
 		// equally good answers, memory prefers the newer one.
 		results.sort(byScoreThenDate);
-		return results.slice(0, limit).map((result) => toHit(result, superseded, terms));
+		return results.slice(0, limit).map((result) => toHit(result, terms));
 	}
 
 	private link(from: string, targets: readonly string[]): void {
@@ -230,21 +207,19 @@ export function byScoreThenDate(
 	);
 }
 
-function toHit(result: Record<string, unknown>, superseded: ReadonlySet<string>, query: string): Hit {
-	const stored = toStored(result, superseded);
+function toHit(result: Record<string, unknown>, query: string): Hit {
+	const stored = toStored(result);
 	return { ...stored, snippet: snippet(stored.body, query), score: result.score as number };
 }
 
-function toStored(result: Record<string, unknown>, superseded: ReadonlySet<string>): StoredChunk {
-	const id = result.id as string;
+function toStored(result: Record<string, unknown>): StoredChunk {
 	const stored: StoredChunk = {
-		id,
+		id: result.id as string,
 		kind: result.kind as ChunkKind,
 		path: (result.path as string | undefined) ?? "",
 		title: (result.title as string | undefined) ?? "",
 		headingPath: (result.headingPath as string | undefined) ?? "",
 		body: (result.body as string | undefined) ?? "",
-		superseded: result.superseded === true || superseded.has(id),
 	};
 	if (typeof result.cue === "string") stored.cue = result.cue;
 	if (typeof result.date === "string") stored.date = result.date;

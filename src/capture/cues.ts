@@ -12,7 +12,7 @@
  * no model call, no allocation worth measuring.
  */
 
-export type Channel = "tui" | "rpc" | "sdk" | "hook" | "dream";
+export type Channel = "tui" | "rpc" | "sdk" | "hook";
 
 /**
  * How the turn reached Muninn, from pi's own run mode.

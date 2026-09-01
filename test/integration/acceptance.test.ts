@@ -31,7 +31,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resetCommitDebounce } from "../../src/capture/commit.ts";
-import { resetSupersessionCache, SessionIndexes } from "../../src/index/search.ts";
+import { SessionIndexes } from "../../src/index/search.ts";
 import { appendEntry } from "../../src/journal/append.ts";
 import { loadHostIdentity } from "../../src/store/host.ts";
 import { ensureStore } from "../../src/store/init.ts";
@@ -59,7 +59,6 @@ beforeEach(async () => {
 	laptopTwo = mkdtempSync(join(tmpdir(), "muninn-laptop-2-"));
 	await git(remote, ["init", "--bare", "--quiet", "--initial-branch=main"]);
 	resetCommitDebounce();
-	resetSupersessionCache();
 });
 
 afterEach(() => {

@@ -5,27 +5,20 @@
  * fork, and a reload without Muninn needing a sidecar file that could drift
  * out of step with the session it describes.
  *
- * Entries are **deltas**, not snapshots. A session that recalls eight facts a
- * turn would otherwise rewrite an ever-growing list on every turn; folding a
- * list of small appends is both cheaper and the natural shape for an
- * append-only log.
+ * Entries are **deltas**, not snapshots, so written ids can be appended without
+ * rewriting an ever-growing session-state record.
  */
 
 /** The `customType` under which state deltas are stored in pi's session. */
 export const STATE_CUSTOM_TYPE = "muninn-state";
 
-export type StateDelta =
-	| { kind: "start"; task: string; continues?: string }
-	| { kind: "recalled"; ids: string[] }
-	| { kind: "written"; ids: string[] };
+export type StateDelta = { kind: "start"; task: string; continues?: string } | { kind: "written"; ids: string[] };
 
 export interface MuninnSessionState {
 	/** pi's session id — the task group every entry of this session shares. */
 	task: string;
 	/** The task this one continues, when the session was resumed or forked. */
 	continues?: string;
-	/** Muninn memories that have been in the model's context this session. */
-	recalled: string[];
 	/** Journal entries written this session. */
 	written: string[];
 }
@@ -39,7 +32,7 @@ interface CustomEntryLike {
 function isDelta(value: unknown): value is StateDelta {
 	if (typeof value !== "object" || value === null) return false;
 	const kind = (value as { kind?: unknown }).kind;
-	return kind === "start" || kind === "recalled" || kind === "written";
+	return kind === "start" || kind === "written";
 }
 
 /**
@@ -50,8 +43,7 @@ function isDelta(value: unknown): value is StateDelta {
  * group must never be empty, since it is what the evaluate phase holds out.
  */
 export function rebuildState(entries: readonly CustomEntryLike[], fallbackTask: string): MuninnSessionState {
-	const state: MuninnSessionState = { task: fallbackTask, recalled: [], written: [] };
-	const recalled = new Set<string>();
+	const state: MuninnSessionState = { task: fallbackTask, written: [] };
 	const written = new Set<string>();
 
 	for (const entry of entries) {
@@ -64,11 +56,9 @@ export function rebuildState(entries: readonly CustomEntryLike[], fallbackTask: 
 			if (delta.continues) state.continues = delta.continues;
 			continue;
 		}
-		const target = delta.kind === "recalled" ? recalled : written;
-		for (const id of delta.ids) target.add(id);
+		for (const id of delta.ids) written.add(id);
 	}
 
-	state.recalled = [...recalled];
 	state.written = [...written];
 	return state;
 }

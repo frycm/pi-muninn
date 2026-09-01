@@ -5,7 +5,6 @@ import { DEFAULT_SETTINGS } from "../../src/settings.ts";
 
 const STATE: MuninnSessionState = {
 	task: "0198f2b0-1111-7000-8000-000000000001",
-	recalled: [],
 	written: [],
 };
 
@@ -85,14 +84,6 @@ describe("decideCapture — explicit", () => {
 		const state = { ...STATE, continues: "0198f2af-0000-7000-8000-000000000000" };
 		const decision = decideCapture(input({ text: "Always use pnpm here", state }));
 		expect(decision?.entry.continues).toBe(state.continues);
-	});
-
-	it("records what Muninn had put in the model's context", () => {
-		// Everything recalled is listed so a claim that merely restates one can be
-		// recognised as an echo rather than counted as corroboration.
-		const state = { ...STATE, recalled: ["j-0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b01.1"] };
-		const decision = decideCapture(input({ text: "Always use pnpm here", state }));
-		expect(decision?.entry.recalled).toEqual(state.recalled);
 	});
 
 	it("carries the evidence pointer when there is one", () => {

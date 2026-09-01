@@ -227,8 +227,8 @@ describe("appended entries are scrubbed", () => {
 	});
 
 	it("leaves identifiers intact so pointers keep resolving", async () => {
-		// A redacted id is a broken pointer, so task, session and the derivation
-		// lists are never scrubbed.
+		// A redacted id is a broken pointer, so task and session identifiers are
+		// never scrubbed.
 		const task = "0198f2b0-1111-7000-8000-000000000001";
 		const session = "~/.pi/agent/sessions/--x--/y.jsonl#e5f6";
 		const result = await appendEntry(
@@ -236,7 +236,6 @@ describe("appended entries are scrubbed", () => {
 				source: "user",
 				task,
 				session,
-				recalled: ["j-0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b01.1"],
 				prose: "ok",
 				claims: [],
 			},
@@ -246,7 +245,6 @@ describe("appended entries are scrubbed", () => {
 		const read = readDailyFile(result.path);
 		expect(read.entries[0]?.task).toBe(task);
 		expect(read.entries[0]?.session).toBe(session);
-		expect(read.entries[0]?.recalled).toEqual(["j-0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b01.1"]);
 		expect(read.entries[0]?.redacted).toBeUndefined();
 	});
 

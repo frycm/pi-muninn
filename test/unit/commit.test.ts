@@ -87,12 +87,12 @@ describe("commitJournal", () => {
 	it("touches only journal/", async () => {
 		await writeEntry("first");
 		// Something else changed in the store at the same time.
-		writeFileSync(join(store, "MEMORY.md"), "# Memory\n\nhand-edited\n");
+		writeFileSync(join(store, "store.md"), `${readFileSync(join(store, "store.md"), "utf-8")}\nhand-edited\n`);
 
 		await commitJournal(options());
 
 		const dirty = await log(store);
-		expect(dirty.some((line) => line.includes("MEMORY.md"))).toBe(true);
+		expect(dirty.some((line) => line.includes("store.md"))).toBe(true);
 		expect(dirty.some((line) => line.includes("journal/"))).toBe(false);
 	});
 
@@ -170,16 +170,16 @@ describe("commitJournal — inside the developer's own repository", () => {
 		await git(repo, { kind: "init" });
 		await git(repo, { kind: "config", key: "user.name", value: "Real Developer" });
 		await git(repo, { kind: "config", key: "user.email", value: "dev@example.com" });
-		writeFileSync(join(repo, "MEMORY.md"), "a project file that happens to share a name\n");
-		await git(repo, { kind: "add", paths: ["MEMORY.md"] });
-		await git(repo, { kind: "commit", message: "initial", paths: ["MEMORY.md"] });
+		writeFileSync(join(repo, "store.md"), "a project file that happens to share a name\n");
+		await git(repo, { kind: "add", paths: ["store.md"] });
+		await git(repo, { kind: "commit", message: "initial", paths: ["store.md"] });
 
 		const inRepoStore = join(repo, ".pi", "muninn");
 		await ensureStore(inRepoStore, { host, inRepo: true });
 
 		// The developer stages their own change.
-		writeFileSync(join(repo, "MEMORY.md"), "the developer's own edit, staged\n");
-		await git(repo, { kind: "add", paths: ["MEMORY.md"] });
+		writeFileSync(join(repo, "store.md"), "the developer's own edit, staged\n");
+		await git(repo, { kind: "add", paths: ["store.md"] });
 
 		await appendEntry({ source: "user", prose: "a memory", claims: [] }, { storePath: inRepoStore, hostId: host.id });
 		expect(
@@ -187,8 +187,8 @@ describe("commitJournal — inside the developer's own repository", () => {
 		).toBe(true);
 
 		// Their edit is still staged, not committed by Muninn.
-		const { stdout } = await git(repo, { kind: "status-porcelain", paths: ["MEMORY.md"] });
-		expect(stdout).toContain("MEMORY.md");
-		expect(readFileSync(join(repo, "MEMORY.md"), "utf-8")).toContain("developer's own edit");
+		const { stdout } = await git(repo, { kind: "status-porcelain", paths: ["store.md"] });
+		expect(stdout).toContain("store.md");
+		expect(readFileSync(join(repo, "store.md"), "utf-8")).toContain("developer's own edit");
 	});
 });

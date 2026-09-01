@@ -1,9 +1,9 @@
 /**
  * The ` · `-separated `key: value` trailer.
  *
- * Every derived format in a store uses it — a fact line, a rule line, a
- * supersession, a host registration — so there is exactly one parser, and a
- * change to the grammar (escaping a `·` inside a value, say) lands once.
+ * Store metadata uses it for compact human-readable lines such as host
+ * registrations, so there is exactly one parser and a grammar change lands
+ * once.
  */
 
 /** `key: value · key: value` → map. Parts without a colon are skipped. */

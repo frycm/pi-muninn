@@ -1,9 +1,8 @@
 /**
  * Calling the model for an outcome entry.
  *
- * Separated from `outcome.ts` so the template, the parse and the echo rules
- * stay testable without a model, and so this file holds only the part that
- * talks to one.
+ * Separated from `outcome.ts` so the template and parser stay testable without
+ * a model, and so this file holds only the part that talks to one.
  */
 import type { NewJournalEntry } from "../journal/append.ts";
 import type { Channel } from "./cues.ts";

@@ -125,8 +125,8 @@ describe("/muninn", () => {
 	}, 60_000);
 
 	it("prints usage for an unknown subcommand", async () => {
-		const { stderr } = await pi("/muninn dreamm");
-		expect(stderr).toContain('unknown subcommand "dreamm"');
+		const { stderr } = await pi("/muninn frobnicate");
+		expect(stderr).toContain('unknown subcommand "frobnicate"');
 		expect(stderr).toContain("/muninn promote <id>");
 	}, 60_000);
 });
@@ -139,7 +139,7 @@ describe("/muninn note, search, promote", () => {
 		);
 
 		expect(stderr).toContain("noted in the project store as j-");
-		expect(stderr).toMatch(/1 memory for "deploys VPN"/);
+		expect(stderr).toMatch(/1 journal record for "deploys VPN"/);
 		expect(stderr).toContain("· project · user ·");
 
 		const entry = readStoreJournal(projectStore()).entries.find((candidate) => candidate.source === "user");
@@ -179,9 +179,9 @@ describe("/muninn note, search, promote", () => {
 		expect(after[after.length - 1]?.claims).toEqual(["Always use pnpm, never npm."]);
 	}, 60_000);
 
-	it("says how to widen a search that found nothing", async () => {
+	it("suggests a different query when a search finds nothing", async () => {
 		const { stderr } = await pi("/muninn search kubernetes helm charts");
-		expect(stderr).toContain("/muninn search --history");
+		expect(stderr).toContain("try different words");
 	}, 60_000);
 });
 

@@ -18,7 +18,6 @@
  */
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -29,30 +28,7 @@ const execFileAsync = promisify(execFile);
  * Anything derived (`.index/`) is gitignored, and anything outside the store is
  * unreachable: `add` refuses an absolute path or one that climbs out.
  */
-const STAGEABLE = new Set([
-	".gitignore",
-	"MEMORY.md",
-	"store.md",
-	"supersessions.md",
-	"journal/",
-	"topics/",
-	"rules.md",
-	"dreams/",
-	"skills/",
-]);
-
-/**
- * What a dream writes, and the only paths a remember may restore.
- *
- * A dream produces derived layers and nothing else; the journal is capture's,
- * and a fast-forward from a dream branch can therefore never change it. That
- * invariant is what makes recovery safe — `checkout-paths HEAD -- <derived>`
- * cannot lose a journal entry because it is not allowed to name one — so the
- * set is a separate allow-list rather than "STAGEABLE minus journal".
- */
-export const DERIVED_PATHS: readonly string[] = ["MEMORY.md", "supersessions.md", "topics/", "rules.md", "dreams/"];
-
-const DERIVED = new Set(DERIVED_PATHS);
+const STAGEABLE = new Set([".gitignore", "store.md", "journal/"]);
 
 export type GitCommand =
 	| { kind: "init" }
@@ -77,64 +53,12 @@ export type GitCommand =
 	| { kind: "rebase-continue" }
 	| { kind: "rebase-abort" }
 	| { kind: "push"; remote: string; branch: string }
-	/** Read one side of a conflicted file: 1 is the common ancestor, 2 is ours, 3 is theirs. */
-	| { kind: "show-stage"; stage: 1 | 2 | 3; path: string }
+	/** Read one side of a conflicted file: 2 is ours, 3 is theirs. */
+	| { kind: "show-stage"; stage: 2 | 3; path: string }
 	/** Read a file as of a ref, without checking anything out. */
 	| { kind: "show-file"; ref: string; path: string }
 	/** Whether `ref` exists, for telling a first push from a rebase. */
-	| { kind: "verify-ref"; ref: string }
-	// --- dreams -----------------------------------------------------------
-	/**
-	 * A dream's own checkout, on a new branch.
-	 *
-	 * `noCheckout` is for an in-repo store, where the repository is the user's
-	 * project: the worktree is created empty and then narrowed to the store's
-	 * own directory, so a dream never materialises a copy of someone's source
-	 * tree to write a topic file.
-	 */
-	| { kind: "worktree-add"; path: string; branch: string; startPoint: string; noCheckout?: boolean }
-	| { kind: "worktree-remove"; path: string; force: boolean }
-	| { kind: "worktree-prune" }
-	| { kind: "worktree-list" }
-	/** Narrow a worktree to `paths`, exactly — `--no-cone`, so root files stay out too. */
-	| { kind: "sparse-checkout-set"; paths: string[] }
-	/** Populate a worktree created with `--no-checkout`. */
-	| { kind: "checkout-head" }
-	/** Branches under a prefix, newest commit first. `remote` lists `refs/remotes/<remote>/…`. */
-	| { kind: "branch-list"; prefix: string; remote?: string }
-	| { kind: "branch-delete"; name: string; force: boolean }
-	/**
-	 * Advance a branch to a descendant, or fail.
-	 *
-	 * Never a merge commit: `--ff-only` is the compare-and-swap that makes
-	 * remember safe against a `main` that moved under it, and git moves the
-	 * ref, the index and the worktree together so a reader never sees a store
-	 * that is dirty against its own HEAD.
-	 */
-	| { kind: "merge-ff-only"; ref: string }
-	| { kind: "revert"; sha: string }
-	/** Undo a revert that stopped on a conflict, leaving nothing half-applied. */
-	| { kind: "revert-abort" }
-	/** Restore paths from a ref into the worktree and index — recovery only. */
-	| { kind: "checkout-paths"; ref: string; paths: string[] }
-	| { kind: "rev-list-count"; range: string; paths: string[] }
-	| { kind: "diff-name-only"; range: string; paths: string[] }
-	| { kind: "merge-base"; a: string; b: string }
-	/** Push a branch that is not the one checked out — dream branches, on sync. */
-	| { kind: "push-ref"; remote: string; ref: string }
-	/** A local branch at a known commit — for materialising a fetched dream branch. */
-	| { kind: "branch-create"; name: string; startPoint: string }
-	/** Check out a branch that already exists into its own worktree. */
-	| { kind: "worktree-add-existing"; path: string; branch: string; noCheckout?: boolean }
-	/** Commits with their full message, for finding a dream's commit by its trailer. */
-	| { kind: "log-entries"; ref: string; limit: number; grep?: string }
-	// --- erasure ----------------------------------------------------------
-	// The only two commands that can destroy history. Nothing but `dream/erase.ts`
-	// constructs them, and erasure is always a human action.
-	/** `git-filter-repo`, which is a separate program and not part of git. */
-	| { kind: "filter-repo"; replacements: string }
-	| { kind: "filter-repo-version" }
-	| { kind: "push-force"; remote: string; branch: string };
+	| { kind: "verify-ref"; ref: string };
 
 /**
  * git itself is not on the PATH.
@@ -204,58 +128,6 @@ function assertStageable(path: string): void {
 	}
 }
 
-/** A path a remember may restore from `HEAD`: derived only, never the journal. */
-function assertDerived(path: string): void {
-	if (!DERIVED.has(path)) throw new Error(`refusing to check out "${path}": not a derived path`);
-}
-
-/**
- * A commit range, as `rev-list` and `diff` take one.
- *
- * `a..b`, `a...b` or a single ref. Written out rather than assembled from two
- * `assertName` calls so that a range can never be mistaken for a path or a
- * flag, and so `..` — which every other assertion in this file treats as an
- * escape attempt — is legal in exactly this one position.
- */
-const GIT_RANGE = /^[A-Za-z0-9][A-Za-z0-9._/-]*(\.\.\.?[A-Za-z0-9][A-Za-z0-9._/-]*)?$/;
-
-function assertRange(value: string): void {
-	if (!GIT_RANGE.test(value)) throw new Error(`refusing to run git with the range "${value}"`);
-}
-
-/**
- * An absolute path outside every store, where a dream worktree may live.
- *
- * Worktrees are the one thing Muninn writes outside a store, so this is the
- * one place an absolute path is allowed — and it is checked, not assumed: a
- * relative path here would be resolved against the repository and could put a
- * checkout inside the main worktree, which git would then see as untracked
- * content in the store it is meant to leave alone.
- */
-function assertWorktreePath(path: string): void {
-	if (!isAbsolute(path) || path.startsWith("-") || path.includes("..")) {
-		throw new Error(`refusing to use "${path}" as a worktree path`);
-	}
-}
-
-/**
- * A directory pattern a worktree may be narrowed to.
- *
- * `--no-cone` takes gitignore-style *patterns*, not paths, so the leading `/`
- * is required rather than forbidden: it anchors the pattern at the repository
- * root. Unanchored, `.pi/muninn/` would also match a directory of that name
- * nested anywhere in the project. A pattern cannot escape the repository at
- * all, so what is left to check is that it is a directory, anchored, and not
- * something git would read as a flag or a climb.
- */
-const SPARSE_PATTERN = /^\/(?:[^/\\:*?"<>|]+\/)+$/;
-
-function assertSparsePattern(pattern: string): void {
-	if (!SPARSE_PATTERN.test(pattern) || pattern.includes("..")) {
-		throw new Error(`refusing to narrow a worktree to "${pattern}"`);
-	}
-}
-
 /** Translate a command into an argv. Exported so a test can assert the mapping. */
 export function toArgv(command: GitCommand): string[] {
 	switch (command.kind) {
@@ -312,10 +184,8 @@ export function toArgv(command: GitCommand): string[] {
 			return ["remote", "set-url", command.name, command.url];
 		case "fetch":
 			assertName("remote", command.remote);
-			// Every branch, not just ours: dream branches from other hosts travel
-			// on the same fetch, and a bare remote with no branches yet — the
-			// first sync of a new store — answers this happily where a named
-			// refspec would fail.
+			// A bare remote with no branches yet — the first sync of a new store —
+			// answers this happily where a named refspec would fail.
 			return ["fetch", "--quiet", command.remote];
 		case "rebase":
 			assertName("ref", command.onto);
@@ -340,114 +210,6 @@ export function toArgv(command: GitCommand): string[] {
 		case "verify-ref":
 			assertName("ref", command.ref);
 			return ["rev-parse", "--verify", "--quiet", command.ref];
-
-		case "worktree-add": {
-			assertWorktreePath(command.path);
-			assertName("branch", command.branch);
-			assertName("ref", command.startPoint);
-			const flags = command.noCheckout === true ? ["--no-checkout"] : [];
-			return ["worktree", "add", "--quiet", ...flags, "-b", command.branch, command.path, command.startPoint];
-		}
-		case "worktree-remove":
-			assertWorktreePath(command.path);
-			return command.force ? ["worktree", "remove", "--force", command.path] : ["worktree", "remove", command.path];
-		case "worktree-prune":
-			return ["worktree", "prune"];
-		case "worktree-list":
-			return ["worktree", "list", "--porcelain"];
-		case "sparse-checkout-set":
-			if (command.paths.length === 0) throw new Error("git sparse-checkout set needs at least one path");
-			for (const pattern of command.paths) assertSparsePattern(pattern);
-			// `--no-cone` because cone mode always keeps every file at the
-			// repository root, and the point of narrowing an in-repo worktree is
-			// that a dream materialises the store and nothing else.
-			return ["sparse-checkout", "set", "--no-cone", ...command.paths];
-		case "checkout-head":
-			return ["checkout", "--quiet"];
-		case "branch-list": {
-			assertName("branch", command.prefix);
-			if (command.remote !== undefined) assertName("remote", command.remote);
-			// `**`, not `*`: git's ref globbing does not let a single star cross a
-			// `/`, and a dream branch is `dream/<host>/<stamp>` — two levels down.
-			// With one star this matches nothing at all, silently.
-			const namespace = command.remote === undefined ? "refs/heads" : `refs/remotes/${command.remote}`;
-			return ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", `${namespace}/${command.prefix}**`];
-		}
-		case "branch-delete":
-			assertName("branch", command.name);
-			return ["branch", command.force ? "-D" : "-d", command.name];
-		case "merge-ff-only":
-			assertName("ref", command.ref);
-			return ["merge", "--ff-only", "--quiet", command.ref];
-		case "revert":
-			assertName("ref", command.sha);
-			return ["revert", "--no-edit", "--no-gpg-sign", command.sha];
-		case "revert-abort":
-			return ["revert", "--abort"];
-		case "checkout-paths":
-			assertName("ref", command.ref);
-			if (command.paths.length === 0) throw new Error("git checkout needs at least one path");
-			for (const path of command.paths) assertDerived(path);
-			return ["checkout", command.ref, "--", ...command.paths];
-		case "rev-list-count":
-			assertRange(command.range);
-			for (const path of command.paths) assertStageable(path);
-			return ["rev-list", "--count", command.range, "--", ...command.paths];
-		case "diff-name-only":
-			assertRange(command.range);
-			for (const path of command.paths) assertStageable(path);
-			return ["diff", "--name-only", command.range, "--", ...command.paths];
-		case "merge-base":
-			assertName("ref", command.a);
-			assertName("ref", command.b);
-			return ["merge-base", command.a, command.b];
-		case "push-ref":
-			assertName("remote", command.remote);
-			assertName("branch", command.ref);
-			// Still never `--force`. A dream branch is created once and never
-			// rewritten, so a rejected push means the remote already has it.
-			return ["push", "--quiet", command.remote, `refs/heads/${command.ref}:refs/heads/${command.ref}`];
-		case "branch-create":
-			assertName("branch", command.name);
-			assertName("ref", command.startPoint);
-			return ["branch", command.name, command.startPoint];
-		case "worktree-add-existing": {
-			assertWorktreePath(command.path);
-			assertName("branch", command.branch);
-			const flags = command.noCheckout === true ? ["--no-checkout"] : [];
-			return ["worktree", "add", "--quiet", ...flags, command.path, command.branch];
-		}
-		case "filter-repo":
-			assertWorktreePath(command.replacements);
-			// `--force` because the repository is not a fresh clone; that is the
-			// normal state of a store and filter-repo refuses without it.
-			return ["filter-repo", "--replace-text", command.replacements, "--force"];
-		case "filter-repo-version":
-			return ["filter-repo", "--version"];
-		case "push-force":
-			assertName("remote", command.remote);
-			assertName("branch", command.branch);
-			// The one force push in the system. Erasure rewrites history, so the
-			// remote's copy of the old bytes has to go the same way.
-			return ["push", "--force", command.remote, `HEAD:${command.branch}`];
-		case "log-entries": {
-			assertName("ref", command.ref);
-			if (!Number.isInteger(command.limit) || command.limit < 1) {
-				throw new Error(`git log needs a positive limit, not ${command.limit}`);
-			}
-			if (command.grep !== undefined && (command.grep.trim() === "" || command.grep.startsWith("-"))) {
-				throw new Error(`refusing to grep git log for "${command.grep}"`);
-			}
-			// Unit separators, not newlines: a commit body contains newlines, and
-			// a format a message can forge is a format that can be lied to.
-			// `grep` limits the walk to matching commits, so "the last N dreams"
-			// is a question about dreams and not about whatever the last N
-			// commits happened to be — routine journal commits would otherwise
-			// push an old dream out of the window and it would read as
-			// unremembered.
-			const grep = command.grep === undefined ? [] : [`--grep=${command.grep}`];
-			return ["log", `--max-count=${command.limit}`, ...grep, "--format=%H%x1f%s%x1f%b%x1e", command.ref];
-		}
 	}
 }
 
@@ -562,23 +324,6 @@ export async function gitToplevel(cwd: string): Promise<string | undefined> {
 		const { stdout } = await git(cwd, { kind: "rev-parse", target: "--show-toplevel" });
 		const toplevel = stdout.trim();
 		return toplevel === "" ? undefined : toplevel;
-	} catch {
-		return undefined;
-	}
-}
-
-/**
- * The branch this repository is on, or nothing when HEAD is detached.
- *
- * A store Muninn owns is pinned to `main`, but an in-repo store lives in the
- * user's project and is on whatever branch they are — so anything that names a
- * branch has to ask rather than assume. Never throws: "which branch" is a
- * question with a legitimate "none" answer.
- */
-export async function currentBranch(cwd: string): Promise<string | undefined> {
-	try {
-		const { stdout } = await git(cwd, { kind: "current-branch" });
-		return stdout.trim() || undefined;
 	} catch {
 		return undefined;
 	}

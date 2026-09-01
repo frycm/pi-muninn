@@ -79,9 +79,6 @@ function baseEntry(input: CaptureInput): NewJournalEntry {
 	};
 	if (input.state.continues) entry.continues = input.state.continues;
 	if (input.session) entry.session = input.session;
-	// Everything Muninn had put in the model's context when this turn happened.
-	// A claim that merely restates one of these is an echo, not corroboration.
-	if (input.state.recalled.length > 0) entry.recalled = [...input.state.recalled];
 	return entry;
 }
 

@@ -1,13 +1,9 @@
 /**
  * `memory_note` — the only tool that writes.
  *
- * It appends one journal entry and nothing else. It cannot touch `topics/`,
- * `rules.md` or `MEMORY.md`: those are derived, a dream rewrites them from
- * evidence, and a model editing them directly would be writing conclusions
- * with no journal entry underneath. Everything this tool writes carries
- * `source: agent`, so a later dream can weigh it — or discount the whole class
- * — knowing it was the model's own inference rather than something the user
- * said.
+ * It appends one journal entry and nothing else. Everything it writes carries
+ * `source: agent`, so a reader can distinguish the model's own inference from
+ * something the user said.
  *
  * A failed write fails the tool call, loudly and by name. Falling back to
  * another scope would leave the model believing a memory exists somewhere it
@@ -51,7 +47,7 @@ export type MemoryNoteParams = Static<typeof MEMORY_NOTE_PARAMETERS>;
 export const MEMORY_NOTE_DESCRIPTION = [
 	"Record something durable in long-term memory, as a journal entry attributed to you.",
 	"Write what a future session would need to know — commands, constraints, causes, dead ends — not what happened in this conversation.",
-	"One entry per call. It cannot edit or delete anything: the journal is append-only, and consolidation happens later.",
+	"One entry per call. It cannot edit or delete anything: corrections are appended as new journal records.",
 ].join(" ");
 
 export function memoryNoteTool(runtime: ToolRuntime) {
@@ -83,10 +79,6 @@ export function memoryNoteTool(runtime: ToolRuntime) {
 			if (state) {
 				entry.task = state.task;
 				if (state.continues) entry.continues = state.continues;
-				// What Muninn had already put in the model's context when this note
-				// was written. A claim that restates one of them is an echo, and the
-				// dream that reads this entry needs to be able to tell.
-				if (state.recalled.length > 0) entry.recalled = [...state.recalled];
 			}
 			const pointer = sessionPointer(ctx.sessionManager);
 			if (pointer) entry.session = pointer;

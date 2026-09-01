@@ -131,11 +131,10 @@ describe("redact", () => {
 });
 
 describe("identifiers Muninn depends on are never redacted", () => {
-	it("leaves entry, claim and fact ids alone", () => {
+	it("leaves entry, claim and task ids alone", () => {
 		for (const id of [
 			"j-0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b01",
 			"j-0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b01.3",
-			"f-deploy-pipeline-0198d1e7-7081-7a2b-8c3d-4e5f60718293",
 			"0198f2b0-1111-7000-8000-000000000001",
 		]) {
 			expect(redact(`see ${id} for details`).hits).toEqual([]);

@@ -35,7 +35,7 @@ describe("the 60-turn corpus", () => {
 	it("has zero false positives on turns that are neither", () => {
 		// The gate. A false positive is noise in an append-only journal for good;
 		// a missed correction is caught later by the outcome entry. So this is
-		// the number that must be zero, and recall is merely reported.
+		// the number that must be zero; missed positives are merely reported.
 		const flagged = CORPUS.neither.filter((turn) => classify(turn) !== "neither");
 		expect(flagged.map((turn) => turn.user)).toEqual([]);
 	});
