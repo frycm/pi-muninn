@@ -14,9 +14,10 @@ retrieval and no hosted service in the storage or search path.
 > [!IMPORTANT]
 > Phase 3 is underway. Logical-project resolution, the sharded JSONL engine, restartable
 > Markdown migration, correction projection, canonical query/index service and the
-> `journal_*` model tools are implemented. Automatic capture, attended/headless commands and
-> synchronization are being moved onto that foundation in the remaining slices. Journal
-> content is never injected into prompts.
+> `journal_*` model tools are implemented. The attended commands and standalone CLI now use
+> that same service and expose stable JSON/JSONL. Automatic capture and synchronization are
+> being moved onto the foundation in the final slice. Journal content is never injected into
+> prompts.
 
 The legacy Markdown migration-input contract is
 [docs/journal-format.md](docs/journal-format.md). The JSONL contract is
@@ -74,10 +75,13 @@ Current attended commands:
 
 ```text
 /muninn
-/muninn note [--global] TEXT
-/muninn promote ID
-/muninn search [--limit N] QUERY
-/muninn scope
+/muninn search QUERY [FILTERS]
+/muninn show ID [--relations]
+/muninn sessions [FILTERS]
+/muninn tail [FILTERS]
+/muninn note TEXT
+/muninn correct ID TEXT
+/muninn annotate ID TEXT
 /muninn project
 /muninn reindex
 /muninn sync [--no-push]
@@ -86,11 +90,21 @@ Current attended commands:
 Current headless commands:
 
 ```text
-muninn status [--scope global|project]
-muninn sync [--scope global|project] [--no-push]
+muninn search QUERY [FILTERS] [--json|--jsonl]
+muninn show ID [--relations] [--json|--jsonl]
+muninn sessions [FILTERS] [--json|--jsonl]
+muninn tail [FILTERS] [--follow] [--jsonl]
+muninn note TEXT [--json]
+muninn correct ID TEXT [--json]
+muninn annotate ID TEXT [--json]
+muninn path
 muninn project link [PATH] [--id UUID] [--name NAME] [--force]
 muninn project show [PATH]
 muninn project unlink [PATH]
+muninn migrate [--dry-run] [--json]
+muninn reindex [--json]
+muninn status [--json]
+muninn sync [--no-push]
 ```
 
 `project show` and `/muninn project` display the project UUID, member UUID, store, aliases and
@@ -210,7 +224,7 @@ muninn path
 Machine-readable output is stable enough for direct composition:
 
 ```bash
-muninn search "database migration" --json | jq -r '.records[] | [.at, .id, .summary] | @tsv'
+muninn search "database migration" --json | jq -r '.records[] | [.at, .id, .snippet] | @tsv'
 muninn sessions --branch feature/auth --json | jq '.sessions[] | select(.status == "failed")'
 rg -n '"type":"correction"' "$(muninn path)"/journal
 muninn search "timeout" --json | jq -r '.records[].id' | fzf

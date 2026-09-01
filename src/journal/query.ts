@@ -88,6 +88,7 @@ const DEFAULT_MAX_CHARS = 128 * 1024;
 const DEFAULT_SNIPPET_CHARS = 280;
 
 export class JournalQueryService {
+	private readonly options: JournalQueryServiceOptions;
 	private records: JournalRecord[];
 	private problems: JournalScanProblem[];
 	private projection: RelationProjection;
@@ -95,7 +96,8 @@ export class JournalQueryService {
 	private readonly indexWarnings: string[];
 	private readonly mode: "scan" | "index";
 
-	constructor(private readonly options: JournalQueryServiceOptions) {
+	constructor(options: JournalQueryServiceOptions) {
+		this.options = options;
 		const scan = scanJournal(options.storePath);
 		this.records = scan.records.map((item) => item.record);
 		this.problems = scan.problems;

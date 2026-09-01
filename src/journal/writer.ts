@@ -1,7 +1,13 @@
 /** One authority boundary for every non-migration project-journal write. */
 import { isEntryId, newEntryId } from "../ids.ts";
 import { type AppendJournalOptions, type AppendJournalResult, appendJournalRecord } from "./jsonl.ts";
-import type { JournalRelationType, NewJournalRecord } from "./record.ts";
+import type {
+	JournalChannel,
+	JournalGitProvenance,
+	JournalRelationType,
+	JournalSessionPointer,
+	NewJournalRecord,
+} from "./record.ts";
 
 export type JournalWriterAuthority = "attended-user" | "headless-user" | "model" | "automatic";
 
@@ -80,11 +86,13 @@ export interface UserRelationWriteOptions extends Omit<AppendJournalOptions, "id
 	target: string;
 	text: string;
 	relation: JournalRelationType;
-	channel: "tui" | "rpc" | "sdk" | "cli";
+	channel: JournalChannel;
 	task?: string;
 	continues?: string;
 	tags?: string[];
 	paths?: string[];
+	session?: JournalSessionPointer;
+	git?: JournalGitProvenance;
 }
 
 /** Shared implementation behind attended and headless correct/annotate actions. */
@@ -104,6 +112,8 @@ export async function appendUserRelation(options: UserRelationWriteOptions): Pro
 				relations: [{ type: options.relation, target: options.target }],
 				...(options.task ? { task: options.task } : {}),
 				...(options.continues ? { continues: options.continues } : {}),
+				...(options.session ? { session: options.session } : {}),
+				...(options.git ? { git: options.git } : {}),
 			},
 		},
 		options,

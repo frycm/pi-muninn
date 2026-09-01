@@ -3,62 +3,54 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { MuninnSessionState } from "../../src/capture/session-state.ts";
-import { type CommandRuntime, parseFlags, runMuninnCommand, USAGE } from "../../src/commands/muninn.ts";
-import { newHostId } from "../../src/ids.ts";
-import { SessionIndexes } from "../../src/index/search.ts";
-import { appendEntry, type NewJournalEntry } from "../../src/journal/append.ts";
-import { readStoreJournal } from "../../src/journal/read.ts";
+import { type CommandRuntime, runMuninnCommand, splitArgs, USAGE } from "../../src/commands/muninn.ts";
+import { newHostId, newMemberId, newProjectId } from "../../src/ids.ts";
+import { scanJournal } from "../../src/journal/jsonl.ts";
+import { JournalQueryService } from "../../src/journal/query.ts";
+import type { NewJournalRecord } from "../../src/journal/record.ts";
+import { appendAuthorizedJournalRecord, appendUserRelation } from "../../src/journal/writer.ts";
 import type { SessionContext } from "../../src/session.ts";
 import { DEFAULT_SETTINGS } from "../../src/settings.ts";
-import type { CaptureTarget } from "../../src/store/scopes.ts";
 
-let global: string;
-let project: string;
-let host: string;
+let store: string;
+let projectId: string;
+let memberId: string;
+let hostId: string;
 let state: MuninnSessionState;
-let created: number;
+let query: JournalQueryService;
 let synced: number;
 
-const SESSION_POINTER = "/sessions/2026-08-22_0198f2b0.jsonl#e5f6g7h8";
-const PROJECT_ID = "0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b02";
-
 beforeEach(() => {
-	global = mkdtempSync(join(tmpdir(), "muninn-cmd-global-"));
-	project = mkdtempSync(join(tmpdir(), "muninn-cmd-project-"));
-	host = newHostId();
+	store = mkdtempSync(join(tmpdir(), "muninn-command-"));
+	projectId = newProjectId();
+	memberId = newMemberId();
+	hostId = newHostId();
 	state = { task: "0198f2b0-1111-7000-8000-000000000001", written: [] };
-	created = 0;
+	query = new JournalQueryService({ storePath: store, localMember: memberId, mode: "index" });
 	synced = 0;
 });
 
 afterEach(() => {
-	for (const path of [global, project]) rmSync(path, { recursive: true, force: true });
+	rmSync(store, { recursive: true, force: true });
 });
 
-function sessionContext(
-	options: { captureTarget?: CaptureTarget | null; scopes?: Array<"global" | "project"> } = {},
-): SessionContext {
-	const names = options.scopes ?? ["global", "project"];
+function sessionContext(): SessionContext {
 	return {
-		host: { id: host, name: "mbp", createdAt: "2026-08-22T00:00:00.000Z" },
+		host: { id: hostId, name: "workstation", createdAt: "2026-09-01T00:00:00.000Z" },
 		loaded: {
 			settings: structuredClone(DEFAULT_SETTINGS),
 			warnings: [],
 			sources: {
-				global: { path: "/home/u/.pi/agent/settings.json", present: true, hasMuninnBlock: false },
+				global: { path: "/agent/settings.json", present: false, hasMuninnBlock: false },
 				project: { path: "/src/app/.pi/settings.json", present: false, hasMuninnBlock: false },
 			},
 		},
 		project: {
-			id: PROJECT_ID,
+			id: projectId,
 			name: "app",
-			storePath: project,
-			registryPath: "/home/u/.pi/agent/muninn-projects/registry.json",
-			member: {
-				id: "0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b03",
-				name: "martin",
-				createdAt: "2026-09-01T00:00:00.000Z",
-			},
+			storePath: store,
+			registryPath: "/agent/muninn-projects/registry.json",
+			member: { id: memberId, name: "martin", createdAt: "2026-09-01T00:00:00.000Z" },
 			root: "/src/app",
 			gitCommonDir: "/src/app/.git",
 			locations: [{ root: "/src/app", gitCommonDir: "/src/app/.git", linkedAt: "2026-09-01T00:00:00.000Z" }],
@@ -66,266 +58,164 @@ function sessionContext(
 			reasonDetail: "canonical root mapping /src/app",
 		},
 		scopes: {
-			active: names.map((name) =>
-				name === "global"
-					? { scope: "global" as const, path: global, exists: true }
-					: { scope: "project" as const, path: project, exists: true, projectId: "project-id" },
-			),
-			captureTarget: options.captureTarget === undefined ? "project" : options.captureTarget,
-			reasons: ["global: active", "project: active, separate store at /p", "capture target: project"],
+			active: [{ scope: "project", path: store, exists: true, projectId }],
+			captureTarget: "project",
+			reasons: ["project: active", "capture target: project"],
 		},
 		problems: [],
 	};
 }
 
-function runtimeFor(session: SessionContext): CommandRuntime {
-	let indexes = SessionIndexes.open(session.scopes.active).indexes;
+function runtime(): CommandRuntime {
 	return {
-		load: async ({ createStores }) => {
-			if (createStores) created++;
-			return session;
-		},
+		load: async () => sessionContext(),
 		settle: async () => {},
-		indexes: () => indexes,
+		query: () => query,
 		state: () => state,
-		async append(scope, entry: NewJournalEntry) {
-			const storePath = session.scopes.active.find((active) => active.scope === scope)?.path as string;
-			const written = await appendEntry(entry, { storePath, hostId: host });
-			indexes.addEntry(storePath, { ...written.entry, date: written.date, host, path: written.path });
+		async appendUser(record) {
+			const written = await appendAuthorizedJournalRecord(
+				{ authority: "attended-user", record },
+				{ storePath: store, project: projectId, member: memberId, host: hostId },
+			);
+			query.add(written.record);
+			return written;
+		},
+		async appendRelation(target, text, relation) {
+			const written = await appendUserRelation({
+				authority: "attended-user",
+				target,
+				text,
+				relation,
+				channel: "tui",
+				storePath: store,
+				project: projectId,
+				member: memberId,
+				host: hostId,
+				task: state.task,
+			});
+			query.add(written.record);
 			return written;
 		},
 		async reindex() {
-			indexes = SessionIndexes.open(session.scopes.active, { force: true }).indexes;
-			return indexes.size;
+			query.refresh(true);
+			return query.size;
 		},
 		async sync() {
 			synced++;
 			return [
 				{
-					scope: "project" as const,
+					scope: "project",
 					result: {
 						committed: true,
 						fetched: false,
 						rebased: false,
 						pushed: false,
 						mergedRegistry: false,
-						notes: ["no sync.remote configured — committed locally only"],
+						notes: ["committed locally"],
 					},
 				},
 			];
 		},
-		statusReport: () => "⟡ muninn 0.1.0 · status report",
-		channel: () => "tui",
-		sessionPointer: () => SESSION_POINTER,
+		statusReport: () => "⟡ muninn 0.1.0 · project journal",
 	};
 }
 
-async function seed(storePath: string, entry: Partial<NewJournalEntry> & { claims: string[] }) {
-	return appendEntry({ source: "user", prose: "", ...entry } as NewJournalEntry, { storePath, hostId: host });
+async function seed(body: string, extra: Partial<NewJournalRecord> = {}) {
+	const written = await appendAuthorizedJournalRecord(
+		{
+			authority: "attended-user",
+			record: {
+				type: "note",
+				source: "user",
+				channel: "tui",
+				body,
+				tags: [],
+				paths: [],
+				relations: [],
+				...extra,
+			},
+		},
+		{ storePath: store, project: projectId, member: memberId, host: hostId },
+	);
+	query.add(written.record);
+	return written;
 }
 
-describe("parseFlags", () => {
-	it("takes leading flags and leaves the text alone", () => {
-		const { flags, rest } = parseFlags("--global remember the --force flag", { flags: ["global"] });
-		expect([...flags]).toEqual(["global"]);
-		expect(rest).toBe("remember the --force flag");
+describe("attended command parsing", () => {
+	it("keeps quoted queries together without touching direct note text", () => {
+		expect(splitArgs('--branch "feature/auth" "database migration"')).toEqual([
+			"--branch",
+			"feature/auth",
+			"database migration",
+		]);
 	});
 
-	it("leaves an unknown leading flag in the text rather than eating it", () => {
-		// `--no-verify is required for the hook` is a note *about* a flag.
-		const { flags, rest } = parseFlags("--no-verify is required for the pre-commit hook", { flags: ["global"] });
-		expect([...flags]).toEqual([]);
-		expect(rest).toBe("--no-verify is required for the pre-commit hook");
-	});
-
-	it("reads a valued flag", () => {
-		const { values, rest } = parseFlags("--limit 3 vitest watch", { valued: ["limit"] });
-		expect(values.get("limit")).toBe("3");
-		expect(rest).toBe("vitest watch");
+	it("prints the new usage for help and unknown commands", async () => {
+		expect((await runMuninnCommand("help", runtime())).text).toBe(USAGE);
+		const unknown = await runMuninnCommand("promote old", runtime());
+		expect(unknown.level).toBe("warning");
+		expect(unknown.text).toContain("unknown subcommand");
 	});
 });
 
-describe("/muninn", () => {
-	it("defaults to the status report", async () => {
-		const output = await runMuninnCommand("", runtimeFor(sessionContext()));
-		expect(output.level).toBe("info");
-		expect(output.text).toContain("status report");
+describe("/muninn project journal", () => {
+	it("defaults to status and shows the project mapping", async () => {
+		expect((await runMuninnCommand("", runtime())).text).toContain("project journal");
+		const project = await runMuninnCommand("project", runtime());
+		expect(project.text).toContain(projectId);
+		expect(project.text).toContain("git common dir: /src/app/.git");
 	});
 
-	it("prints usage for an unknown subcommand rather than failing", async () => {
-		const output = await runMuninnCommand("frobnicate", runtimeFor(sessionContext()));
-		expect(output.level).toBe("warning");
-		expect(output.text).toContain('unknown subcommand "frobnicate"');
-		expect(output.text).toContain(USAGE);
+	it("writes direct user notes and preserves text", async () => {
+		const output = await runMuninnCommand("note Use --run in CI.\nKeep this line.", runtime());
+		expect(output.text).toContain("appended note j-");
+		const record = scanJournal(store).records[0]?.record;
+		expect(record?.source).toBe("user");
+		expect(record?.body).toBe("Use --run in CI.\nKeep this line.");
+		expect(record?.task).toBe(state.task);
 	});
 
-	it("prints usage on request", async () => {
-		expect((await runMuninnCommand("help", runtimeFor(sessionContext()))).text).toBe(USAGE);
-	});
-
-	it("syncs, and reports every note the transaction produced", async () => {
-		const output = await runMuninnCommand("sync", runtimeFor(sessionContext()));
-		expect(synced).toBe(1);
-		expect(output.level).toBe("info");
-		expect(output.text).toContain("project: sync: committed");
-		expect(output.text).toContain("no sync.remote configured");
-	});
-
-	it("shows the active logical project and aliases without creating a store", async () => {
-		const output = await runMuninnCommand("project", runtimeFor(sessionContext()));
-		expect(output.level).toBe("info");
-		expect(output.text).toContain(PROJECT_ID);
-		expect(output.text).toContain("git common dir: /src/app/.git");
-		expect(created).toBe(0);
-	});
-});
-
-describe("/muninn scope", () => {
-	it("explains the situation without creating a store", async () => {
-		const output = await runMuninnCommand("scope", runtimeFor(sessionContext()));
-		expect(output.text).toContain("capture target: project");
-		expect(created).toBe(0);
-	});
-});
-
-describe("/muninn note", () => {
-	it("writes to the capture target, as source: user", async () => {
-		const output = await runMuninnCommand("note Deploys need the VPN.", runtimeFor(sessionContext()));
-
-		expect(output.text).toContain("noted in the project store as j-");
-		const entry = readStoreJournal(project).entries[0];
-		expect(entry?.source).toBe("user");
-		expect(entry?.channel).toBe("tui");
-		expect(entry?.claims).toEqual(["Deploys need the VPN."]);
-		expect(entry?.task).toBe(state.task);
-		expect(entry?.session).toBe(SESSION_POINTER);
-		expect(readStoreJournal(global).entries).toEqual([]);
-	});
-
-	it("writes to global with --global", async () => {
-		await runMuninnCommand("note --global Always use pnpm.", runtimeFor(sessionContext()));
-		expect(readStoreJournal(global).entries).toHaveLength(1);
-		expect(readStoreJournal(project).entries).toEqual([]);
-	});
-
-	it("splits bullets into claims and keeps the rest as context", async () => {
-		await runMuninnCommand(
-			"note The CI runner has no TTY.\n- Use --run in CI.\n- Never watch mode headless.",
-			runtimeFor(sessionContext()),
-		);
-		const entry = readStoreJournal(project).entries[0];
-		expect(entry?.prose).toBe("The CI runner has no TTY.");
-		expect(entry?.claims).toEqual(["Use --run in CI.", "Never watch mode headless."]);
-	});
-
-	it("asks for text when given none", async () => {
-		const output = await runMuninnCommand("note", runtimeFor(sessionContext()));
-		expect(output.level).toBe("warning");
-		expect(output.text).toContain("/muninn note [--global] <text>");
-	});
-
-	it("says so when there is nowhere to write", async () => {
-		// The rule is `resolveWriteScope`'s, shared with memory_note; it throws,
-		// and the command handler in the extension turns that into an error line.
-		const session = sessionContext({ captureTarget: null, scopes: [] });
-		await expect(runMuninnCommand("note Nowhere.", runtimeFor(session))).rejects.toThrow(/nowhere to write/);
-	});
-});
-
-describe("/muninn promote", () => {
-	it("copies a project entry into the global journal, naming where it came from", async () => {
-		const written = await seed(project, {
-			phase: "test",
+	it("searches, shows, filters, tails, and groups sessions through one service", async () => {
+		const written = await seed("Vitest watch mode hangs the CI runner.", {
 			cue: "when CI hangs",
-			prose: "Context.",
-			claims: ["vitest watch mode hangs the CI job."],
-			session: SESSION_POINTER,
+			session: { file: "/sessions/task.jsonl", last: "entry-1" },
+			git: { cwd: "/src/app", branch: "feature/ci", head: null, dirty: false },
 		});
-		const session = sessionContext();
-		const output = await runMuninnCommand(`promote ${written.id}`, runtimeFor(session));
-
-		expect(output.level).toBe("info");
-		const promoted = readStoreJournal(global).entries[0];
-		expect(promoted?.claims).toEqual(["vitest watch mode hangs the CI job."]);
-		expect(promoted?.cue).toBe("when CI hangs");
-		expect(promoted?.phase).toBe("test");
-		expect(promoted?.session).toBe(SESSION_POINTER);
-		expect(promoted?.promotedFrom).toBe(`${PROJECT_ID}/${written.id}`);
-		// A copy, not a move: the journal is append-only.
-		expect(readStoreJournal(project).entries).toHaveLength(1);
+		const searched = await runMuninnCommand('search "vitest watch" --branch feature/ci', runtime());
+		expect(searched.text).toContain(written.id);
+		const shown = await runMuninnCommand(`show ${written.id}`, runtime());
+		expect(shown.text).toContain("CI runner");
+		const sessions = await runMuninnCommand("sessions --branch feature/ci", runtime());
+		expect(sessions.text).toContain("/sessions/task.jsonl");
+		const tail = await runMuninnCommand("tail --limit 1", runtime());
+		expect(tail.text).toContain(written.id);
 	});
 
-	it("accepts a claim id and promotes the entry it belongs to", async () => {
-		const written = await seed(project, { claims: ["First.", "Second."] });
-		await runMuninnCommand(`promote ${written.claimIds[1]}`, runtimeFor(sessionContext()));
-		expect(readStoreJournal(global).entries[0]?.claims).toEqual(["First.", "Second."]);
+	it("appends corrections and annotations while retaining the original", async () => {
+		const target = await seed("The service uses PostgreSQL 16.");
+		const corrected = await runMuninnCommand(`correct ${target.id} It now uses PostgreSQL 17.`, runtime());
+		expect(corrected.text).toContain("appended correction");
+		await runMuninnCommand(`annotate ${target.id} Historical note only.`, runtime());
+		const chain = query.read(target.id, 5)?.records ?? [];
+		expect(chain).toHaveLength(3);
+		expect(chain.find((record) => record.id === target.id)?.body).toContain("16");
+		expect(
+			chain.filter((record) => record.relations[0]?.target === target.id).map((record) => record.relations[0]?.type),
+		).toEqual(expect.arrayContaining(["corrects", "annotates"]));
 	});
 
-	it("refuses to promote what is already global", async () => {
-		const written = await seed(global, { claims: ["Already here."] });
-		const output = await runMuninnCommand(`promote ${written.id}`, runtimeFor(sessionContext()));
+	it("reports missing targets rather than creating dangling user corrections", async () => {
+		const missing = "j-0198f2b0-1111-7000-8000-000000000099";
+		const output = await runMuninnCommand(`correct ${missing} New text.`, runtime());
 		expect(output.level).toBe("warning");
-		expect(output.text).toContain("already in the global journal");
+		expect(scanJournal(store).records).toHaveLength(0);
 	});
 
-	it("reports an id that is not an entry id", async () => {
-		const output = await runMuninnCommand("promote not-an-id", runtimeFor(sessionContext()));
-		expect(output.level).toBe("error");
-		expect(output.text).toContain("not a journal entry id");
-	});
-
-	it("asks for an id when given none", async () => {
-		expect((await runMuninnCommand("promote", runtimeFor(sessionContext()))).text).toContain(
-			"/muninn promote <entry id>",
-		);
-	});
-});
-
-describe("/muninn search", () => {
-	it("lists one compact line per hit", async () => {
-		await seed(project, { cue: "when CI hangs", claims: ["vitest watch mode hangs the CI job."] });
-		const output = await runMuninnCommand("search vitest watch", runtimeFor(sessionContext()));
-
-		expect(output.text).toContain('1 journal record for "vitest watch"');
-		expect(output.text).toContain("· project · user ·");
-		expect(output.text).toContain("when CI hangs");
-	});
-
-	it("suggests changing the query when nothing matches", async () => {
-		const output = await runMuninnCommand("search nothing here", runtimeFor(sessionContext()));
-		expect(output.text).toContain("try different words");
-	});
-
-	it("honours --limit", async () => {
-		for (let index = 0; index < 4; index++) await seed(project, { claims: [`Claim ${index} about the CI runner.`] });
-		const output = await runMuninnCommand("search --limit 2 CI runner", runtimeFor(sessionContext()));
-		expect(output.text).toContain("2 journal records");
-	});
-
-	it("asks for a query when given none", async () => {
-		expect((await runMuninnCommand("search", runtimeFor(sessionContext()))).level).toBe("warning");
-	});
-});
-
-describe("/muninn reindex", () => {
-	it("rebuilds and reports the chunk count", async () => {
-		await seed(project, { claims: ["A claim to index."] });
-		const output = await runMuninnCommand("reindex", runtimeFor(sessionContext()));
-		expect(output.text).toMatch(/index rebuilt — \d+ chunks?/);
-	});
-});
-
-describe("parseFlags — text is left verbatim", () => {
-	it("keeps the line structure a note depends on", () => {
-		// `/muninn note` reads line starts to tell a claim from its context, so a
-		// parser that rejoined words would silently merge three bullets into one.
-		const { rest } = parseFlags("--global Context.\n- one\n- two", { flags: ["global"] });
-		expect(rest).toBe("Context.\n- one\n- two");
-	});
-
-	it("does not treat a flag-looking word inside the text as a flag", () => {
-		const { flags, rest } = parseFlags("use the --run flag in CI");
-		expect([...flags]).toEqual([]);
-		expect(rest).toBe("use the --run flag in CI");
+	it("rebuilds the disposable index and runs sync", async () => {
+		await seed("One indexed record.");
+		expect((await runMuninnCommand("reindex", runtime())).text).toContain("1 record");
+		const output = await runMuninnCommand("sync --no-push", runtime());
+		expect(synced).toBe(1);
+		expect(output.text).toContain("committed locally");
 	});
 });

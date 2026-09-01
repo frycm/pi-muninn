@@ -34,8 +34,8 @@ import { type AppendResult, appendEntry } from "./journal/append.ts";
 import type { AppendJournalResult } from "./journal/jsonl.ts";
 import { collectGitProvenance } from "./journal/provenance.ts";
 import { JournalQueryService } from "./journal/query.ts";
-import type { JournalSessionPointer, NewJournalRecord } from "./journal/record.ts";
-import { appendAuthorizedJournalRecord } from "./journal/writer.ts";
+import type { JournalRelationType, JournalSessionPointer, NewJournalRecord } from "./journal/record.ts";
+import { appendAuthorizedJournalRecord, appendUserRelation } from "./journal/writer.ts";
 import { buildSessionContext, journalStats, type SessionContext } from "./session.ts";
 import { formatStatus, formatStatusLine, formatWarning } from "./status.ts";
 import { storeIdentity } from "./store/init.ts";
@@ -46,7 +46,6 @@ import { journalNoteTool } from "./tools/journal-note.ts";
 import { journalReadTool } from "./tools/journal-read.ts";
 import type { JournalToolRuntime } from "./tools/journal-runtime.ts";
 import { journalSearchTool } from "./tools/journal-search.ts";
-import type { ToolRuntime } from "./tools/runtime.ts";
 import { MUNINN_VERSION } from "./version.ts";
 
 /** How long a shutdown will wait for sync before giving up on the network. */
@@ -217,37 +216,6 @@ export default function (pi: ExtensionAPI): void {
 		});
 	};
 
-	/**
-	 * What the three tools are allowed to know about this session.
-	 *
-	 * They get accessors rather than values because a session is rebuilt on
-	 * `session_start` and the tools are registered once, at load.
-	 */
-	const toolRuntime: ToolRuntime = {
-		settle: () => queue.flush(),
-		session: () => session,
-		indexes: () => indexes,
-		state: () => state,
-		async append(scope, entry) {
-			const current = session;
-			const currentState = state;
-			if (!current) throw new Error("muninn: memory is not available in this session yet");
-			const storePath = current.scopes.active.find((active) => active.scope === scope)?.path;
-			if (!storePath) throw new Error(`muninn: the ${scope} store is not active in this session`);
-
-			// Awaited, not queued: the model asked for this write and is entitled
-			// to be told whether it happened. A failure here fails the tool call.
-			const written = await appendEntry(entry, { storePath, hostId: current.host.id });
-			if (currentState) afterAppend(current, currentState, storePath, written);
-			// Committed before the model moves on — un-debounced and awaited, so a
-			// crash mid-session cannot lose what it was explicitly asked to
-			// remember. A note is rare enough that the commit's cost is nothing.
-			commitPending(true);
-			await queue.flush();
-			return written;
-		},
-	};
-
 	const journalRuntime: JournalToolRuntime = {
 		settle: () => queue.flush(),
 		session: () => session,
@@ -314,15 +282,84 @@ export default function (pi: ExtensionAPI): void {
 	};
 
 	pi.registerCommand("muninn", {
-		description: "Muninn: status, notes, promotion, search, scopes and the index",
+		description: "Muninn: search, inspect and correct this project journal",
 		handler: async (args, ctx) => {
+			const appendAttended = async (record: NewJournalRecord): Promise<AppendJournalResult> => {
+				const current = await load(ctx.cwd, ctx.isProjectTrusted(), true);
+				const currentState = state;
+				if (!current.project) throw new Error("muninn: no logical project journal is active in this session");
+				const projectScope = current.scopes.active.find((scope) => scope.scope === "project");
+				if (!projectScope) throw new Error("muninn: the project journal is not active in this session");
+				const pointer = journalSessionPointer(sessionPointer(ctx.sessionManager));
+				const git = await collectGitProvenance(ctx.cwd);
+				const written = await appendAuthorizedJournalRecord(
+					{
+						authority: "attended-user",
+						record: {
+							...record,
+							channel: channelForMode(ctx.mode),
+							...(pointer ? { session: pointer } : {}),
+							...(git ? { git } : {}),
+						},
+					},
+					{
+						storePath: projectScope.path,
+						project: current.project.id,
+						member: current.project.member.id,
+						host: current.host.id,
+					},
+				);
+				if (currentState) afterJournalAppend(currentState, projectScope.path, written);
+				commitPending(true);
+				await queue.flush();
+				return written;
+			};
+
+			const appendAttendedRelation = async (
+				target: string,
+				text: string,
+				relation: JournalRelationType,
+			): Promise<AppendJournalResult> => {
+				const current = await load(ctx.cwd, ctx.isProjectTrusted(), true);
+				const currentState = state;
+				if (!current.project) throw new Error("muninn: no logical project journal is active in this session");
+				const projectScope = current.scopes.active.find((scope) => scope.scope === "project");
+				if (!projectScope) throw new Error("muninn: the project journal is not active in this session");
+				const pointer = journalSessionPointer(sessionPointer(ctx.sessionManager));
+				const git = await collectGitProvenance(ctx.cwd);
+				const written = await appendUserRelation({
+					authority: "attended-user",
+					target,
+					text,
+					relation,
+					channel: channelForMode(ctx.mode),
+					storePath: projectScope.path,
+					project: current.project.id,
+					member: current.project.member.id,
+					host: current.host.id,
+					...(currentState ? { task: currentState.task } : {}),
+					...(currentState?.continues ? { continues: currentState.continues } : {}),
+					...(pointer ? { session: pointer } : {}),
+					...(git ? { git } : {}),
+				});
+				if (currentState) afterJournalAppend(currentState, projectScope.path, written);
+				commitPending(true);
+				await queue.flush();
+				return written;
+			};
+
 			const commandRuntime: CommandRuntime = {
-				...toolRuntime,
 				load: ({ createStores }) => load(ctx.cwd, ctx.isProjectTrusted(), createStores),
+				settle: () => queue.flush(),
+				query: queryJournal,
+				state: () => state,
+				appendUser: appendAttended,
+				appendRelation: appendAttendedRelation,
 				async reindex() {
-					openIndexes(await load(ctx.cwd, ctx.isProjectTrusted(), true), true);
-					await queue.flush();
-					return indexes?.size ?? 0;
+					await load(ctx.cwd, ctx.isProjectTrusted(), true);
+					const service = queryJournal();
+					service.refresh(true);
+					return service.size;
 				},
 				// On the queue, so it serialises with the appends this session has
 				// in flight: a sync holding the store lock while a queued outcome
@@ -336,8 +373,6 @@ export default function (pi: ExtensionAPI): void {
 					return outcomes;
 				},
 				statusReport,
-				channel: () => channelForMode(ctx.mode),
-				sessionPointer: () => sessionPointer(ctx.sessionManager),
 			};
 
 			let output: CommandOutput;
