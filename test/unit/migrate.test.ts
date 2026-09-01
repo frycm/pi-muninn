@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -143,7 +143,7 @@ describe("Markdown migration", () => {
 		cpSync(source.path, copy, { recursive: true });
 		const inventory = inventoryLegacyStores([source.path, copy]);
 		expect(inventory).toHaveLength(1);
-		expect(new Set(inventory[0]?.aliases)).toEqual(new Set([source.path, copy]));
+		expect(new Set(inventory[0]?.aliases)).toEqual(new Set([realpathSync(source.path), realpathSync(copy)]));
 	});
 
 	it("reports a different target record with the same ID instead of overwriting it", async () => {
