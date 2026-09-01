@@ -66,8 +66,9 @@ A reader handles damage locally:
 The project ID is immutable. The display name may change. A remote is set only through a
 user-level command; checked-in project configuration cannot select a store path or remote.
 
-Member and host IDs are UUIDs stored in the user-owned registry. Display names are local
-metadata and do not rewrite old records.
+Project and member IDs are UUIDs stored in the user-owned project registry. The host UUID is
+kept in the agent-owned host identity file. Display names are local metadata and do not
+rewrite old records.
 
 ## Record shape
 

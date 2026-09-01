@@ -64,60 +64,37 @@ export class SchemaTooNewError extends Error {
 /**
  * Create the store if absent, register this host, and leave it committed.
  *
- * `inRepo` marks a store that lives inside a repository Muninn does not own. In
- * that case the repository is never initialised and its git identity is never
- * reconfigured — those commits belong to the project and carry the project's
- * author.
+ * Every active store is below the user-owned agent directory. A project cannot
+ * opt into its code repository or make Muninn adopt an enclosing repository.
  */
-export async function ensureStore(
-	storePath: string,
-	options: { host: HostIdentity; inRepo?: boolean },
-): Promise<EnsureStoreResult> {
+export async function ensureStore(storePath: string, options: { host: HostIdentity }): Promise<EnsureStoreResult> {
 	mkdirSync(storePath, { recursive: true });
 
 	return withStoreLock(storePath, "init", { host: options.host.id }, async () => {
-		const inRepo = options.inRepo === true;
 		const storeMdPath = join(storePath, "store.md");
 		const existed = existsSync(storeMdPath);
 		const staged = new Set<string>();
-		const identity = inRepo ? undefined : storeIdentity(options.host);
-		const commitOptions = identity ? { identity } : {};
+		const identity = storeIdentity(options.host);
+		const commitOptions = { identity };
 		/** This call created the repository — so nothing in it is tracked yet. */
 		let fresh = false;
 
-		if (!inRepo) {
-			// "Inside a work tree" is not the same question as "is this store its
-			// own repository": an agent directory that happens to live under a
-			// dotfiles repository would otherwise be adopted by it — committing
-			// memory into someone else's history, rewriting that repository's
-			// git identity, and publishing through its remote. The store must be
-			// the toplevel, or it gets its own repository nested here.
-			const toplevel = await gitToplevel(storePath);
-			const canonical = canonicalPath(storePath);
-			if (toplevel === undefined || canonicalPath(toplevel) !== canonical) {
-				await git(storePath, { kind: "init" });
-				await git(storePath, { kind: "set-head", branch: STORE_BRANCH });
-				// Written to the repository's config once, at creation, so that a
-				// person running `git commit` by hand in the store gets the same
-				// author. Muninn's own commits carry the identity in their
-				// environment and never depend on this being set.
-				await git(storePath, { kind: "config", key: "user.name", value: identity?.name ?? "" });
-				await git(storePath, { kind: "config", key: "user.email", value: identity?.email ?? "" });
-				fresh = true;
-			} else {
-				// A store created before the branch was pinned may sit on whatever
-				// `init.defaultBranch` gave it. Two hosts on different branches would
-				// each "first-push" their own and never see each other's memory.
-				await ensureBranch(storePath);
-				// A store this host *cloned* is as much Muninn's as one it created,
-				// but arrives with no identity in its config. Muninn's own commits
-				// carry one in their environment; this is for the person who runs
-				// `git commit` in the store by hand on a machine with no global
-				// identity. One file read, no subprocess, when it is already set.
-				if (identity && !hasConfiguredIdentity(storePath)) {
-					await git(storePath, { kind: "config", key: "user.name", value: identity.name });
-					await git(storePath, { kind: "config", key: "user.email", value: identity.email });
-				}
+		// "Inside a work tree" is not the same question as "is this store its
+		// own repository": an agent directory under a dotfiles repository must
+		// still get a nested, Muninn-owned repository.
+		const toplevel = await gitToplevel(storePath);
+		const canonical = canonicalPath(storePath);
+		if (toplevel === undefined || canonicalPath(toplevel) !== canonical) {
+			await git(storePath, { kind: "init" });
+			await git(storePath, { kind: "set-head", branch: STORE_BRANCH });
+			await git(storePath, { kind: "config", key: "user.name", value: identity.name });
+			await git(storePath, { kind: "config", key: "user.email", value: identity.email });
+			fresh = true;
+		} else {
+			await ensureBranch(storePath);
+			if (!hasConfiguredIdentity(storePath)) {
+				await git(storePath, { kind: "config", key: "user.name", value: identity.name });
+				await git(storePath, { kind: "config", key: "user.email", value: identity.email });
 			}
 		}
 

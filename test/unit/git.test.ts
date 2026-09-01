@@ -27,8 +27,8 @@ describe("toArgv — the allow-list is the promise", () => {
 	});
 
 	it("always limits a commit to a pathspec", () => {
-		// Without this an in-repo store would commit whatever the user had staged
-		// for their own work the moment Muninn wrote a journal entry.
+		// The allow-list and pathspec keep the set of files a Muninn commit may
+		// touch explicit and independently testable.
 		const argv = toArgv({ kind: "commit", message: "journal: mbp 2 entries", paths: ["journal/"] });
 		expect(argv).toEqual(["commit", "--quiet", "--no-gpg-sign", "-m", "journal: mbp 2 entries", "--", "journal/"]);
 		expect(argv).toContain("--");
@@ -84,8 +84,7 @@ describe("git — identity travels in the environment", () => {
 	it("sets author and committer for the commands that create commits", async () => {
 		// Passed through the environment rather than written to the repository
 		// on every open: no subprocess has to run at session start to make sure
-		// a config value is still there, and an in-repo store simply passes none
-		// and keeps the project's own author.
+		// a config value is still there.
 		const dir = mkdtempSync(join(tmpdir(), "muninn-git-identity-"));
 		try {
 			await git(dir, { kind: "init" });

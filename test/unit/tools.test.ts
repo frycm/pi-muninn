@@ -50,8 +50,8 @@ function sessionContext(captureTarget: CaptureTarget | null = "project"): Sessio
 		},
 		scopes: {
 			active: [
-				{ scope: "global", path: global, exists: true, inRepo: false },
-				{ scope: "project", path: project, exists: true, inRepo: false },
+				{ scope: "global", path: global, exists: true },
+				{ scope: "project", path: project, exists: true },
 			],
 			captureTarget,
 			reasons: [],
@@ -535,7 +535,7 @@ describe("memory_note", () => {
 
 	it("refuses a scope this session does not have", async () => {
 		const session = sessionContext("global");
-		session.scopes.active = [{ scope: "global", path: global, exists: true, inRepo: false }];
+		session.scopes.active = [{ scope: "global", path: global, exists: true }];
 		const tool = memoryNoteTool(runtimeFor(session));
 		await expect(run(tool, { text: "No project here.", scope: "project" })).rejects.toThrow(
 			/not active in this session/,

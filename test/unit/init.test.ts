@@ -130,51 +130,6 @@ describe("ensureStore — refusing to make things worse", () => {
 	});
 });
 
-describe("ensureStore — in-repo stores live in someone else's repository", () => {
-	async function makeProjectRepo(): Promise<string> {
-		const repo = join(root, "project");
-		mkdirSync(repo, { recursive: true });
-		await git(repo, { kind: "init" });
-		await git(repo, { kind: "config", key: "user.name", value: "Real Developer" });
-		await git(repo, { kind: "config", key: "user.email", value: "dev@example.com" });
-		writeFileSync(join(repo, "store.md"), "project file that happens to share a name\n");
-		await git(repo, { kind: "add", paths: ["store.md"] });
-		await git(repo, { kind: "commit", message: "initial", paths: ["store.md"] });
-		return repo;
-	}
-
-	it("does not reconfigure the project's git identity", async () => {
-		const repo = await makeProjectRepo();
-		await ensureStore(join(repo, ".pi", "muninn"), { host, inRepo: true });
-		const config = readFileSync(join(repo, ".git", "config"), "utf-8");
-		expect(config).toContain("dev@example.com");
-		expect(config).not.toContain("muninn@");
-	});
-
-	it("does not sweep up the developer's staged work", async () => {
-		// The hazard: `git commit` in a repo Muninn does not own would commit
-		// whatever was already in the index. The pathspec on commit prevents it.
-		const repo = await makeProjectRepo();
-		writeFileSync(join(repo, "feature.txt"), "half-finished work\n");
-		await git(repo, { kind: "add", paths: ["store.md"] });
-		writeFileSync(join(repo, "store.md"), "developer's own edit, staged\n");
-		await git(repo, { kind: "add", paths: ["store.md"] });
-
-		await ensureStore(join(repo, ".pi", "muninn"), { host, inRepo: true });
-
-		const { stdout } = await git(repo, { kind: "status-porcelain", paths: ["store.md"] });
-		expect(stdout).toContain("store.md"); // still staged, not committed by muninn
-		expect(existsSync(join(repo, "feature.txt"))).toBe(true);
-	});
-
-	it("does not re-initialise the surrounding repository", async () => {
-		const repo = await makeProjectRepo();
-		const before = await log(repo);
-		await ensureStore(join(repo, ".pi", "muninn"), { host, inRepo: true });
-		expect(Number.parseInt(await log(repo), 10)).toBe(Number.parseInt(before, 10) + 1);
-	});
-});
-
 describe("a store under someone else's repository", () => {
 	it("gets its own repository rather than being adopted by the outer one", async () => {
 		// An agent directory that lives inside a dotfiles repository is an

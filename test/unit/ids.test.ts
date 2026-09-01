@@ -3,9 +3,13 @@ import {
 	claimId,
 	isClaimId,
 	isEntryId,
+	isMemberId,
+	isProjectId,
 	isUuidV7,
 	newEntryId,
 	newHostId,
+	newMemberId,
+	newProjectId,
 	parseClaimId,
 	shortenId,
 	uuidv7,
@@ -49,6 +53,14 @@ describe("uuidv7", () => {
 		expect(isUuidV7("0198f2c1-7b3e-4a10-9c44-2d6e0f1a8b01")).toBe(false); // v4
 		expect(isUuidV7("not-a-uuid")).toBe(false);
 		expect(isUuidV7("")).toBe(false);
+	});
+});
+
+describe("logical project identities", () => {
+	it("mints full UUIDv7 member and project ids", () => {
+		expect(isMemberId(newMemberId())).toBe(true);
+		expect(isProjectId(newProjectId())).toBe(true);
+		expect(isProjectId("project-app")).toBe(false);
 	});
 });
 

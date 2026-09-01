@@ -9,13 +9,15 @@
  * from a script.
  */
 import { execFile, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readStoreJournal } from "../../src/journal/read.ts";
+import { readProjectRegistry } from "../../src/project/registry.ts";
+import { projectStorePath } from "../../src/store/paths.ts";
 import { type MockProvider, startMockProvider } from "../fixtures/mock-provider.ts";
 
 const execFileAsync = promisify(execFile);
@@ -69,8 +71,8 @@ async function pi(...prompts: string[]): Promise<{ stdout: string; stderr: strin
 }
 
 function projectStore(): string {
-	const projects = join(agentDir, "muninn-projects");
-	return join(projects, readdirSync(projects)[0] as string);
+	const registry = readProjectRegistry(agentDir);
+	return projectStorePath(agentDir, registry?.projects[0]?.id as string);
 }
 
 function globalStore(): string {
@@ -152,7 +154,7 @@ describe("/muninn note, search, promote", () => {
 		const global = readStoreJournal(globalStore()).entries;
 		expect(global).toHaveLength(1);
 		expect(global[0]?.claims).toEqual(["Deploys need the VPN; staging is unreachable without it."]);
-		expect(global[0]?.promotedFrom).toMatch(new RegExp(`^project-[0-9a-f]{12}/${entry?.id}$`));
+		expect(global[0]?.promotedFrom).toBe(`${readProjectRegistry(agentDir)?.projects[0]?.id}/${entry?.id}`);
 	}, 90_000);
 
 	it("commits a write to the global store, not only the capture target", async () => {

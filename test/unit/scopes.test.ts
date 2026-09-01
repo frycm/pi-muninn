@@ -1,13 +1,34 @@
 import { describe, expect, it } from "vitest";
+import type { ResolvedProject } from "../../src/project/resolver.ts";
 import { DEFAULT_SETTINGS, type MuninnSettings } from "../../src/settings.ts";
 import { type ResolveScopesInput, resolveScopes } from "../../src/store/scopes.ts";
+
+const PROJECT_ID = "0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b02";
+
+function project(): ResolvedProject {
+	return {
+		id: PROJECT_ID,
+		name: "app",
+		storePath: `/home/u/.pi/agent/muninn-projects/${PROJECT_ID}`,
+		registryPath: "/home/u/.pi/agent/muninn-projects/registry.json",
+		member: {
+			id: "0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b03",
+			name: "martin",
+			createdAt: "2026-09-01T00:00:00.000Z",
+		},
+		root: "/src/app",
+		gitCommonDir: "/src/app/.git",
+		locations: [{ root: "/src/app", gitCommonDir: "/src/app/.git", linkedAt: "2026-09-01T00:00:00.000Z" }],
+		reason: "git-common-dir",
+		reasonDetail: "canonical Git common directory /src/app/.git",
+	};
+}
 
 function input(overrides: Partial<ResolveScopesInput> = {}): ResolveScopesInput {
 	return {
 		settings: structuredClone(DEFAULT_SETTINGS),
 		agentDir: "/home/u/.pi/agent",
-		configDirName: ".pi",
-		toplevel: "/src/app",
+		project: project(),
 		projectTrusted: true,
 		storeExists: () => true,
 		...overrides,
@@ -21,68 +42,53 @@ function withSettings(mutate: (settings: MuninnSettings) => void, overrides: Par
 }
 
 describe("resolveScopes", () => {
-	it("activates both scopes in a trusted project and captures to project", () => {
+	it("activates both scopes for a resolved trusted project and captures to its UUID store", () => {
 		const decision = resolveScopes(input());
-		expect(decision.active.map((s) => s.scope)).toEqual(["global", "project"]);
+		expect(decision.active.map((scope) => scope.scope)).toEqual(["global", "project"]);
+		expect(decision.active[1]).toMatchObject({ projectId: PROJECT_ID });
 		expect(decision.captureTarget).toBe("project");
 	});
 
-	it("falls back to global outside a git repository", () => {
-		const decision = resolveScopes(input({ toplevel: undefined }));
-		expect(decision.active.map((s) => s.scope)).toEqual(["global"]);
+	it("falls back to global when inspection found no registry mapping", () => {
+		const decision = resolveScopes(input({ project: undefined }));
+		expect(decision.active.map((scope) => scope.scope)).toEqual(["global"]);
 		expect(decision.captureTarget).toBe("global");
-		expect(decision.reasons.join("\n")).toContain("not inside a git repository");
+		expect(decision.reasons.join("\n")).toContain("not linked yet");
 	});
 
 	it("respects pi's project-trust decision", () => {
-		// An untrusted project must not be able to make Muninn write into it, nor
-		// have its memory read into the session.
 		const decision = resolveScopes(input({ projectTrusted: false }));
-		expect(decision.active.map((s) => s.scope)).toEqual(["global"]);
-		expect(decision.captureTarget).toBe("global");
+		expect(decision.active.map((scope) => scope.scope)).toEqual(["global"]);
 		expect(decision.reasons.join("\n")).toContain("does not trust this project");
 	});
 
-	it("captures nothing when every scope is off, and says so", () => {
-		const decision = withSettings((s) => {
-			s.scopes.global = false;
-			s.scopes.project = false;
+	it("captures nothing when every scope is off", () => {
+		const decision = withSettings((settings) => {
+			settings.scopes.global = false;
+			settings.scopes.project = false;
 		});
 		expect(decision.active).toEqual([]);
 		expect(decision.captureTarget).toBeNull();
 		expect(decision.reasons.join("\n")).toContain("nothing is captured");
 	});
 
-	it("uses a separate store by default, keyed by the toplevel", () => {
-		const decision = resolveScopes(input());
-		const project = decision.active.find((s) => s.scope === "project");
-		expect(project?.inRepo).toBe(false);
-		expect(project?.path).toContain("/muninn-projects/");
-		expect(project?.path).not.toContain("/src/app/");
+	it("uses only the UUID-backed external project path", () => {
+		const active = resolveScopes(input()).active[1];
+		expect(active?.path).toBe(`/home/u/.pi/agent/muninn-projects/${PROJECT_ID}`);
+		expect(active?.path).not.toContain("/src/app/");
 	});
 
-	it("uses an in-repo store when the project opted in", () => {
-		const decision = withSettings((s) => {
-			s.scopes.project = "in-repo";
-		});
-		const project = decision.active.find((s) => s.scope === "project");
-		expect(project?.inRepo).toBe(true);
-		expect(project?.path).toBe("/src/app/.pi/muninn");
+	it("explains the selected resolver mapping", () => {
+		const reasons = resolveScopes(input()).reasons.join("\n");
+		expect(reasons).toContain(PROJECT_ID);
+		expect(reasons).toContain("canonical Git common directory");
+		expect(reasons).toContain("capture target: project");
 	});
 
-	it("explains every decision it made", () => {
-		// `/muninn scope` exists so a user can ask "why did that note go there?"
-		// and get an answer, so a reason for each scope is part of the contract.
-		const decision = resolveScopes(input());
-		expect(decision.reasons.some((r) => r.startsWith("global:"))).toBe(true);
-		expect(decision.reasons.some((r) => r.startsWith("project:"))).toBe(true);
-		expect(decision.reasons.some((r) => r.startsWith("capture target:"))).toBe(true);
-	});
-
-	it("notes that an auto project store has not been created yet", () => {
+	it("notes that a new UUID store has not been created yet", () => {
 		const decision = resolveScopes(input({ storeExists: () => false }));
 		expect(decision.reasons.join("\n")).toContain("will be created on first capture");
-		expect(decision.active.find((s) => s.scope === "project")?.exists).toBe(false);
+		expect(decision.active.find((scope) => scope.scope === "project")?.exists).toBe(false);
 	});
 
 	it("reports store existence without creating anything", () => {

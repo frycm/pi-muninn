@@ -285,30 +285,6 @@ describe("sync", () => {
 		expect(result.notes.join("\n")).toContain("using the store's own remote");
 	});
 
-	it("never pushes an in-repo store", async () => {
-		// That repository belongs to the project; pushing it would push the
-		// user's own code as a side effect of remembering something.
-		mkdirSync(one, { recursive: true });
-		await git(one, ["init", "--quiet", "--initial-branch=main"]);
-		await git(one, ["config", "user.email", "dev@example.com"]);
-		await git(one, ["config", "user.name", "Dev"]);
-		await ensureStore(one, { host: hostOne, inRepo: true });
-		await git(one, ["remote", "add", "origin", remote]);
-		await note(one, hostOne, "Stays here.");
-
-		const result = await sync({
-			storePath: one,
-			hostId: hostOne.id,
-			hostName: hostOne.name,
-			remote: null,
-			useExistingRemote: false,
-		});
-
-		expect(result.committed).toBe(true);
-		expect(result.pushed).toBe(false);
-		expect(result.notes.join("\n")).toContain("never pushed by muninn");
-	});
-
 	it("skips the push when asked to", async () => {
 		await seedOne();
 		await note(one, hostOne, "Local only, for now.");

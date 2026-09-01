@@ -68,8 +68,8 @@ describe("search across scopes", () => {
 describe("SessionIndexes", () => {
 	function active(): ActiveScope[] {
 		return [
-			{ scope: "global", path: global, exists: true, inRepo: false },
-			{ scope: "project", path: project, exists: true, inRepo: false },
+			{ scope: "global", path: global, exists: true },
+			{ scope: "project", path: project, exists: true },
 		];
 	}
 
@@ -84,7 +84,7 @@ describe("SessionIndexes", () => {
 	});
 
 	it("skips a scope whose store has not been created", () => {
-		const opened = SessionIndexes.open([{ scope: "global", path: global, exists: false, inRepo: false }]);
+		const opened = SessionIndexes.open([{ scope: "global", path: global, exists: false }]);
 		expect(opened.indexes.scopes).toHaveLength(0);
 	});
 
@@ -112,7 +112,7 @@ describe("SessionIndexes.refresh", () => {
 		// What a sync does: another host's daily file is rebased into the store
 		// while this session holds its index open. Without a refresh the memory
 		// that just arrived is invisible until the next session.
-		const opened = SessionIndexes.open([{ scope: "global", path: global, exists: true, inRepo: false }]);
+		const opened = SessionIndexes.open([{ scope: "global", path: global, exists: true }]);
 		expect(opened.indexes.search({ query: "elsewhere" })).toEqual([]);
 
 		writeEntry(global, ENTRY_A, "A claim written elsewhere and synced in.");
@@ -124,7 +124,7 @@ describe("SessionIndexes.refresh", () => {
 
 	it("is cheap and harmless when nothing changed", () => {
 		writeEntry(global, ENTRY_A, "Already indexed.");
-		const opened = SessionIndexes.open([{ scope: "global", path: global, exists: true, inRepo: false }]);
+		const opened = SessionIndexes.open([{ scope: "global", path: global, exists: true }]);
 		const before = opened.indexes.size;
 
 		opened.indexes.refresh(global);

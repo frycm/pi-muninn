@@ -66,7 +66,7 @@ afterEach(() => {
 });
 
 function activeGlobal(path: string): ActiveScope[] {
-	return [{ scope: "global", path, exists: true, inRepo: false }];
+	return [{ scope: "global", path, exists: true }];
 }
 
 describe("cross-laptop acceptance", () => {

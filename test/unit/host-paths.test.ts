@@ -7,9 +7,9 @@ import { loadHostIdentity, shortHostname } from "../../src/store/host.ts";
 import {
 	globalStorePath,
 	hostFilePath,
-	inRepoProjectStorePath,
-	projectStoreSlug,
-	separateProjectStorePath,
+	projectRegistryPath,
+	projectStorePath,
+	projectsRootPath,
 } from "../../src/store/paths.ts";
 
 let agentDir: string;
@@ -79,25 +79,13 @@ describe("store paths", () => {
 		expect(globalStorePath("/home/u/.pi/agent")).toBe("/home/u/.pi/agent/muninn");
 	});
 
-	it("derives a stable, readable slug for a project", () => {
-		const slug = projectStoreSlug("/Users/me/src/my-app");
-		expect(slug.startsWith("my-app-")).toBe(true);
-		expect(projectStoreSlug("/Users/me/src/my-app")).toBe(slug);
+	it("keeps the user-owned project registry below the agent directory", () => {
+		expect(projectsRootPath("/home/u/.pi/agent")).toBe("/home/u/.pi/agent/muninn-projects");
+		expect(projectRegistryPath("/home/u/.pi/agent")).toBe("/home/u/.pi/agent/muninn-projects/registry.json");
 	});
 
-	it("keeps two checkouts of the same project name apart", () => {
-		// Same basename, different paths: these may be different worktrees on
-		// different branches, so sharing one store would be a surprise.
-		expect(projectStoreSlug("/a/my-app")).not.toBe(projectStoreSlug("/b/my-app"));
-	});
-
-	it("defaults a project store to a separate repository, not the project's own", () => {
-		const path = separateProjectStorePath("/home/u/.pi/agent", "/src/app");
-		expect(path.startsWith("/home/u/.pi/agent/muninn-projects/")).toBe(true);
-		expect(path).not.toContain("/src/app/");
-	});
-
-	it("puts an in-repo store inside the project", () => {
-		expect(inRepoProjectStorePath("/src/app", ".pi")).toBe("/src/app/.pi/muninn");
+	it("names a project store only by its durable UUID", () => {
+		const id = "0198f2c1-7b3e-7a10-9c44-2d6e0f1a8b02";
+		expect(projectStorePath("/home/u/.pi/agent", id)).toBe(`/home/u/.pi/agent/muninn-projects/${id}`);
 	});
 });

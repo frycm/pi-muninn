@@ -159,36 +159,3 @@ describe("commitJournal — a store that is not a repository", () => {
 		expect(result.reason).toContain("not a git repository");
 	});
 });
-
-describe("commitJournal — inside the developer's own repository", () => {
-	it("never commits work the developer had staged", async () => {
-		// The riskiest combination: an in-repo store lives inside a repository
-		// Muninn does not own, and a bare `git commit` there would sweep up
-		// whatever was in the index.
-		const repo = join(root, "project");
-		mkdirSync(repo, { recursive: true });
-		await git(repo, { kind: "init" });
-		await git(repo, { kind: "config", key: "user.name", value: "Real Developer" });
-		await git(repo, { kind: "config", key: "user.email", value: "dev@example.com" });
-		writeFileSync(join(repo, "store.md"), "a project file that happens to share a name\n");
-		await git(repo, { kind: "add", paths: ["store.md"] });
-		await git(repo, { kind: "commit", message: "initial", paths: ["store.md"] });
-
-		const inRepoStore = join(repo, ".pi", "muninn");
-		await ensureStore(inRepoStore, { host, inRepo: true });
-
-		// The developer stages their own change.
-		writeFileSync(join(repo, "store.md"), "the developer's own edit, staged\n");
-		await git(repo, { kind: "add", paths: ["store.md"] });
-
-		await appendEntry({ source: "user", prose: "a memory", claims: [] }, { storePath: inRepoStore, hostId: host.id });
-		expect(
-			(await commitJournal({ storePath: inRepoStore, hostId: host.id, hostName: host.name, entries: 1 })).committed,
-		).toBe(true);
-
-		// Their edit is still staged, not committed by Muninn.
-		const { stdout } = await git(repo, { kind: "status-porcelain", paths: ["store.md"] });
-		expect(stdout).toContain("store.md");
-		expect(readFileSync(join(repo, "store.md"), "utf-8")).toContain("developer's own edit");
-	});
-});

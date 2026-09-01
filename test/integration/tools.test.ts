@@ -7,13 +7,15 @@
  * `memory_search` in the same run.
  */
 import { execFile, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readStoreJournal } from "../../src/journal/read.ts";
+import { readProjectRegistry } from "../../src/project/registry.ts";
+import { projectStorePath } from "../../src/store/paths.ts";
 import { type MockProvider, type MockRequest, startMockProvider } from "../fixtures/mock-provider.ts";
 
 const execFileAsync = promisify(execFile);
@@ -66,9 +68,8 @@ async function pi(prompt: string): Promise<string> {
 }
 
 function projectStore(): string {
-	const projects = join(agentDir, "muninn-projects");
-	const entries = readdirSync(projects);
-	return join(projects, entries[0] as string);
+	const registry = readProjectRegistry(agentDir);
+	return projectStorePath(agentDir, registry?.projects[0]?.id as string);
 }
 
 beforeAll(async () => {

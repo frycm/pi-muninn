@@ -45,19 +45,13 @@ export interface SyncOptions {
 	 * `origin` its own repository already has, and otherwise commits locally.
 	 */
 	remote: string | null;
-	/**
-	 * Whether an `origin` the store already has may be used when `remote` is
-	 * null. False for an in-repo store: that repository belongs to the project,
-	 * and pushing it would push the user's own code.
-	 */
-	useExistingRemote?: boolean;
 	/** Entries appended since the last commit; used for the commit message. */
 	entries?: number;
 	/** Stop before the network steps. The shutdown path passes a 10 s deadline. */
 	signal?: AbortSignal;
 	/** Skip the push — for a run that only wants the store up to date locally. */
 	noPush?: boolean;
-	/** The identity commits and the rebase run under. Absent for an in-repo store. */
+	/** The identity commits and the rebase run under. */
 	identity?: GitIdentity;
 }
 
@@ -261,11 +255,6 @@ function describe(error: unknown): string {
  * store, which has no setting of its own, syncs at all.
  */
 async function resolveRemote(options: SyncOptions, result: SyncResult): Promise<string | undefined> {
-	if (!options.remote && options.useExistingRemote === false) {
-		result.notes.push("in-repo store — committed locally, never pushed by muninn");
-		return undefined;
-	}
-
 	let current: string | undefined;
 	try {
 		current = (await git(options.storePath, { kind: "remote-get-url", name: REMOTE_NAME })).stdout.trim() || undefined;
