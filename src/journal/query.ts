@@ -1,5 +1,7 @@
 /** Canonical journal scan, filters, relation-aware ranking and stable DTOs. */
 import { createHash } from "node:crypto";
+import { existsSync, realpathSync } from "node:fs";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { type JournalScanProblem, scanJournal } from "./jsonl.ts";
 import { JournalLexicalIndex, tokenizeJournalText } from "./query-index.ts";
 import type { JournalRecord, JournalRecordType, JournalSource, JournalStatus } from "./record.ts";
@@ -55,6 +57,13 @@ export interface JournalQueryResult {
 
 export interface JournalReadResult {
 	records: JournalRecord[];
+	transcripts: Array<{
+		record: string;
+		file: string;
+		available: boolean;
+		first?: string;
+		last?: string;
+	}>;
 	warnings: string[];
 	truncated: boolean;
 }
@@ -79,6 +88,8 @@ export interface JournalQueryServiceOptions {
 	forceReindex?: boolean;
 	maxChars?: number;
 	snippetChars?: number;
+	/** Canonical local directories in which transcript pointers may be checked. */
+	transcriptRoots?: string[];
 	currentGit?: { branch?: string | null; head?: string | null; paths?: string[] };
 }
 
@@ -86,6 +97,28 @@ const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 const DEFAULT_MAX_CHARS = 128 * 1024;
 const DEFAULT_SNIPPET_CHARS = 280;
+
+function inside(root: string, path: string): boolean {
+	const fromRoot = relative(root, path);
+	return fromRoot === "" || (!isAbsolute(fromRoot) && fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`));
+}
+
+function transcriptAvailable(file: string, roots: readonly string[]): boolean {
+	if (!isAbsolute(file)) return false;
+	const candidate = resolve(file);
+	for (const configuredRoot of roots) {
+		const root = resolve(configuredRoot);
+		// Do not probe arbitrary paths from synchronized teammate records.
+		if (!inside(root, candidate) || !existsSync(candidate)) continue;
+		try {
+			const canonicalRoot = existsSync(root) ? realpathSync(root) : root;
+			if (inside(canonicalRoot, realpathSync(candidate))) return true;
+		} catch {
+			// A disappearing or unreadable transcript is simply unavailable locally.
+		}
+	}
+	return false;
+}
 
 export class JournalQueryService {
 	private readonly options: JournalQueryServiceOptions;
@@ -181,8 +214,22 @@ export class JournalQueryService {
 	read(id: string, relationDepth = 0, limit = 50): JournalReadResult | undefined {
 		const neighborhood = relationNeighborhood(this.projection, id, { depth: relationDepth, limit });
 		if (!neighborhood) return undefined;
+		const records = neighborhood.records.map((view) => view.record);
 		return {
-			records: neighborhood.records.map((view) => view.record),
+			records,
+			transcripts: records.flatMap((record) =>
+				record.session
+					? [
+							{
+								record: record.id,
+								file: record.session.file,
+								available: transcriptAvailable(record.session.file, this.options.transcriptRoots ?? []),
+								...(record.session.first ? { first: record.session.first } : {}),
+								...(record.session.last ? { last: record.session.last } : {}),
+							},
+						]
+					: [],
+			),
 			warnings: this.warnings(),
 			truncated: neighborhood.truncated,
 		};

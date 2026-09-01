@@ -190,7 +190,8 @@ describe("outcomeEntry", () => {
 		if (!parsed.ok) throw new Error("fixture failed to parse");
 		const entry = outcomeEntry(parsed.outcome, request, { channel: "tui" });
 		expect(entry.source).toBe("agent");
-		expect(entry.phase).toBe("test");
+		expect(entry.type).toBe("outcome");
+		expect(entry.tags).toContain("test");
 		expect(entry.task).toBe(STATE.task);
 	});
 });
@@ -213,7 +214,7 @@ describe("runOutcome", () => {
 		});
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
-		expect(result.entry.claims).toHaveLength(2);
+		expect(result.entry.body).toContain("pnpm test --run");
 	});
 
 	it("retries once, telling the model what was wrong", async () => {

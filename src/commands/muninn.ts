@@ -31,7 +31,7 @@ export interface CommandRuntime {
 	appendUser(record: NewJournalRecord): Promise<AppendJournalResult>;
 	appendRelation(target: string, text: string, relation: JournalRelationType): Promise<AppendJournalResult>;
 	reindex(): Promise<number>;
-	sync(options: { noPush?: boolean }): Promise<Array<{ scope: "global" | "project"; result: SyncResult }>>;
+	sync(options: { noPush?: boolean }): Promise<Array<{ scope: "project"; result: SyncResult }>>;
 	statusReport(session: SessionContext): string;
 }
 

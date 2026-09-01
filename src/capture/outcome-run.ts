@@ -4,7 +4,7 @@
  * Separated from `outcome.ts` so the template and parser stay testable without
  * a model, and so this file holds only the part that talks to one.
  */
-import type { NewJournalEntry } from "../journal/append.ts";
+import type { NewJournalRecord } from "../journal/record.ts";
 import type { Channel } from "./cues.ts";
 import {
 	buildOutcomePrompt,
@@ -27,7 +27,7 @@ export interface RunOutcomeOptions {
 	signal?: AbortSignal | undefined;
 }
 
-export type OutcomeResult = { ok: true; entry: NewJournalEntry } | { ok: false; problem: string };
+export type OutcomeResult = { ok: true; entry: NewJournalRecord } | { ok: false; problem: string };
 
 /**
  * Ask the model for an outcome entry, once, with one retry on a bad parse.

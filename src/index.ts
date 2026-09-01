@@ -1,11 +1,12 @@
 /**
  * pi-muninn extension entry point.
  *
- * Phase 1 step 10: sessions leave a journal of what the user asked to be
- * remembered, what they corrected and how each task turned out; every store
- * carries a Tier 0 index of it; and the model can search, read and append to
- * the journal explicitly through tools.
+ * Sessions append user-directed notes and task outcomes to one logical-project
+ * JSONL journal. Humans, Unix tools, and model-facing tools all read the same
+ * canonical records.
  */
+
+import { join } from "node:path";
 import {
 	CONFIG_DIR_NAME,
 	type ExtensionAPI,
@@ -29,8 +30,6 @@ import {
 	taskFromSessionFile,
 } from "./capture/session-state.ts";
 import { type CommandOutput, type CommandRuntime, runMuninnCommand } from "./commands/muninn.ts";
-import { SessionIndexes } from "./index/search.ts";
-import { type AppendResult, appendEntry } from "./journal/append.ts";
 import type { AppendJournalResult } from "./journal/jsonl.ts";
 import { collectGitProvenance } from "./journal/provenance.ts";
 import { JournalQueryService } from "./journal/query.ts";
@@ -39,7 +38,7 @@ import { appendAuthorizedJournalRecord, appendUserRelation } from "./journal/wri
 import { buildSessionContext, journalStats, type SessionContext } from "./session.ts";
 import { formatStatus, formatStatusLine, formatWarning } from "./status.ts";
 import { storeIdentity } from "./store/init.ts";
-import type { CaptureTarget } from "./store/scopes.ts";
+import { readProjectManifest } from "./store/project-manifest.ts";
 import { describeSync, type SyncResult, sync } from "./sync/sync.ts";
 import { journalContextTool } from "./tools/journal-context.ts";
 import { journalNoteTool } from "./tools/journal-note.ts";
@@ -97,18 +96,9 @@ export default function (pi: ExtensionAPI): void {
 	 * gap worth proposing.
 	 */
 	let runsWithoutAgentEnd = 0;
-	/**
-	 * Entries appended and not yet committed, per store.
-	 *
-	 * Per store, because a session writes to more than one: capture goes to
-	 * the capture target, but `/muninn note --global`, `promote` and a
-	 * `memory_note` with a scope all go elsewhere, and a commit of one store
-	 * must not zero the count of another.
-	 */
+	/** Entries appended and not yet committed to the active project store. */
 	const pending = new Map<string, number>();
 	const pendingTotal = (): number => [...pending.values()].reduce((total, count) => total + count, 0);
-	/** One Tier 0 index per active scope, opened once and kept for the session. */
-	let indexes: SessionIndexes | undefined;
 	/** Phase 3 canonical query service for the active logical project. */
 	let journal: JournalQueryService | undefined;
 	/** What sync did this session, for the status report's "last sync" line. */
@@ -133,12 +123,12 @@ export default function (pi: ExtensionAPI): void {
 		return session;
 	};
 
-	/** Redraw the footer: capture target, tier, uncommitted entries, warnings. */
+	/** Redraw the footer: project journal, uncommitted entries, warnings. */
 	const refreshStatus = (): void => {
 		const current = session;
 		if (!current || !setStatus) return;
 		try {
-			setStatus(formatStatusLine(current, { tier: "t0", uncommitted: pendingTotal() }));
+			setStatus(formatStatusLine(current, { uncommitted: pendingTotal() }));
 		} catch {
 			// A context captured before a fork or a reload is invalidated by pi.
 			// The next event replaces it; a stale footer is not worth an error.
@@ -147,32 +137,6 @@ export default function (pi: ExtensionAPI): void {
 
 	const captureTargetPath = (current: SessionContext): string | undefined =>
 		current.scopes.active.find((scope) => scope.scope === current.scopes.captureTarget)?.path;
-
-	/**
-	 * Everything that follows an append: remember the id, count it for the
-	 * commit message, and put it in the index.
-	 *
-	 * Indexing here rather than at the next session start is what makes a
-	 * correction findable in the turn after it was made — the entry is chunked
-	 * from what was just written, so nothing is re-read and nothing waits.
-	 */
-	const afterAppend = (
-		current: SessionContext,
-		currentState: MuninnSessionState,
-		storePath: string,
-		written: AppendResult,
-	): void => {
-		currentState.written.push(written.id);
-		pending.set(storePath, (pending.get(storePath) ?? 0) + 1);
-		refreshStatus();
-		indexes?.addEntry(storePath, {
-			...written.entry,
-			date: written.date,
-			host: current.host.id,
-			path: written.path,
-		});
-		pi.appendEntry(STATE_CUSTOM_TYPE, { kind: "written", ids: [written.id] } satisfies StateDelta);
-	};
 
 	const afterJournalAppend = (
 		currentState: MuninnSessionState,
@@ -194,26 +158,9 @@ export default function (pi: ExtensionAPI): void {
 			localMember: current.project.member.id,
 			mode: "index",
 			maxChars: 16_000,
+			transcriptRoots: [join(getAgentDir(), "sessions")],
 		});
 		return journal;
-	};
-
-	/**
-	 * Open (and rebuild what is stale in) every active scope's index.
-	 *
-	 * On the queue, not awaited in the handler: a first build over a large
-	 * store is seconds of work, and no session should wait on it to accept the
-	 * user's first keystroke. The queue is serial, so any append or tool search
-	 * that follows finds the index already open.
-	 */
-	const openIndexes = (current: SessionContext, force: boolean): void => {
-		queue.enqueue("index", async () => {
-			const opened = SessionIndexes.open(current.scopes.active, force ? { force: true } : {});
-			indexes = opened.indexes;
-			if (opened.problems.length > 0) {
-				process.stderr.write(`${["muninn: index problems", ...opened.problems.map((p) => `  ! ${p}`)].join("\n")}\n`);
-			}
-		});
 	};
 
 	const journalRuntime: JournalToolRuntime = {
@@ -262,11 +209,7 @@ export default function (pi: ExtensionAPI): void {
 	 * counters, and the objects the session is holding open.
 	 */
 	const statusReport = (current: SessionContext): string => {
-		const indexStats = indexes?.scopes.map((scoped) => ({
-			scope: scoped.scope,
-			chunks: scoped.index.size,
-			files: scoped.index.files,
-		}));
+		const remote = current.project ? (readProjectManifest(current.project.storePath)?.remote ?? null) : null;
 		return formatStatus({
 			muninnVersion: MUNINN_VERSION,
 			piVersion: PI_VERSION,
@@ -276,8 +219,7 @@ export default function (pi: ExtensionAPI): void {
 			captureFailures: queue.peekFailures().map((failure) => `${failure.label}: ${failure.message}`),
 			runsWithoutAgentEnd,
 			uncommitted: pendingTotal(),
-			sync: { remote: current.loaded.settings.sync.remote, ...(lastSync ? { last: lastSync } : {}) },
-			...(indexStats ? { index: indexStats } : {}),
+			sync: { remote, ...(lastSync ? { last: lastSync } : {}) },
 		});
 	};
 
@@ -396,7 +338,6 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		session = undefined;
-		indexes = undefined;
 		journal = undefined;
 		pending.clear();
 		previousAssistantText = undefined;
@@ -419,8 +360,6 @@ export default function (pi: ExtensionAPI): void {
 				? { kind: "start", task: state.task, continues: state.continues }
 				: { kind: "start", task: state.task }) satisfies StateDelta,
 		);
-
-		openIndexes(current, false);
 
 		// A misread setting or an unusable store means Muninn is not behaving the
 		// way the files say it should. That is exactly the class of failure this
@@ -448,7 +387,8 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("input", (event, ctx) => {
 		const current = session;
 		const currentState = state;
-		if (!current || !currentState) return;
+		if (!current?.project || !currentState) return;
+		const projectIdentity = current.project;
 
 		const storePath = captureTargetPath(current);
 		if (!storePath) return;
@@ -468,12 +408,18 @@ export default function (pi: ExtensionAPI): void {
 		// under contention with another pi session it can wait seconds, and
 		// stalling the user's turn to record a note about it is the wrong trade.
 		queue.enqueue(`capture ${decision.kind}`, async () => {
-			const result = await appendEntry(decision.entry, {
-				storePath,
-				hostId: current.host.id,
-				lockTimeoutMs: BACKGROUND_LOCK_TIMEOUT_MS,
-			});
-			afterAppend(current, currentState, storePath, result);
+			const git = await collectGitProvenance(ctx.cwd);
+			const result = await appendAuthorizedJournalRecord(
+				{ authority: "attended-user", record: { ...decision.entry, ...(git ? { git } : {}) } },
+				{
+					storePath,
+					project: projectIdentity.id,
+					member: projectIdentity.member.id,
+					host: current.host.id,
+					lockTimeoutMs: BACKGROUND_LOCK_TIMEOUT_MS,
+				},
+			);
+			afterJournalAppend(currentState, storePath, result);
 		});
 	});
 
@@ -486,6 +432,7 @@ export default function (pi: ExtensionAPI): void {
 	 */
 	const writeOutcome = async (
 		ctx: {
+			cwd: string;
 			mode: string;
 			model: unknown;
 			modelRegistry: { complete(model: never, context: never, options?: never): Promise<unknown> };
@@ -495,7 +442,8 @@ export default function (pi: ExtensionAPI): void {
 	): Promise<void> => {
 		const current = session;
 		const currentState = state;
-		if (!current || !currentState) return;
+		if (!current?.project || !currentState) return;
+		const projectIdentity = current.project;
 
 		const storePath = captureTargetPath(current);
 		if (!storePath) return;
@@ -549,12 +497,18 @@ export default function (pi: ExtensionAPI): void {
 		queue.enqueue("outcome", async () => {
 			// A long acquire budget: nobody is waiting on this write, and a sync
 			// in another process may hold the lock for the length of a push.
-			const written = await appendEntry(result.entry, {
-				storePath,
-				hostId: current.host.id,
-				lockTimeoutMs: BACKGROUND_LOCK_TIMEOUT_MS,
-			});
-			afterAppend(current, currentState, storePath, written);
+			const git = await collectGitProvenance(ctx.cwd);
+			const written = await appendAuthorizedJournalRecord(
+				{ authority: "automatic", record: { ...result.entry, ...(git ? { git } : {}) } },
+				{
+					storePath,
+					project: projectIdentity.id,
+					member: projectIdentity.member.id,
+					host: current.host.id,
+					lockTimeoutMs: BACKGROUND_LOCK_TIMEOUT_MS,
+				},
+			);
+			afterJournalAppend(currentState, storePath, written);
 		});
 	};
 
@@ -567,9 +521,7 @@ export default function (pi: ExtensionAPI): void {
 		const current = session;
 		if (!current) return;
 
-		// Every store this session may have written to — not only the capture
-		// target. A promoted entry lives in the global store, and a commit of the
-		// project store must not leave it behind.
+		// Phase 3 has exactly one canonical project store per session.
 		for (const scope of current.scopes.active) {
 			if (!scope.exists) continue;
 			const storePath = scope.path;
@@ -601,21 +553,18 @@ export default function (pi: ExtensionAPI): void {
 	 */
 	const runSync = async (
 		options: { noPush?: boolean; signal?: AbortSignal } = {},
-	): Promise<Array<{ scope: CaptureTarget; result: SyncResult }>> => {
+	): Promise<Array<{ scope: "project"; result: SyncResult }>> => {
 		const current = session;
 		if (!current) return [];
 
-		const outcomes: Array<{ scope: CaptureTarget; result: SyncResult }> = [];
+		const outcomes: Array<{ scope: "project"; result: SyncResult }> = [];
 		for (const scope of current.scopes.active) {
 			if (!scope.exists) continue;
 			const result = await sync({
 				storePath: scope.path,
 				hostId: current.host.id,
 				hostName: current.host.name,
-				// `sync.remote` is the global store's remote. A project store has
-				// no setting of its own — a project file may not name one — so it
-				// syncs with the `origin` its user-owned store already has.
-				remote: scope.scope === "global" ? current.loaded.settings.sync.remote : null,
+				remote: readProjectManifest(scope.path)?.remote ?? null,
 				entries: pending.get(scope.path) ?? 0,
 				identity: storeIdentity(current.host),
 				...(options.noPush ? { noPush: true } : {}),
@@ -627,13 +576,9 @@ export default function (pi: ExtensionAPI): void {
 				pending.set(scope.path, 0);
 				refreshStatus();
 			}
-			// A rebase can bring another host's entries into the store while this
-			// session holds its index open. Without this, `/muninn sync` followed
-			// by a search misses exactly the memory the sync just fetched. A fetch
-			// that rebased nothing changed no file and needs no refresh.
+			// Refresh the canonical query projection after fetched records land.
 			if (result.rebased) {
-				indexes?.refresh(scope.path);
-				if (scope.scope === "project") journal?.refresh();
+				journal?.refresh();
 			}
 			outcomes.push({ scope: scope.scope, result });
 			lastSync = `${scope.scope}: ${describeSync(result)}`;
@@ -682,10 +627,8 @@ export default function (pi: ExtensionAPI): void {
 		// that reaches the network, and a shutdown must not hang on one. The cap
 		// stops the transaction between steps and kills a hanging fetch or push;
 		// a rebase, once started, always finishes.
-		// Gated on the setting alone: a project store syncs with the
-		// `origin` it already has, so requiring a *global* remote here would
-		// silently exclude it. Each scope decides for itself whether it has
-		// anywhere to push.
+		// The setting controls timing; the explicit project manifest remote
+		// decides whether there is network work to do.
 		if (session?.loaded.settings.sync.onShutdown) {
 			queue.enqueue("sync", async () => {
 				const deadline = new AbortController();
@@ -706,10 +649,6 @@ export default function (pi: ExtensionAPI): void {
 			});
 		}
 
-		// After the commit, so the index reflects every entry this session wrote.
-		queue.enqueue("index save", async () => {
-			for (const problem of indexes?.save() ?? []) process.stderr.write(`muninn: ${problem}\n`);
-		});
 		// Closes the window where a queued entry could be lost to process exit.
 		await queue.flush();
 		const failures = queue.takeFailures();

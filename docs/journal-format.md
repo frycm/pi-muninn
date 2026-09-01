@@ -1,10 +1,10 @@
 # Markdown journal format
 
-> **Normative for the current implementation.** Phase 3 migrates these records to the
+> **Legacy migration input.** Phase 3 writes the
 > [logical-project JSONL format](project-journal-format.md). This grammar remains readable so
 > migration can preserve every valid record and stable ID.
 
-The current journal is the append-only source from which its lexical index is rebuilt.
+This was the Phase 1 journal source from which its lexical index was rebuilt.
 `src/journal/format.ts` implements this grammar and `test/unit/journal-format.test.ts` is its
 executable copy.
 

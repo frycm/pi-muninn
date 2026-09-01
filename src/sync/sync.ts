@@ -8,9 +8,9 @@
  *
  * Two consequences the code is shaped around:
  *
- *  - **The one conflict Phase 1 can resolve is `store.md`.** Two hosts
- *    registering themselves at the same time write the same registry file. That
- *    is a union of additions, so it is merged and the rebase continues. Any
+ *  - **The one conflict Muninn can resolve is `project.json`.** Two writers
+ *    registering themselves at the same time add member/host metadata. That is
+ *    a validated union, so it is merged and the rebase continues. Any
  *    other conflict aborts the rebase, leaves the store exactly where it was,
  *    and reports. Sync never
  *    force-pushes and never resolves a disagreement it does not understand.
@@ -22,14 +22,21 @@
  * host cannot land between the commit and the push.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
 import { GitError, type GitIdentity, GitMissingError, git, isGitRepository } from "../git.ts";
+import { scanJournal } from "../journal/jsonl.ts";
 import { LockBusyError, withStoreLock } from "../store/lock.ts";
-import { formatStoreMd, mergeStoreMd, parseStoreMd, type StoreMd } from "../store/store-md.ts";
+import {
+	formatProjectManifest,
+	mergeProjectManifests,
+	type ProjectManifest,
+	parseProjectManifest,
+	readProjectManifest,
+} from "../store/project-manifest.ts";
 
-/** The remote Muninn keeps pointed at `sync.remote`. */
+/** The Git remote name Muninn keeps pointed at the project manifest remote. */
 export const REMOTE_NAME = "origin";
 
 export interface SyncOptions {
@@ -39,10 +46,7 @@ export interface SyncOptions {
 	/**
 	 * The remote this store is configured to sync with, or null.
 	 *
-	 * `sync.remote` names the **global** store's remote. A project store has no
-	 * setting of its own — a project `settings.json` may not name a remote, since
-	 * it travels with a repository anyone can clone — so it syncs with whatever
-	 * `origin` its own repository already has, and otherwise commits locally.
+	 * The user-owned project manifest's explicit remote, or null.
 	 */
 	remote: string | null;
 	/** Entries appended since the last commit; used for the commit message. */
@@ -62,8 +66,8 @@ export interface SyncResult {
 	fetched: boolean;
 	rebased: boolean;
 	pushed: boolean;
-	/** True when `store.md` was union-merged during the rebase. */
-	mergedRegistry: boolean;
+	/** True when `project.json` was union-merged during the rebase. */
+	mergedManifest: boolean;
 	/** One line per step, in order, for `/muninn` and the CLI. */
 	notes: string[];
 	/** Where it stopped, when it stopped early. */
@@ -74,7 +78,7 @@ export interface SyncResult {
 }
 
 function empty(): SyncResult {
-	return { committed: false, fetched: false, rebased: false, pushed: false, mergedRegistry: false, notes: [] };
+	return { committed: false, fetched: false, rebased: false, pushed: false, mergedManifest: false, notes: [] };
 }
 
 /**
@@ -127,6 +131,8 @@ async function transaction(options: SyncOptions, result: SyncResult): Promise<Sy
 		});
 		result.committed = committed.committed;
 		result.notes.push(committed.committed ? "committed pending journal entries" : `commit: ${committed.reason}`);
+		const localProblem = validateWriterOwnership(options.storePath);
+		if (localProblem) return stop(result, "commit", localProblem);
 
 		const remote = await resolveRemote(options, result);
 		if (!remote) {
@@ -179,6 +185,8 @@ async function transaction(options: SyncOptions, result: SyncResult): Promise<Sy
 		} else {
 			result.notes.push(`${remoteRef} does not exist yet — this is the first push`);
 		}
+		const synchronizedProblem = validateWriterOwnership(options.storePath);
+		if (synchronizedProblem) return stop(result, "rebase", synchronizedProblem);
 
 		// --- push ----------------------------------------------------------
 		if (options.noPush) {
@@ -216,6 +224,28 @@ function stop(result: SyncResult, step: SyncStep, problem: string): SyncResult {
 	return result;
 }
 
+export function validateWriterOwnership(storePath: string): string | undefined {
+	let manifest: ProjectManifest | undefined;
+	try {
+		manifest = readProjectManifest(storePath);
+	} catch (error) {
+		return describe(error);
+	}
+	if (!manifest) return "project.json is missing";
+	const scan = scanJournal(storePath);
+	const fatal = scan.problems.find((problem) => problem.kind === "collision" || problem.kind === "ownership");
+	if (fatal) return `journal ${fatal.kind} at ${fatal.path}:${fatal.line ?? "?"}: ${fatal.message}`;
+	const ownership = new Map(manifest.hosts.map((host) => [host.id, host.member]));
+	for (const item of scan.records) {
+		const member = ownership.get(item.record.host);
+		if (!member) return `record ${item.record.id} was written by unregistered host ${item.record.host}`;
+		if (member !== item.record.member) {
+			return `host collision: ${item.record.host} belongs to member ${member}, but record ${item.record.id} claims ${item.record.member}`;
+		}
+	}
+	return undefined;
+}
+
 /**
  * Network conditions that mean "try again later", named narrowly.
  *
@@ -249,10 +279,8 @@ function describe(error: unknown): string {
  * Where this store pushes, or nothing.
  *
  * A configured remote is the authority and is written into the store's
- * `origin`, because memory goes where the operator says it goes and a stale
- * remote nobody remembers configuring is worse than a rewritten one. With no
- * setting, an `origin` the store already has is used — that is how a project
- * store, which has no setting of its own, syncs at all.
+ * `origin`. With no explicit project remote, sync commits locally and does
+ * not adopt ambient Git configuration.
  */
 async function resolveRemote(options: SyncOptions, result: SyncResult): Promise<string | undefined> {
 	let current: string | undefined;
@@ -263,12 +291,8 @@ async function resolveRemote(options: SyncOptions, result: SyncResult): Promise<
 	}
 
 	if (!options.remote) {
-		if (!current) {
-			result.notes.push("no remote configured — committed locally only");
-			return undefined;
-		}
-		result.notes.push(`using the store's own remote ${REMOTE_NAME} → ${current}`);
-		return current;
+		result.notes.push("no project journal remote configured — committed locally only");
+		return undefined;
 	}
 
 	if (current === options.remote) return options.remote;
@@ -297,13 +321,13 @@ async function currentBranch(storePath: string): Promise<string> {
 /**
  * A message when the remote is not this store's, or nothing.
  *
- * The store id is the identity guard the format already has, and this is the
+ * The project UUID is the identity guard, and this is the
  * one place to check it: after the fetch, before anything is written. The
  * check is *positive* — the remote must prove it is the same store — because
  * every way of failing to prove it is a way of pushing memory somewhere it
  * does not belong:
  *
- *  - no `store.md` at all: an existing branch that is not a muninn store, and
+ *  - no `project.json` at all: an existing branch that is not a journal, and
  *    rebasing onto it would graft the store into an unrelated history;
  *  - an unreadable one: a store this Muninn cannot reason about;
  *  - a different id: two stores, one remote, a typo.
@@ -312,26 +336,29 @@ async function currentBranch(storePath: string): Promise<string> {
  * this function.
  */
 async function storeMismatch(storePath: string, remoteRef: string): Promise<string | undefined> {
-	let ours: StoreMd | undefined;
+	let ours: ProjectManifest | undefined;
 	try {
-		ours = parseStoreMd(readFileSync(join(storePath, "store.md"), "utf-8")).store;
+		ours = readProjectManifest(storePath);
 	} catch {
 		ours = undefined;
 	}
-	if (!ours) return `${storePath} has no readable store.md; refusing to sync a store this Muninn cannot identify`;
+	if (!ours) return `${storePath} has no readable project.json; refusing to sync a journal this Muninn cannot identify`;
 
 	let text: string;
 	try {
-		text = (await git(storePath, { kind: "show-file", ref: remoteRef, path: "store.md" })).stdout;
+		text = (await git(storePath, { kind: "show-file", ref: remoteRef, path: "project.json" })).stdout;
 	} catch {
-		return `${remoteRef} exists but has no store.md; it is not this store's remote, and syncing would graft ${ours.store} into an unrelated history`;
+		return `${remoteRef} exists but has no project.json; syncing would graft project ${ours.project} into unrelated history`;
 	}
 
-	const theirs = parseStoreMd(text).store;
-	if (!theirs)
-		return `store.md on ${remoteRef} is unreadable; refusing to rebase onto a store that cannot be identified`;
-	if (theirs.store !== ours.store) {
-		return `${remoteRef} holds a different store (${theirs.store}, not ${ours.store}); refusing to merge two stores' histories`;
+	let theirs: ProjectManifest;
+	try {
+		theirs = parseProjectManifest(text, `${remoteRef}:project.json`);
+	} catch {
+		return `project.json on ${remoteRef} is unreadable; refusing to rebase onto an unidentified journal`;
+	}
+	if (theirs.project !== ours.project) {
+		return `${remoteRef} holds a different project (${theirs.project}, not ${ours.project}); refusing to merge histories`;
 	}
 	return undefined;
 }
@@ -346,7 +373,7 @@ async function refExists(storePath: string, ref: string): Promise<boolean> {
 }
 
 /**
- * Rebase onto the remote head, resolving a `store.md` conflict if that is all
+ * Rebase onto the remote head, resolving a `project.json` metadata conflict if that is all
  * there is.
  */
 async function rebaseOnto(
@@ -365,8 +392,8 @@ async function rebaseOnto(
 		return true;
 	} catch (error) {
 		const conflicts = await conflictedPaths(storePath);
-		if (conflicts.length === 1 && conflicts[0] === "store.md") {
-			const merged = await mergeRegistry(storePath, result, identity);
+		if (conflicts.length === 1 && conflicts[0] === "project.json") {
+			const merged = await mergeManifest(storePath, result, identity);
 			if (merged) return true;
 		}
 
@@ -382,7 +409,7 @@ async function rebaseOnto(
 	}
 }
 
-/** `UU store.md` → `store.md`. */
+/** Return paths Git left conflicted. */
 async function conflictedPaths(storePath: string): Promise<string[]> {
 	const { stdout } = await git(storePath, { kind: "status-porcelain", paths: [] });
 	const paths: string[] = [];
@@ -394,30 +421,25 @@ async function conflictedPaths(storePath: string): Promise<string[]> {
 	return paths;
 }
 
-async function mergeRegistry(storePath: string, result: SyncResult, identity?: GitIdentity): Promise<boolean> {
+async function mergeManifest(storePath: string, result: SyncResult, identity?: GitIdentity): Promise<boolean> {
 	const withIdentity = identity ? { identity } : {};
 	try {
-		const ours = parseStoreMd((await git(storePath, { kind: "show-stage", stage: 2, path: "store.md" })).stdout);
-		const theirs = parseStoreMd((await git(storePath, { kind: "show-stage", stage: 3, path: "store.md" })).stdout);
-		if (!ours.store || !theirs.store) return false;
-		// Belt and braces: the pre-rebase check should already have stopped this,
-		// but a union merge is exactly the wrong answer for two different stores
-		// and it must not be reachable by any route.
-		if (ours.store.store !== theirs.store.store) {
-			result.notes.push(`store.md belongs to a different store (${theirs.store.store}); refusing to merge`);
-			return false;
-		}
-
-		writeFileSync(join(storePath, "store.md"), formatStoreMd(mergeStoreMd(ours.store, theirs.store)));
-		await git(storePath, { kind: "add", paths: ["store.md"] });
+		const ours = parseProjectManifest(
+			(await git(storePath, { kind: "show-stage", stage: 2, path: "project.json" })).stdout,
+		);
+		const theirs = parseProjectManifest(
+			(await git(storePath, { kind: "show-stage", stage: 3, path: "project.json" })).stdout,
+		);
+		writeFileSync(join(storePath, "project.json"), formatProjectManifest(mergeProjectManifests(ours, theirs)));
+		await git(storePath, { kind: "add", paths: ["project.json"] });
 		await git(storePath, { kind: "rebase-continue" }, withIdentity);
 
 		result.rebased = true;
-		result.mergedRegistry = true;
-		result.notes.push("merged store.md host registries and continued the rebase");
+		result.mergedManifest = true;
+		result.notes.push("merged project.json member/host metadata and continued the rebase");
 		return true;
 	} catch (error) {
-		result.notes.push(`could not merge store.md: ${describe(error)}`);
+		result.notes.push(`could not merge project.json: ${describe(error)}`);
 		return false;
 	}
 }

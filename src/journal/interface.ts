@@ -154,6 +154,7 @@ export function renderRead(id: string, result: JournalReadResult, mode: JournalO
 	const envelope = { schema: JOURNAL_INTERFACE_SCHEMA, id, ...result };
 	if (mode === "json") return [JSON.stringify(envelope)];
 	if (mode === "jsonl") return result.records.map((record) => JSON.stringify({ kind: "record", ...record }));
+	const transcripts = new Map(result.transcripts.map((transcript) => [transcript.record, transcript]));
 	return [
 		...result.records.flatMap((record, index) => [
 			...(index > 0 ? [""] : []),
@@ -162,7 +163,9 @@ export function renderRead(id: string, result: JournalReadResult, mode: JournalO
 			`member ${record.member} · host ${record.host}`,
 			...(record.git?.branch ? [`branch ${record.git.branch}`] : []),
 			...(record.session
-				? [`session ${record.session.file}${record.session.last ? `#${record.session.last}` : ""}`]
+				? [
+						`session ${record.session.file}${record.session.last ? `#${record.session.last}` : ""}${transcripts.get(record.id)?.available ? "" : " (transcript unavailable locally)"}`,
+					]
 				: []),
 			...record.relations.map((relation) => `${relation.type} ${relation.target}`),
 		]),

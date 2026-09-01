@@ -7,6 +7,9 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AGENT_DIR_ENV, CONFIG_DIR, resolveAgentDir } from "../../src/agent-dir.ts";
 import { runCli } from "../../src/cli.ts";
+import { appendAuthorizedJournalRecord } from "../../src/journal/writer.ts";
+import { readProjectRegistry } from "../../src/project/registry.ts";
+import { loadHostIdentity } from "../../src/store/host.ts";
 
 const execFileAsync = promisify(execFile);
 const CLI = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
@@ -65,6 +68,16 @@ describe("muninn project-journal CLI", () => {
 		expect((await runCli(["project", "show"], cwd)).code).toBe(1);
 	});
 
+	it("sets, shows, and removes the explicit project journal remote", async () => {
+		await runCli(["project", "link", "--name", "operations"], cwd);
+		const remote = "ssh://git.example/team/operations-journal.git";
+		expect((await runCli(["project", "remote", remote], cwd)).out).toEqual([`project journal remote: ${remote}`]);
+		expect(await runCli(["project", "remote"], cwd)).toMatchObject({ code: 0, out: [remote] });
+		expect((await runCli(["status", "--json"], cwd)).out[0]).toContain(remote);
+		expect((await runCli(["project", "remote", "--remove"], cwd)).out).toEqual(["project journal remote removed"]);
+		expect((await runCli(["project", "remote"], cwd)).code).toBe(1);
+	});
+
 	it("writes, finds, and shows the same stable record ID", async () => {
 		const id = await note("Deploys need the VPN to reach staging.");
 		const searched = await runCli(["search", "deploy", "VPN", "--json"], cwd);
@@ -94,6 +107,34 @@ describe("muninn project-journal CLI", () => {
 		expect(invalid.code).toBe(2);
 		expect(invalid.out).toEqual([]);
 		expect(invalid.err.join("\n")).toContain("--limit");
+	});
+
+	it("returns the record with a distinct code when its transcript is unavailable locally", async () => {
+		await note("Create the project journal.");
+		const registry = readProjectRegistry(agentDir);
+		const project = registry?.projects[0];
+		const host = loadHostIdentity(agentDir);
+		const written = await appendAuthorizedJournalRecord(
+			{
+				authority: "headless-user",
+				record: {
+					type: "note",
+					source: "user",
+					channel: "cli",
+					body: "Evidence lives on another clone.",
+					session: { file: join(root, "missing-session.jsonl"), last: "e-9" },
+				},
+			},
+			{
+				storePath: join(agentDir, "muninn-projects", project?.id as string),
+				project: project?.id as string,
+				member: registry?.member.id as string,
+				host: host.id,
+			},
+		);
+		const shown = await runCli(["show", written.id, "--json"], cwd);
+		expect(shown.code).toBe(3);
+		expect(JSON.parse(shown.out[0] as string).transcripts[0]).toMatchObject({ available: false });
 	});
 
 	it("appends a correction without modifying its target and reads the relation chain", async () => {

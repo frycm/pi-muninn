@@ -13,14 +13,15 @@
  * and every reader downstream must cope with it forever.
  */
 
-import type { NewJournalEntry } from "../journal/append.ts";
-import { PHASES, type Phase } from "../journal/format.ts";
+import type { JournalSessionPointer, NewJournalRecord } from "../journal/record.ts";
 import type { RunBuffer } from "./accumulate.ts";
 import { renderRun } from "./accumulate.ts";
 import type { MuninnSessionState } from "./session-state.ts";
 
 /** How much of the run the outcome model is shown. */
 export const RUN_TOKEN_BUDGET = 12_000;
+export const PHASES = ["locate", "reproduce", "fix", "test", "review", "ops", "other"] as const;
+export type Phase = (typeof PHASES)[number];
 
 export const OUTCOME_SYSTEM_PROMPT = `You are writing one journal entry recording the outcome of a coding task, for a memory system that a future session will search.
 
@@ -160,18 +161,29 @@ export function shouldWriteOutcome(buffer: RunBuffer, options: { outcomesEnabled
 export function outcomeEntry(
 	outcome: ParsedOutcome,
 	request: OutcomeRequest,
-	base: { channel: NewJournalEntry["channel"]; session?: string | undefined },
-): NewJournalEntry {
-	const entry: NewJournalEntry = {
+	base: { channel: NewJournalRecord["channel"]; session?: string | undefined },
+): NewJournalRecord {
+	const entry: NewJournalRecord = {
+		type: "outcome",
 		source: "agent",
+		channel: base.channel,
 		task: request.state.task,
-		phase: outcome.phase,
-		prose: outcome.prose,
-		claims: outcome.claims,
+		body: [outcome.prose, ...outcome.claims.map((claim) => `- ${claim}`)].filter(Boolean).join("\n"),
+		tags: [outcome.phase],
+		paths: [],
+		relations: [],
 	};
-	if (base.channel) entry.channel = base.channel;
-	if (base.session) entry.session = base.session;
+	const pointer = journalSessionPointer(base.session);
+	if (pointer) entry.session = pointer;
 	if (request.state.continues) entry.continues = request.state.continues;
 	if (outcome.cue) entry.cue = outcome.cue;
 	return entry;
+}
+
+function journalSessionPointer(pointer: string | undefined): JournalSessionPointer | undefined {
+	if (!pointer) return undefined;
+	const hash = pointer.lastIndexOf("#");
+	if (hash === -1) return { file: pointer };
+	const last = pointer.slice(hash + 1);
+	return { file: pointer.slice(0, hash), ...(last ? { last } : {}) };
 }

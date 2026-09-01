@@ -12,19 +12,18 @@ The design is local-first and composable: append-only JSONL, Git synchronization
 retrieval and no hosted service in the storage or search path.
 
 > [!IMPORTANT]
-> Phase 3 is underway. Logical-project resolution, the sharded JSONL engine, restartable
-> Markdown migration, correction projection, canonical query/index service and the
-> `journal_*` model tools are implemented. The attended commands and standalone CLI now use
-> that same service and expose stable JSON/JSONL. Automatic capture and synchronization are
-> being moved onto the foundation in the final slice. Journal content is never injected into
-> prompts.
+> Phase 3 is implemented. Linked worktrees and explicitly linked clones share one sharded
+> JSONL project journal; automatic capture, model tools, attended commands, Unix interfaces,
+> corrections, migration and explicit Git synchronization all use that same canonical
+> service. Journal content is never injected into prompts.
 
 The legacy Markdown migration-input contract is
 [docs/journal-format.md](docs/journal-format.md). The JSONL contract is
 [docs/project-journal-format.md](docs/project-journal-format.md), and the implementation
 sequence is [docs/phase-3-plan.md](docs/phase-3-plan.md).
 The implemented identity and registry contract is
-[docs/project-registry.md](docs/project-registry.md).
+[docs/project-registry.md](docs/project-registry.md). Team onboarding, migration and recovery
+are covered by [docs/operations.md](docs/operations.md).
 
 ## Why a project journal
 
@@ -57,7 +56,9 @@ The repository now includes these Phase 3 foundations:
 - one bounded canonical query service with a disposable lexical candidate index;
 - explicit model search, read, context and note tools;
 - a user-owned logical-project registry with atomic updates and stable member/project UUIDs;
-- canonical Git common-directory resolution across linked worktrees.
+- canonical Git common-directory resolution across linked worktrees;
+- automatic user-cue and agent-outcome capture into the same JSONL contract; and
+- explicit project remotes, member/host ownership validation and additive multi-clone sync.
 
 The project store is now `<agent-dir>/muninn-projects/<project-id>/`. Checkout roots, Git
 common directories and paths are registry aliases or provenance, never durable identity.
@@ -101,6 +102,7 @@ muninn path
 muninn project link [PATH] [--id UUID] [--name NAME] [--force]
 muninn project show [PATH]
 muninn project unlink [PATH]
+muninn project remote [URL|--remove]
 muninn migrate [--dry-run] [--json]
 muninn reindex [--json]
 muninn status [--json]
@@ -108,10 +110,12 @@ muninn sync [--no-push]
 ```
 
 `project show` and `/muninn project` display the project UUID, member UUID, store, aliases and
-the resolver reason. `unlink` removes the local mapping, not the store or retained project
-record. See the [registry contract](docs/project-registry.md) for relinking and recovery.
+the resolver reason. `project remote` reads or changes the explicit journal Git remote.
+`unlink` removes the local mapping, not the store or retained project record. See the
+[registry contract](docs/project-registry.md) for relinking and the
+[operations guide](docs/operations.md) for joining a team journal.
 
-## Phase 3 design and remaining integration
+## Phase 3 design
 
 ### One logical project across worktrees
 
@@ -219,6 +223,7 @@ muninn tail [FILTERS] [--follow] [--json]
 muninn correct ID TEXT
 muninn annotate ID TEXT
 muninn path
+muninn project remote [URL|--remove]
 ```
 
 Machine-readable output is stable enough for direct composition:
@@ -232,6 +237,10 @@ muninn search "timeout" --json | jq -r '.records[].id' | fzf
 
 Interactive polish may use a fuzzy finder when available, but raw JSONL and deterministic CLI
 output remain first-class interfaces.
+
+`muninn show` returns exit code `3` when its record is available but the referenced transcript
+is not present on this machine. JSON output still includes the record plus transcript
+availability metadata.
 
 ### User-authored corrections
 
@@ -292,11 +301,9 @@ The current foundation reads the `muninn` object from pi's settings:
 {
   "muninn": {
     "scopes": {
-      "global": true,
       "project": "auto"
     },
     "sync": {
-      "remote": null,
       "onShutdown": true
     },
     "capture": {
@@ -307,37 +314,38 @@ The current foundation reads the `muninn` object from pi's settings:
 }
 ```
 
-Project settings are tighten-only. They may disable behavior but cannot name a sync remote or
-re-enable a globally disabled capability. Identity is not a project setting: only the
-user-owned registry can choose a project UUID or store. Later query settings will be added
-only where registry state is insufficient.
+Project settings are tighten-only. They may disable behavior but cannot re-enable a globally
+disabled capability. Identity is not a project setting: only the user-owned registry can
+choose a project UUID or store. The journal remote is explicit user-owned `project.json`
+metadata changed by `muninn project remote`, not a settings field.
 
 ## Roadmap
 
 ### Phase 1 — foundation
 
-Implemented and retained: append safety, provenance, redaction, lexical journal indexing,
-explicit tools, session pointers, store locking and Git sync. The implemented format is
-temporary migration input, not the final project-journal layout.
+Implemented and retained as migration/safety foundations: append safety, provenance,
+redaction, explicit retrieval, session pointers, store locking and Git sync. The Phase 1
+Markdown format is now migration input only.
 
 ### Phase 3 — logical project journal
 
-Logical project UUID resolution, linked-worktree discovery, member identity and explicit
-link/show/unlink commands are implemented. The remaining work introduces the sharded JSONL
-schema, migrates existing entries, captures deterministic Git provenance, adds user
-correction relations, and ships model/human/Unix query interfaces over one service.
+Complete: logical project UUID resolution, linked-worktree discovery, member/host identity,
+sharded JSONL, restartable migration, user corrections, deterministic provenance,
+model/human/Unix query interfaces and explicit multi-clone Git synchronization.
 
-### Phase 4 — distributed team journal
+### Phase 4 — team operations and governance
 
-Make project UUID linking and member identity usable across machines, harden per-host Git
-sync, show trust boundaries, and define conflict behavior for concurrent or competing
-corrections. Transcript exchange remains opt-in and separate from the journal.
+Improve team onboarding beyond the documented manual clone sequence, add attended member and
+host lifecycle controls, and make manifest/correction conflict review comfortable. Explore
+signed writer identity or revocation only if real team use requires it. The journal remains
+historical evidence rather than an authoritative shared summary. Transcript exchange remains
+opt-in and separate.
 
 ### Phase 5 — retrieval quality and scale
 
-Measure lexical retrieval on real project histories, add rebuildable full-text and fuzzy
-indexes, improve filters and ranking, and consider local embeddings only if evaluation shows
-a material benefit. Raw JSONL scanning remains the correctness baseline.
+Measure lexical retrieval on real project histories beyond the Phase 3 10,000-record budget,
+improve query explanation, filters and ranking, and consider local embeddings only if
+evaluation shows a material benefit. Raw JSONL scanning remains the correctness baseline.
 
 ### Phase 6 — integrations
 

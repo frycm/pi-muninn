@@ -85,8 +85,7 @@ export function taskFromSessionFile(path: string | undefined): string | undefine
  * `<session file>#<leaf entry id>` — the evidence pointer into pi's session tree.
  *
  * Lives here rather than in the extension entry because two callers need it:
- * capture, which stamps it on every entry, and `memory_note`, which stamps the
- * same pointer on what the model asks to remember.
+ * capture and explicit journal notes both stamp the same evidence pointer.
  */
 export function sessionPointer(sessionManager: {
 	getSessionFile(): string | undefined;

@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -116,7 +116,10 @@ beforeEach(async () => {
 	records = [database, ci, deploy, correction, competing];
 });
 
-function service(mode: "scan" | "index" = "scan", options: { maxChars?: number } = {}): JournalQueryService {
+function service(
+	mode: "scan" | "index" = "scan",
+	options: { maxChars?: number; transcriptRoots?: string[] } = {},
+): JournalQueryService {
 	return new JournalQueryService({
 		storePath: store,
 		localMember,
@@ -186,6 +189,26 @@ describe("canonical journal query", () => {
 		const read = service().read(records[0]?.id as string, 1, 2);
 		expect(read?.records).toHaveLength(2);
 		expect(read?.truncated).toBe(true);
+	});
+
+	it("checks transcript availability only inside configured session roots", async () => {
+		const sessions = join(store, "sessions");
+		mkdirSync(sessions);
+		const allowed = join(sessions, "allowed.jsonl");
+		const outside = join(store, "outside.jsonl");
+		writeFileSync(allowed, "", { flag: "wx" });
+		writeFileSync(outside, "", { flag: "wx" });
+		const allowedRecord = await append(
+			{ type: "note", source: "user", channel: "cli", body: "Allowed transcript.", session: { file: allowed } },
+			"2026-08-06T10:00:00.000Z",
+		);
+		const outsideRecord = await append(
+			{ type: "note", source: "user", channel: "cli", body: "Outside transcript.", session: { file: outside } },
+			"2026-08-07T10:00:00.000Z",
+		);
+		const query = service("scan", { transcriptRoots: [sessions] });
+		expect(query.read(allowedRecord.id)?.transcripts[0]?.available).toBe(true);
+		expect(query.read(outsideRecord.id)?.transcripts[0]?.available).toBe(false);
 	});
 });
 

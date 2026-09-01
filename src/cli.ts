@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 /** `muninn` — direct human and Unix access to one logical project journal. */
 import { realpathSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveAgentDir } from "./agent-dir.ts";
+import { commitJournal } from "./capture/commit.ts";
 import {
 	collectSearchRecords,
 	JournalArgumentError,
@@ -25,9 +27,9 @@ import { appendAuthorizedJournalRecord, appendUserRelation } from "./journal/wri
 import { runProjectCommand } from "./project/command.ts";
 import { type ResolvedProject, resolveLogicalProject } from "./project/resolver.ts";
 import { type HostIdentity, loadHostIdentity } from "./store/host.ts";
-import { ensureStore, storeIdentity } from "./store/init.ts";
+import { ensureStore, projectStoreIdentity, storeIdentity } from "./store/init.ts";
 import { storeExistsAt } from "./store/paths.ts";
-import { ensureProjectManifest } from "./store/project-manifest.ts";
+import { readProjectManifest, setProjectRemote } from "./store/project-manifest.ts";
 import { describeSync, sync } from "./sync/sync.ts";
 import { MUNINN_VERSION } from "./version.ts";
 
@@ -42,7 +44,7 @@ const USAGE = [
 	"  muninn correct ID TEXT [--json]",
 	"  muninn annotate ID TEXT [--json]",
 	"  muninn path",
-	"  muninn project link|show|unlink",
+	"  muninn project link|show|unlink|remote [URL|--remove]",
 	"  muninn migrate [--dry-run] [--json]",
 	"  muninn reindex [--json]",
 	"  muninn status [--json]",
@@ -51,7 +53,7 @@ const USAGE = [
 	"Filters: --id --type --source --member --host --branch --path --tag --status",
 	"         --since --until --related-to --limit --cursor",
 	"",
-	"Exit 0: success; 1: no match/store or operation failure; 2: invalid input.",
+	"Exit 0: success; 1: no match/store or operation failure; 2: invalid input; 3: transcript unavailable.",
 ].join("\n");
 
 export interface CliResult {
@@ -80,12 +82,7 @@ async function projectContext(cwd: string, create: boolean, forceReindex = false
 	const project = await resolveLogicalProject({ agentDir, cwd, hostId: host.id, create });
 	if (!project) throw new Error("muninn: no logical project is linked here; run `muninn project link`");
 	if (create) {
-		await ensureStore(project.storePath, { host });
-		ensureProjectManifest(project.storePath, {
-			id: project.id,
-			name: project.name,
-			...(project.locations[0]?.linkedAt ? { createdAt: project.locations[0].linkedAt } : {}),
-		});
+		await ensureStore(project.storePath, projectStoreIdentity(project, host));
 	} else if (!storeExistsAt(project.storePath)) {
 		throw new Error(`muninn: project journal store does not exist at ${project.storePath}`);
 	}
@@ -98,6 +95,7 @@ async function projectContext(cwd: string, create: boolean, forceReindex = false
 			localMember: project.member.id,
 			mode: "index",
 			forceReindex,
+			transcriptRoots: [join(agentDir, "sessions")],
 		}),
 	};
 }
@@ -121,6 +119,31 @@ export async function runCli(
 		if (command === "help" || command === "--help" || command === "-h") return { code: 0, out: [USAGE], err };
 		if (command === "version" || command === "--version") return { code: 0, out: [MUNINN_VERSION], err };
 		if (command === "project") {
+			if (args[0] === "remote") {
+				const values = args.slice(1);
+				if (values.length > 1) throw new JournalArgumentError("project remote takes one URL or --remove");
+				const context = await projectContext(cwd, values.length > 0);
+				const before = readProjectManifest(context.project.storePath);
+				if (!before) throw new Error("muninn: project journal has no project.json");
+				if (values.length === 0) {
+					return { code: before.remote ? 0 : 1, out: [before.remote ?? "no project journal remote configured"], err };
+				}
+				const remote = values[0] === "--remove" ? null : (values[0] as string);
+				const manifest = setProjectRemote(context.project.storePath, remote);
+				await commitJournal({
+					storePath: context.project.storePath,
+					hostId: context.host.id,
+					hostName: context.host.name,
+					entries: 0,
+					force: true,
+					identity: storeIdentity(context.host),
+				});
+				return {
+					code: 0,
+					out: [manifest.remote ? `project journal remote: ${manifest.remote}` : "project journal remote removed"],
+					err,
+				};
+			}
 			const agentDir = resolveAgentDir();
 			const host = loadHostIdentity(agentDir);
 			const result = await runProjectCommand(args, { agentDir, cwd, hostId: host.id });
@@ -147,7 +170,8 @@ export async function runCli(
 			const context = await projectContext(cwd, false);
 			const result = context.service.read(id, parsed.relations ? 5 : 0);
 			if (!result) return { code: 1, out, err: [`muninn: no journal record has id ${id}`] };
-			return { code: 0, out: renderRead(id, result, parsed.mode), err };
+			const transcript = result.transcripts.find((candidate) => candidate.record === id);
+			return { code: transcript && !transcript.available ? 3 : 0, out: renderRead(id, result, parsed.mode), err };
 		}
 		if (command === "sessions") {
 			const parsed = parseJournalQueryArgs(args);
@@ -261,6 +285,7 @@ export async function runCli(
 			const flags = parseSimpleFlags(args, ["json"]);
 			const context = await projectContext(cwd, false);
 			const scanned = scanJournal(context.project.storePath);
+			const manifest = readProjectManifest(context.project.storePath);
 			const result = {
 				schema: 1,
 				kind: "status",
@@ -269,6 +294,9 @@ export async function runCli(
 					name: context.project.name,
 					store: context.project.storePath,
 					member: context.project.member,
+					remote: manifest?.remote ?? null,
+					members: manifest?.members ?? [],
+					hosts: manifest?.hosts ?? [],
 				},
 				records: scanned.records.length,
 				problems: scanned.problems,
@@ -281,6 +309,8 @@ export async function runCli(
 							`${context.project.name} · ${context.project.id}`,
 							`store: ${context.project.storePath}`,
 							`member: ${context.project.member.name} · ${context.project.member.id}`,
+							`remote: ${manifest?.remote ?? "none"}`,
+							`team: ${manifest?.members.length ?? 0} member(s) · ${manifest?.hosts.length ?? 0} host(s)`,
 							`records: ${result.records} · problems: ${result.problems.length}`,
 						],
 				err,
@@ -293,7 +323,7 @@ export async function runCli(
 				storePath: context.project.storePath,
 				hostId: context.host.id,
 				hostName: context.host.name,
-				remote: null,
+				remote: readProjectManifest(context.project.storePath)?.remote ?? null,
 				identity: storeIdentity(context.host),
 				...(flags.has("no-push") ? { noPush: true } : {}),
 			});

@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readStoreJournal } from "../../src/journal/read.ts";
+import { scanJournal } from "../../src/journal/jsonl.ts";
 import { readProjectRegistry } from "../../src/project/registry.ts";
 import { projectStorePath } from "../../src/store/paths.ts";
 import { type MockProvider, type MockScript, startMockProvider } from "../fixtures/mock-provider.ts";
@@ -76,6 +76,10 @@ function projectStore(): string {
 	return projectStorePath(agentDir, registry?.projects[0]?.id as string);
 }
 
+function records() {
+	return scanJournal(projectStore()).records.map((item) => item.record);
+}
+
 async function setUp(
 	script: string[] | MockScript,
 	settings?: Record<string, unknown>,
@@ -120,18 +124,17 @@ describe("outcome entries through a real pi session", () => {
 	it("writes exactly one outcome entry for a run with a tool call", async () => {
 		await pi("Why does CI hang?");
 
-		const entries = readStoreJournal(projectStore()).entries;
+		const entries = records();
 		const outcomes = entries.filter((entry) => entry.source === "agent");
 		expect(outcomes).toHaveLength(1);
 
 		const outcome = outcomes[0];
-		expect(outcome?.phase).toBe("test");
+		expect(outcome?.tags).toContain("test");
 		expect(outcome?.cue).toBe("when vitest hangs in CI");
-		expect(outcome?.claims.length).toBeGreaterThanOrEqual(1);
-		expect(outcome?.claims[0]).toContain("pnpm test --run");
+		expect(outcome?.body).toContain("pnpm test --run");
 		expect(outcome?.task).toBeDefined();
 		expect(outcome?.channel).toBe("sdk");
-		expect(outcome?.session).toContain(".jsonl");
+		expect(outcome?.session?.file).toContain(".jsonl");
 	}, 60_000);
 
 	it("asks for the outcome with a prompt free of Muninn's own messages", async () => {
@@ -152,12 +155,12 @@ describe("outcome entries through a real pi session", () => {
 	it("keeps the outcome entry separate from what the user asked to remember", async () => {
 		await pi("Always use pnpm here, never npm.");
 
-		const entries = readStoreJournal(projectStore()).entries;
+		const entries = records();
 		const explicit = entries.filter((entry) => entry.source === "user");
 		const outcomes = entries.filter((entry) => entry.source === "agent");
 
 		expect(explicit).toHaveLength(1);
-		expect(explicit[0]?.claims).toEqual(["Always use pnpm here, never npm."]);
+		expect(explicit[0]?.body).toContain("Always use pnpm here, never npm.");
 		expect(outcomes).toHaveLength(1);
 		// Same task group: one session, one task, two kinds of evidence.
 		expect(outcomes[0]?.task).toBe(explicit[0]?.task);
@@ -174,7 +177,7 @@ describe("a chat is not a task", () => {
 		// trusts, so the model is never even asked.
 		await pi("What time is it?");
 
-		expect(readStoreJournal(projectStore()).entries).toEqual([]);
+		expect(records()).toEqual([]);
 		expect(mock.requests.filter((request) => request.isOutcomeCall)).toEqual([]);
 	}, 60_000);
 });
@@ -196,7 +199,7 @@ describe("an unusable reply is dropped, not journaled", () => {
 	it("retries once and then writes nothing", async () => {
 		const { stderr } = await pi("Why does CI hang?");
 
-		expect(readStoreJournal(projectStore()).entries.filter((entry) => entry.source === "agent")).toEqual([]);
+		expect(records().filter((entry) => entry.source === "agent")).toEqual([]);
 		// Retried exactly once before giving up.
 		expect(mock.requests.filter((request) => request.isOutcomeCall)).toHaveLength(2);
 		expect(stderr).toContain("no outcome entry");
@@ -238,7 +241,7 @@ describe("compaction", () => {
 		await pi("Why does CI hang?");
 
 		expect(compacted(), "pi never compacted, so this test proves nothing").toBe(true);
-		const outcomes = readStoreJournal(projectStore()).entries.filter((entry) => entry.source === "agent");
+		const outcomes = records().filter((entry) => entry.source === "agent");
 		expect(outcomes).toHaveLength(1);
 	}, 90_000);
 

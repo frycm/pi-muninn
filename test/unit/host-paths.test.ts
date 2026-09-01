@@ -4,13 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isHostId } from "../../src/ids.ts";
 import { loadHostIdentity, shortHostname } from "../../src/store/host.ts";
-import {
-	globalStorePath,
-	hostFilePath,
-	projectRegistryPath,
-	projectStorePath,
-	projectsRootPath,
-} from "../../src/store/paths.ts";
+import { hostFilePath, projectRegistryPath, projectStorePath, projectsRootPath } from "../../src/store/paths.ts";
 
 let agentDir: string;
 
@@ -75,10 +69,6 @@ describe("loadHostIdentity", () => {
 });
 
 describe("store paths", () => {
-	it("puts the global store under the agent directory", () => {
-		expect(globalStorePath("/home/u/.pi/agent")).toBe("/home/u/.pi/agent/muninn");
-	});
-
 	it("keeps the user-owned project registry below the agent directory", () => {
 		expect(projectsRootPath("/home/u/.pi/agent")).toBe("/home/u/.pi/agent/muninn-projects");
 		expect(projectRegistryPath("/home/u/.pi/agent")).toBe("/home/u/.pi/agent/muninn-projects/registry.json");

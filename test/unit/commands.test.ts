@@ -110,7 +110,7 @@ function runtime(): CommandRuntime {
 						fetched: false,
 						rebased: false,
 						pushed: false,
-						mergedRegistry: false,
+						mergedManifest: false,
 						notes: ["committed locally"],
 					},
 				},

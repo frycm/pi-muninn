@@ -1,9 +1,9 @@
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { newHostId, newMemberId, newProjectId, newStoreId } from "../../src/ids.ts";
-import { appendEntry } from "../../src/journal/append.ts";
+import { newEntryId, newHostId, newMemberId, newProjectId, newStoreId } from "../../src/ids.ts";
+import { formatEntry, type JournalEntry } from "../../src/journal/format.ts";
 import { appendJournalRecord, scanJournal } from "../../src/journal/jsonl.ts";
 import {
 	inventoryLegacyStores,
@@ -37,30 +37,27 @@ async function legacyStore(): Promise<{ path: string; host: string; ids: string[
 			hosts: [{ id: host, name: "old", registered: "2026-08-01" }],
 		}),
 	);
-	const full = await appendEntry(
-		{
-			source: "user",
-			channel: "tui",
-			task: "task-one",
-			continues: "task-zero",
-			session: "/sessions/one.jsonl#e-9",
-			phase: "test",
-			cue: "when CI hangs",
-			promotedFrom: "old-project/record",
-			prose: "Context paragraph.",
-			claims: ["First claim.", "Second claim."],
-			extra: { future_field: "kept" },
-		},
-		{ storePath: path, hostId: host, now: new Date("2026-08-22T09:14:00.000Z") },
-	);
-	const minimal = await appendEntry(
-		{ source: "external", prose: "", claims: [] },
-		{ storePath: path, hostId: host, now: new Date("2026-08-22T10:00:00.000Z") },
-	);
+	const full: JournalEntry = {
+		id: newEntryId(),
+		time: "09:14",
+		source: "user",
+		channel: "tui",
+		task: "task-one",
+		continues: "task-zero",
+		session: "/sessions/one.jsonl#e-9",
+		phase: "test",
+		cue: "when CI hangs",
+		promotedFrom: "old-project/record",
+		prose: "Context paragraph.",
+		claims: ["First claim.", "Second claim."],
+		extra: { future_field: "kept" },
+	};
+	const minimal: JournalEntry = { id: newEntryId(), time: "10:00", source: "external", prose: "", claims: [] };
 	const file = join(path, "journal", host, "2026-08-22.md");
+	mkdirSync(join(path, "journal", host), { recursive: true });
 	writeFileSync(
 		file,
-		`${readFileSync(file, "utf-8")}## 11:00 · j-01a02e1c-7777-7888-8999-aaabbbcccddd\nsource: user\n\nhalf`,
+		`${formatEntry(full)}${formatEntry(minimal)}## 11:00 · j-01a02e1c-7777-7888-8999-aaabbbcccddd\nsource: user\n\nhalf`,
 	);
 	return { path, host, ids: [full.id, minimal.id] };
 }

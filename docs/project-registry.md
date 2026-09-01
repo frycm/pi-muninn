@@ -90,6 +90,7 @@ user action and does not derive authority from repository content.
 muninn project show [PATH]
 muninn project link [PATH] [--id UUID] [--name NAME] [--force]
 muninn project unlink [PATH]
+muninn project remote [URL|--remove]
 ```
 
 - `show` is read-only and reports the project and member IDs, UUID store, current root,
@@ -102,6 +103,8 @@ muninn project unlink [PATH]
   session will mint a new project if the path was not relinked first.
 - `/muninn project` shows the active session mapping. Registry changes remain explicit shell
   commands so an attended session cannot silently switch stores beneath pending writes.
+- `remote` reads or changes the explicit remote in the journal's `project.json`. The value is
+  user-owned metadata and is never inferred from the code repository's remotes.
 
 To reconnect a renamed repository, retain the UUID printed by `unlink` or obtain it with
 `show`, then run:
@@ -112,3 +115,6 @@ muninn project link --id <project-id>
 
 No command deletes a store. Recovery from a mistaken mapping is therefore an unlink/relink,
 not data restoration.
+
+Cloning and joining an existing team journal requires both the shared project UUID and the
+journal repository. The exact sequence is documented in [operations.md](operations.md).

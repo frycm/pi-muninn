@@ -6,14 +6,16 @@
  * batch, never one per entry: a session that journals a correction and an
  * outcome should leave one commit, not two.
  *
- * Nothing here touches any path but `journal/`. That is enforced by `git.ts`'s
- * allow-list rather than by convention, and the commit carries a pathspec.
+ * Only canonical store data is included. The disposable index and all local
+ * identity/transcript files remain excluded by Git's path allowlist.
  */
+
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { GitError, type GitIdentity, GitMissingError, git, hasChanges, isGitRepository } from "../git.ts";
 import { withStoreLock } from "../store/lock.ts";
 
-/** Journal paths, and the only paths this module will ever stage. */
-const JOURNAL_PATHS = ["journal/"];
+const STORE_PATHS = ["project.json", "migration.json", "journal/"];
 
 /** At most one commit per store in this window, unless forced. */
 export const DEBOUNCE_MS = 30_000;
@@ -97,17 +99,20 @@ export async function commitJournal(options: CommitOptions): Promise<CommitResul
  */
 export async function commitJournalLocked(options: CommitOptions, at?: number): Promise<CommitResult> {
 	const now = at ?? options.now ?? Date.now();
-	if (!(await hasChanges(options.storePath, JOURNAL_PATHS))) {
+	const paths = STORE_PATHS.filter((path) =>
+		path.endsWith("/") ? hasFiles(join(options.storePath, path)) : existsSync(join(options.storePath, path)),
+	);
+	if (!(await hasChanges(options.storePath, paths))) {
 		// Record the check so an idle session does not re-run git every turn.
 		lastCommitAt.set(options.storePath, now);
 		return { committed: false, reason: "nothing to commit" };
 	}
 
-	await git(options.storePath, { kind: "add", paths: JOURNAL_PATHS });
+	await git(options.storePath, { kind: "add", paths });
 	try {
 		await git(
 			options.storePath,
-			{ kind: "commit", message: message(options), paths: JOURNAL_PATHS },
+			{ kind: "commit", message: message(options), paths },
 			options.identity ? { identity: options.identity } : {},
 		);
 	} catch (error) {
@@ -122,4 +127,12 @@ export async function commitJournalLocked(options: CommitOptions, at?: number): 
 
 	lastCommitAt.set(options.storePath, now);
 	return { committed: true };
+}
+
+function hasFiles(path: string): boolean {
+	try {
+		return readdirSync(path, { recursive: true, withFileTypes: true }).some((entry) => entry.isFile());
+	} catch {
+		return false;
+	}
 }

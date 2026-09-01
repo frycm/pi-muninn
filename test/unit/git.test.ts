@@ -22,7 +22,7 @@ describe("toArgv — the allow-list is the promise", () => {
 			"user.name",
 			"muninn mbp",
 		]);
-		expect(toArgv({ kind: "add", paths: ["journal/"] })).toEqual(["add", "--", "journal/"]);
+		expect(toArgv({ kind: "add", paths: ["journal/"] })).toEqual(["add", "-A", "--", "journal/"]);
 		expect(toArgv({ kind: "rev-parse", target: "--show-toplevel" })).toEqual(["rev-parse", "--show-toplevel"]);
 	});
 
@@ -89,11 +89,11 @@ describe("git — identity travels in the environment", () => {
 		try {
 			await git(dir, { kind: "init" });
 			await git(dir, { kind: "set-head", branch: "main" });
-			writeFileSync(join(dir, "store.md"), "# Store\n");
-			await git(dir, { kind: "add", paths: ["store.md"] });
+			writeFileSync(join(dir, "project.json"), '{"schema":1}\n');
+			await git(dir, { kind: "add", paths: ["project.json"] });
 			await git(
 				dir,
-				{ kind: "commit", message: "test", paths: ["store.md"] },
+				{ kind: "commit", message: "test", paths: ["project.json"] },
 				{ identity: { name: "muninn mbp", email: "muninn@host" } },
 			);
 			const { stdout } = await execFileAsync("git", ["log", "-1", "--format=%an <%ae> %cn"], { cwd: dir });

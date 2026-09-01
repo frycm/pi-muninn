@@ -1,5 +1,9 @@
 # Phase 3 — logical project journal
 
+> **Status: implemented.** PRs 0–8 are represented by the commits on the Phase 3 branch.
+> The format contract, operational procedures and release budgets are now executable or
+> documented rather than future design.
+
 *Outcome: every pi session in one logical project can contribute bounded history to one
 append-only journal, across linked worktrees, and both models and people can search that
 history explicitly.*
@@ -236,6 +240,7 @@ muninn correct ID TEXT [--json]
 muninn annotate ID TEXT [--json]
 muninn path
 muninn project link|show|unlink
+muninn project remote [URL|--remove]
 muninn migrate [--dry-run]
 muninn reindex
 muninn sync [--no-push]
@@ -245,6 +250,9 @@ Human text can change for clarity; versioned JSON fields are compatibility surfa
 codes distinguish no matches, invalid input, unavailable local transcripts and store/sync
 failures. `muninn path` makes raw `rg`, `jq`, editors and fuzzy finders convenient without
 requiring a shell-specific integration.
+
+Team onboarding, migration and failure recovery are specified in
+[operations.md](operations.md).
 
 ## Implementation sequence
 
@@ -281,7 +289,7 @@ Implemented with a locked, atomically replaced user registry, UUID-only external
 canonical root/common-directory aliases, member identity, attended status and explicit CLI
 link/show/unlink commands. The resolver suite covers every case listed above.
 
-### PR 2 — JSONL schema and append engine
+### PR 2 — JSONL schema and append engine (implemented)
 
 - Implement schema validation and canonical serialization.
 - Add per-member/host monthly shard selection.
@@ -295,7 +303,7 @@ same-host concurrent sessions, shard rollover, redaction and identity collision.
 Done when concurrent linked-worktree sessions produce a journal that a lock-free scan can
 read completely.
 
-### PR 3 — Markdown migration
+### PR 3 — Markdown migration (implemented)
 
 - Inventory legacy stores mapped to the logical project.
 - Convert valid entries into `import` records with stable IDs.
@@ -308,7 +316,7 @@ idempotence, interrupted migration and rollback before cutover.
 
 Done when a second migration appends zero bytes and reports identical counts.
 
-### PR 4 — corrections and relation projection
+### PR 4 — corrections and relation projection (implemented)
 
 - Validate relation types and target IDs.
 - Implement relation graph reads, cycle reporting and conflict labels.
@@ -322,7 +330,7 @@ correction, model authority rejection and immutable target bytes.
 Done when a user can correct a stale record without modifying it and every interface sees the
 same relation chain.
 
-### PR 5 — query service and index
+### PR 5 — query service and index (implemented)
 
 - Implement filters, ranking, pagination and stable result DTOs over scan mode.
 - Add a rebuildable lexical index and incremental append updates.
@@ -334,7 +342,7 @@ index deletion/corruption; correction ordering; malformed records; hard output b
 
 Done when scan and indexed modes return identical filtered IDs.
 
-### PR 6 — model tools
+### PR 6 — model tools (implemented)
 
 - Register `journal_search`, `journal_read`, `journal_context` and `journal_note`.
 - Remove temporary `memory_*` names rather than maintaining aliases.
@@ -348,7 +356,7 @@ authority, cancellation and two-worktree visibility.
 Done when a clean model session knows how to ask for journal history and receives none until
 it does.
 
-### PR 7 — human and Unix interfaces
+### PR 7 — human and Unix interfaces (implemented)
 
 - Route slash commands and CLI through the query service.
 - Add text, `--json` and streaming `--jsonl` renderers.
@@ -361,7 +369,7 @@ behavior, follow cancellation and parity with model query IDs.
 
 Done when documented `jq`, `rg` and fuzzy-finder examples work unchanged.
 
-### PR 8 — team sync and release hardening
+### PR 8 — team sync and release hardening (implemented)
 
 - Add explicit journal remote linking and member display metadata.
 - Harden per-writer ownership checks and Git reconciliation.
@@ -374,6 +382,12 @@ duplicate ID, teammate corrections, unavailable transcripts and adversarial jour
 
 Done when two clones exchange searchable records without sharing transcripts or confusing a
 teammate assertion with a local instruction.
+
+Implemented with explicit manifest remotes, member/host display metadata, ownership checks
+before and after reconciliation, deterministic manifest union, local/teammate trust labels,
+missing-transcript metadata and exit code, real two-clone fixtures, recovery documentation
+and a 10,000-record performance gate. The active Markdown writer and Tier-0 compatibility
+stack were removed; only the legacy parser required by migration remains.
 
 ## Test strategy
 
@@ -405,6 +419,18 @@ teammate assertion with a local instruction.
 - proof that journal text is absent before a tool call;
 - transcript resolution from an allowed pointer only.
 
+### Release performance budgets
+
+- cold validation and index construction for 10,000 typical records: under 8 seconds on the
+  CI reference environment;
+- twenty exact lexical queries over that index: under 2 seconds;
+- one canonical record: at most 64 KiB;
+- one normal query response: at most the configured output budget, 128 KiB by default;
+- append: one local locked write and flush, with no model or network dependency.
+
+The executable large-journal gate is `test/unit/query-perf.test.ts`. Canonical scan/index
+equivalence remains the correctness gate at every size.
+
 ## Security and privacy gates
 
 - Canonicalize every configured path before access.
@@ -419,12 +445,13 @@ teammate assertion with a local instruction.
 
 ## Roadmap impact
 
-### Phase 4 — distributed team journal
+### Phase 4 — team operations and governance
 
-Phase 4 starts from the per-writer store and explicit relation model delivered here. It makes
-project linking, member identity, trust display and conflict resolution comfortable across
-machines. It does not introduce an authoritative shared summary. Optional transcript exchange
-is a separate encrypted capability with explicit policy.
+Phase 4 starts after basic multi-clone distribution, writer ownership and trust display. It
+improves onboarding beyond the manual clone flow, adds attended member/host lifecycle and
+conflict-review workflows, and may add signed identity or revocation if real team use shows a
+need. It does not introduce an authoritative shared summary. Optional transcript exchange is
+a separate encrypted capability with explicit policy.
 
 ### Phase 5 — retrieval quality and scale
 

@@ -6,17 +6,15 @@
  */
 import type { ResolvedProject } from "../project/resolver.ts";
 import type { MuninnSettings } from "../settings.ts";
-import { globalStorePath } from "./paths.ts";
 
-export type CaptureTarget = "global" | "project";
+export type CaptureTarget = "project";
 
 export interface ActiveScope {
 	scope: CaptureTarget;
 	path: string;
 	/** True when the store directory already exists on disk. */
 	exists: boolean;
-	/** Durable identity, present only for the logical-project scope. */
-	projectId?: string;
+	projectId: string;
 }
 
 export interface ScopeDecision {
@@ -35,17 +33,9 @@ export interface ResolveScopesInput {
 }
 
 export function resolveScopes(input: ResolveScopesInput): ScopeDecision {
-	const { settings, agentDir, project, projectTrusted, storeExists } = input;
+	const { settings, project, projectTrusted, storeExists } = input;
 	const active: ActiveScope[] = [];
 	const reasons: string[] = [];
-
-	if (settings.scopes.global) {
-		const path = globalStorePath(agentDir);
-		active.push({ scope: "global", path, exists: storeExists(path) });
-		reasons.push("global: active");
-	} else {
-		reasons.push("global: off (scopes.global is false)");
-	}
 
 	if (settings.scopes.project === false) {
 		reasons.push("project: off (scopes.project is false)");
@@ -60,17 +50,12 @@ export function resolveScopes(input: ResolveScopesInput): ScopeDecision {
 		if (!exists) reasons.push("project: UUID store will be created on first capture");
 	}
 
-	const projectScope = active.find((scope) => scope.scope === "project");
-	const global = active.find((scope) => scope.scope === "global");
 	let captureTarget: CaptureTarget | null = null;
-	if (projectScope) {
+	if (active.length > 0) {
 		captureTarget = "project";
 		reasons.push("capture target: project");
-	} else if (global) {
-		captureTarget = "global";
-		reasons.push("capture target: global");
 	} else {
-		reasons.push("capture target: none — every scope is off, so nothing is captured");
+		reasons.push("capture target: none — no trusted logical project is active");
 	}
 
 	return { active, captureTarget, reasons };
