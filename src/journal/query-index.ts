@@ -29,8 +29,53 @@ export function journalIndexPath(storePath: string): string {
 	return join(storePath, ".index", "journal-v1.json");
 }
 
+export function normalizeJournalText(text: string): string {
+	return text.normalize("NFKC").toLowerCase();
+}
+
 export function tokenizeJournalText(text: string): string[] {
-	return [...new Set((text.toLowerCase().match(/[\p{L}\p{N}_-]+/gu) ?? []).filter(Boolean))];
+	return [...new Set((normalizeJournalText(text).match(/[\p{L}\p{N}_-]+/gu) ?? []).filter(Boolean))];
+}
+
+export type JournalTokenMatchKind = "exact" | "prefix" | "fuzzy";
+
+/** Strongest deterministic match allowed by the canonical lexical scorer. */
+export function journalTokenMatch(queryTerm: string, recordTerm: string): JournalTokenMatchKind | undefined {
+	if (recordTerm === queryTerm) return "exact";
+	const queryLength = [...queryTerm].length;
+	if (queryLength >= 3 && recordTerm.startsWith(queryTerm)) return "prefix";
+	if (queryLength >= 5 && oneEditApart(queryTerm, recordTerm)) return "fuzzy";
+	return undefined;
+}
+
+/** Unicode-code-point Levenshtein distance of exactly one, without transposition. */
+export function oneEditApart(left: string, right: string): boolean {
+	const leftPoints = [...left];
+	const rightPoints = [...right];
+	if (Math.abs(leftPoints.length - rightPoints.length) > 1 || left === right) return false;
+	if (leftPoints.length === rightPoints.length) {
+		let differences = 0;
+		for (let at = 0; at < leftPoints.length; at++) {
+			if (leftPoints[at] !== rightPoints[at] && ++differences > 1) return false;
+		}
+		return differences === 1;
+	}
+	const [shorter, longer] =
+		leftPoints.length < rightPoints.length ? [leftPoints, rightPoints] : [rightPoints, leftPoints];
+	let shortAt = 0;
+	let longAt = 0;
+	let skipped = false;
+	while (shortAt < shorter.length && longAt < longer.length) {
+		if (shorter[shortAt] === longer[longAt]) {
+			shortAt++;
+			longAt++;
+			continue;
+		}
+		if (skipped) return false;
+		skipped = true;
+		longAt++;
+	}
+	return true;
 }
 
 /** Inspect the disposable index without repairing, creating, or rewriting it. */
@@ -157,14 +202,16 @@ export class JournalLexicalIndex {
 		this.dirty = true;
 	}
 
-	/** A complete candidate superset for query.ts's exact token/prefix scorer. */
+	/** A complete candidate superset for query.ts's phrase/token scorer. */
 	candidates(query: string): Set<string> {
 		const terms = tokenizeJournalText(query);
 		if (terms.length === 0) return new Set(this.records.keys());
 		const found = new Set<string>();
 		for (const queryTerm of terms) {
 			for (const [term, ids] of this.postings) {
-				if (term !== queryTerm && !(queryTerm.length >= 3 && term.startsWith(queryTerm))) continue;
+				// Infix covers phrase substrings that begin inside a token; fuzzy covers the
+				// remaining canonical token matches. Ranking still evaluates full records.
+				if (!term.includes(queryTerm) && journalTokenMatch(queryTerm, term) !== "fuzzy") continue;
 				for (const id of ids) found.add(id);
 			}
 		}

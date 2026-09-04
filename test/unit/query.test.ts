@@ -165,6 +165,66 @@ describe("canonical journal query", () => {
 		expect(ids(query.query({ query: "ops" }))).toEqual([records[2]?.id]);
 	});
 
+	it("ranks exact, prefix, and conservative one-edit token matches in that order", async () => {
+		const at = "2026-08-06T10:00:00.000Z";
+		const exact = await append({ type: "note", source: "agent", channel: "sdk", body: "deploy marker" }, at);
+		const prefix = await append({ type: "note", source: "agent", channel: "sdk", body: "deployment marker" }, at);
+		const fuzzy = await append({ type: "note", source: "agent", channel: "sdk", body: "deplox marker" }, at);
+		const result = service().query({ query: "deploy", explain: true });
+		const selected = result.records.filter((record) => [exact.id, prefix.id, fuzzy.id].includes(record.id));
+		expect(selected.map((record) => record.id)).toEqual([exact.id, prefix.id, fuzzy.id]);
+		expect(selected.map((record) => record.explanation?.terms.find((term) => term.field === "body")?.kind)).toEqual([
+			"exact",
+			"prefix",
+			"fuzzy",
+		]);
+		expect(service().query({ query: "opx" }).records).toEqual([]);
+	});
+
+	it("rewards query-term coverage and handles Unicode typos by code point", async () => {
+		const partial = await append(
+			{ type: "note", source: "agent", channel: "sdk", body: "alpha appears alone" },
+			"2026-08-06T10:00:00.000Z",
+		);
+		const complete = await append(
+			{ type: "note", source: "agent", channel: "sdk", body: "alpha separates beta markers" },
+			"2026-08-06T10:00:00.000Z",
+		);
+		const unicode = await append(
+			{ type: "note", source: "agent", channel: "sdk", body: "Résumé deployment checklist." },
+			"2026-08-06T10:00:00.000Z",
+		);
+		const covered = service().query({ query: "alpha beta", explain: true }).records;
+		expect(covered.map((record) => record.id)).toEqual([complete.id, partial.id]);
+		expect(covered.map((record) => record.explanation?.coverage)).toEqual([
+			{ matched: 2, total: 2, score: 50 },
+			{ matched: 1, total: 2, score: 25 },
+		]);
+		const unicodeResult = service().query({ query: "resumé", explain: true }).records[0];
+		expect(unicodeResult?.id).toBe(unicode.id);
+		expect(unicodeResult?.explanation?.terms[0]).toMatchObject({
+			term: "resumé",
+			matched: "résumé",
+			kind: "fuzzy",
+		});
+		const canonicallyEquivalent = service().query({ query: "re\u0301sume\u0301", explain: true }).records[0];
+		expect(canonicallyEquivalent?.id).toBe(unicode.id);
+		expect(canonicallyEquivalent?.explanation?.terms[0]?.kind).toBe("exact");
+	});
+
+	it("expands corrections for fuzzy targets without inventing lexical evidence", () => {
+		const result = service().query({ query: "databaze", explain: true });
+		expect(result.records.find((record) => record.id === records[0]?.id)?.explanation?.match).toBe("direct");
+		for (const correction of result.records.filter((record) => [records[3]?.id, records[4]?.id].includes(record.id))) {
+			expect(correction.explanation).toMatchObject({
+				match: "relation-expanded",
+				expanded_from: records[0]?.id,
+				terms: [],
+				phrases: [],
+			});
+		}
+	});
+
 	it("applies actor, status, date, Git, path and relation filters with empty text", () => {
 		const query = service();
 		expect(ids(query.query({ source: ["external"] }))).toEqual([records[2]?.id]);
@@ -205,11 +265,16 @@ describe("canonical journal query", () => {
 			match: "direct",
 			exact_id: false,
 			phrases: [{ field: "cue", score: 300 }],
-			coverage: { matched: 2, total: 2, score: 0 },
+			coverage: { matched: 2, total: 2, score: 50 },
 			evidence_truncated: false,
 		});
 		const components = result?.explanation?.components;
 		expect(components && Object.values(components).reduce((sum, value) => sum + value, 0)).toBe(result?.score);
+		const lexicalEvidence = [...(result?.explanation?.phrases ?? []), ...(result?.explanation?.terms ?? [])].reduce(
+			(sum, evidence) => sum + evidence.score,
+			result?.explanation?.coverage.score ?? 0,
+		);
+		expect(lexicalEvidence).toBe(components?.lexical);
 
 		const byId = service().query({ query: records[0]?.id as string, explain: true });
 		expect(byId.records[0]?.explanation).toMatchObject({ match: "direct", exact_id: true });
@@ -271,20 +336,22 @@ describe("canonical journal query", () => {
 });
 
 describe("scan/index equivalence", () => {
-	it("returns identical filtered IDs for every query fixture", () => {
+	it("returns identical records, scores, and explanations for every query fixture", () => {
 		const scan = service("scan");
 		const indexed = service("index");
 		const fixtures: JournalQuery[] = [
-			{ query: "database migration" },
-			{ query: "vitest hangs", source: ["user"] },
-			{ query: "canary", member: [teammateMember] },
+			{ query: "database migration", explain: true },
+			{ query: "databaze", explain: true },
+			{ query: "vitest hangs", source: ["user"], explain: true },
+			{ query: "canry", member: [teammateMember], explain: true },
+			{ query: "ary", explain: true },
 			{ tag: ["ci"] },
 			{ path: ["deploy"] },
 			{ branch: ["main"] },
 			{ relatedTo: records[0]?.id as string },
 			{ ids: [records[1]?.id as string] },
 		];
-		for (const fixture of fixtures) expect(ids(indexed.query(fixture))).toEqual(ids(scan.query(fixture)));
+		for (const fixture of fixtures) expect(indexed.query(fixture).records).toEqual(scan.query(fixture).records);
 	});
 
 	it("rebuilds after index deletion or corruption without changing results", () => {

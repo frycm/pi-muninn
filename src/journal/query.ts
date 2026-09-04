@@ -5,7 +5,13 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { readProjectManifest } from "../store/project-manifest.ts";
 import { lifecycleWarnings, projectTeamRoster } from "../team/lifecycle.ts";
 import { type JournalScanProblem, scanJournal } from "./jsonl.ts";
-import { JournalLexicalIndex, tokenizeJournalText } from "./query-index.ts";
+import {
+	JournalLexicalIndex,
+	type JournalTokenMatchKind,
+	journalTokenMatch,
+	normalizeJournalText,
+	tokenizeJournalText,
+} from "./query-index.ts";
 import type { JournalRecord, JournalRecordType, JournalRelationType, JournalSource, JournalStatus } from "./record.ts";
 import {
 	correctionRank,
@@ -535,8 +541,13 @@ function rankRecords(
 }
 
 const PHRASE_WEIGHTS: Record<JournalScoreField, number> = { cue: 300, body: 200, tags: 180, paths: 160 };
-const TERM_WEIGHTS: Record<JournalScoreField, number> = { cue: 40, body: 20, tags: 35, paths: 30 };
-const SCORE_FIELDS: JournalScoreField[] = ["cue", "tags", "paths", "body"];
+const TERM_WEIGHTS: Record<JournalTokenMatchKind, Record<JournalScoreField, number>> = {
+	exact: { cue: 40, body: 35, tags: 30, paths: 25 },
+	prefix: { cue: 32, body: 28, tags: 24, paths: 20 },
+	fuzzy: { cue: 6, body: 5, tags: 4, paths: 3 },
+};
+const COVERAGE_WEIGHT = 25;
+const SCORE_FIELDS: JournalScoreField[] = ["cue", "body", "tags", "paths"];
 const MAX_TERM_EVIDENCE = 32;
 
 interface LexicalEvidence {
@@ -549,18 +560,18 @@ interface LexicalEvidence {
 }
 
 function lexicalEvidence(record: JournalRecord, rawQuery: string): LexicalEvidence {
-	const query = rawQuery.trim().toLowerCase().replace(/^"|"$/g, "");
+	const query = normalizeJournalText(rawQuery.trim()).replace(/^"|"$/g, "");
 	const queryTerms = tokenizeJournalText(query);
 	const empty = { matched: 0, total: queryTerms.length, score: 0 };
 	if (query === "")
 		return { score: 0, exactId: false, phrases: [], terms: [], coverage: empty, evidenceTruncated: false };
-	if (record.id.toLowerCase() === query)
+	if (normalizeJournalText(record.id) === query)
 		return { score: 10_000, exactId: true, phrases: [], terms: [], coverage: empty, evidenceTruncated: false };
 	const fields: Record<JournalScoreField, string> = {
-		body: record.body.toLowerCase(),
-		cue: (record.cue ?? "").toLowerCase(),
-		paths: record.paths.join(" ").toLowerCase(),
-		tags: record.tags.join(" ").toLowerCase(),
+		body: normalizeJournalText(record.body),
+		cue: normalizeJournalText(record.cue ?? ""),
+		paths: normalizeJournalText(record.paths.join(" ")),
+		tags: normalizeJournalText(record.tags.join(" ")),
 	};
 	const tokens = Object.fromEntries(SCORE_FIELDS.map((field) => [field, tokenizeJournalText(fields[field])])) as Record<
 		JournalScoreField,
@@ -581,7 +592,7 @@ function lexicalEvidence(record: JournalRecord, rawQuery: string): LexicalEviden
 		for (const field of SCORE_FIELDS) {
 			const matched = strongestToken(tokens[field], term);
 			if (!matched) continue;
-			const termScore = TERM_WEIGHTS[field];
+			const termScore = TERM_WEIGHTS[matched.kind][field];
 			score += termScore;
 			matchedTerms.add(term);
 			evidenceCount++;
@@ -595,12 +606,14 @@ function lexicalEvidence(record: JournalRecord, rawQuery: string): LexicalEviden
 				});
 		}
 	}
+	const coverageScore = matchedTerms.size * COVERAGE_WEIGHT;
+	score += coverageScore;
 	return {
 		score,
 		exactId: false,
 		phrases,
 		terms: evidence,
-		coverage: { matched: matchedTerms.size, total: queryTerms.length, score: 0 },
+		coverage: { matched: matchedTerms.size, total: queryTerms.length, score: coverageScore },
 		evidenceTruncated: evidenceCount > evidence.length,
 	};
 }
@@ -608,14 +621,14 @@ function lexicalEvidence(record: JournalRecord, rawQuery: string): LexicalEviden
 function strongestToken(
 	tokens: readonly string[],
 	term: string,
-): { token: string; kind: "exact" | "prefix" } | undefined {
-	const exact = tokens.find((token) => token === term);
-	if (exact) return { token: exact, kind: "exact" };
-	if (term.length < 3) return undefined;
-	const prefix = tokens
-		.filter((token) => token.startsWith(term))
-		.sort((left, right) => left.length - right.length || left.localeCompare(right))[0];
-	return prefix ? { token: prefix, kind: "prefix" } : undefined;
+): { token: string; kind: JournalTokenMatchKind } | undefined {
+	for (const kind of ["exact", "prefix", "fuzzy"] as const) {
+		const matched = tokens
+			.filter((token) => journalTokenMatch(term, token) === kind)
+			.sort((left, right) => [...left].length - [...right].length || left.localeCompare(right))[0];
+		if (matched) return { token: matched, kind };
+	}
+	return undefined;
 }
 
 function boundedEvidence(value: string): string {

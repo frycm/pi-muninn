@@ -59,14 +59,11 @@ describe("journal relevance evaluation", () => {
 			k: 10,
 			judgments: 8,
 			evaluated: 8,
-			metrics: { recall_at_10: 0.75, mrr_at_10: 0.75, ndcg_at_10: 0.75 },
+			metrics: { recall_at_10: 1, mrr_at_10: 0.9375, ndcg_at_10: 0.953866 },
 			problems: [],
 			truncated: false,
 		});
-		expect(report.results.filter((result) => result.hits.length === 0).map((result) => result.id)).toEqual([
-			"canary-typo",
-			"ingress-typo",
-		]);
+		expect(report.results.filter((result) => result.hits.length === 0)).toEqual([]);
 		expect(readFileSync(shard)).toEqual(before);
 		expect(existsSync(journalIndexPath(store))).toBe(false);
 	});

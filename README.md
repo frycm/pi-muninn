@@ -225,6 +225,9 @@ journal_note({
 
 `journal_search` returns bounded summaries and stable IDs. Projected trust and lifecycle or
 conflict labels can be filtered explicitly; `explain` adds an auditable score breakdown.
+Ranking is deterministic across hosts: exact phrases and tokens lead prefix matches, while
+tokens of at least five characters allow one conservative insertion, deletion or substitution.
+Matching more distinct query terms earns an explicit coverage contribution.
 `journal_read` expands a record,
 its provenance and its correction chain. `journal_context` is an optional batching tool for
 the records a model has already chosen; it is not an automatic prompt hook. `journal_note`
