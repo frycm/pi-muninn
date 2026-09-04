@@ -25,6 +25,7 @@ const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const PI = join(ROOT, "node_modules", ".bin", "pi");
 const MUNINN = join(ROOT, "src", "index.ts");
 const PROVIDER_EXTENSION = join(ROOT, "test", "fixtures", "mock-provider-extension.ts");
+const INTEGRATION_EXTENSION = join(ROOT, "test", "fixtures", "integration-producer-extension.ts");
 
 let home: string;
 let agentDir: string;
@@ -117,6 +118,20 @@ afterAll(async () => {
 });
 
 describe("capture through a real pi session", () => {
+	it("folds a producer custom entry even when the producer loads after Muninn", async () => {
+		await pi("Check the remote session host.", ["-e", INTEGRATION_EXTENSION]);
+		const integrated = records().find((record) => record.integration?.provider === "pi-huginn");
+		expect(integrated).toMatchObject({
+			type: "checkpoint",
+			source: "external",
+			channel: "rpc",
+			body: "Remote session host attached the run to project alpha.",
+			integration: { kind: "remote-session", event: "host-attached" },
+		});
+		expect(integrated?.task).toBeDefined();
+		expect(integrated?.session?.file).toContain(".jsonl");
+	}, 60_000);
+
 	it("journals an explicit request, into the capture target", async () => {
 		const output = await pi("Always use pnpm in this repo, never npm.");
 		expect(output).toContain("npm install"); // the scripted model replied

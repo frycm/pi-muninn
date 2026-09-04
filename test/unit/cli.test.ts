@@ -197,6 +197,44 @@ describe("muninn project-journal CLI", () => {
 		expect(JSON.parse(shown.out[0] as string).records[0].body).toContain("staging");
 	});
 
+	it("ingests bounded process observations from files or stdin idempotently", async () => {
+		const observation = {
+			schema: 1,
+			type: "checkpoint",
+			channel: "rpc",
+			status: "completed",
+			body: "Remote rollout completed.",
+			tags: ["remote"],
+			paths: ["deploy/rollout.yaml"],
+			integration: {
+				provider: "pi-huginn",
+				kind: "remote-session",
+				event: "completed",
+				external_id: "remote-7:revision-2",
+				observed_at: "2026-09-04T12:00:00.000Z",
+				metadata: { revision: 2 },
+			},
+		};
+		const input = join(root, "observation.json");
+		writeFileSync(input, JSON.stringify(observation));
+		const first = await runCli(["ingest", input, "--json"], cwd);
+		expect(JSON.parse(first.out[0] as string)).toMatchObject({ appended: 1, replayed: 0 });
+		const replay = await runCli(["ingest", "-", "--json"], cwd, { stdin: JSON.stringify(observation) });
+		expect(JSON.parse(replay.out[0] as string)).toMatchObject({ appended: 0, replayed: 1 });
+		const searched = await runCli(["search", "--integration", "pi-huginn", "--json"], cwd);
+		expect(JSON.parse(searched.out[0] as string).records).toEqual([
+			expect.objectContaining({
+				integration: { provider: "pi-huginn", kind: "remote-session", event: "completed" },
+			}),
+		]);
+		const before = JSON.parse((await runCli(["status", "--json"], cwd)).out[0] as string).records;
+		const invalid = await runCli(["ingest", "-", "--json"], cwd, {
+			stdin: `${JSON.stringify({ ...observation, integration: { ...observation.integration, external_id: "new" } })}\n{"bad":true}\n`,
+		});
+		expect(invalid.code).toBe(2);
+		expect(JSON.parse((await runCli(["status", "--json"], cwd)).out[0] as string).records).toBe(before);
+	});
+
 	it("emits one independently parseable object per JSONL record", async () => {
 		const first = await note("First deployment fact.");
 		const second = await note("Second deployment fact.");

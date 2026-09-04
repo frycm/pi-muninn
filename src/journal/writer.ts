@@ -117,7 +117,26 @@ export async function appendIntegrationObservation(
 		);
 		if (existingItem) {
 			const existing = existingItem.record;
-			const candidate = buildJournalRecord(record, {
+			// task/session/Git are assigned by the local adapter, not by the
+			// producer. A delivery replayed after a checkout change must therefore
+			// compare against the context captured by its first successful import.
+			const comparable: NewJournalRecord = {
+				type: record.type,
+				source: record.source,
+				channel: record.channel,
+				...(record.status ? { status: record.status } : {}),
+				body: record.body,
+				...(record.cue ? { cue: record.cue } : {}),
+				tags: record.tags ?? [],
+				paths: record.paths ?? [],
+				relations: [],
+				integration,
+				...(existing.task ? { task: existing.task } : {}),
+				...(existing.continues ? { continues: existing.continues } : {}),
+				...(existing.session ? { session: existing.session } : {}),
+				...(existing.git ? { git: existing.git } : {}),
+			};
+			const candidate = buildJournalRecord(comparable, {
 				project: existing.project,
 				member: existing.member,
 				host: existing.host,

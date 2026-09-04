@@ -30,11 +30,12 @@ import {
 	taskFromSessionFile,
 } from "./capture/session-state.ts";
 import { type CommandOutput, type CommandRuntime, runMuninnCommand } from "./commands/muninn.ts";
+import { collectIntegrationEntries, integrationObservationRecord } from "./integrations/protocol.ts";
 import type { AppendJournalResult } from "./journal/jsonl.ts";
 import { collectGitProvenance } from "./journal/provenance.ts";
 import { JournalQueryService } from "./journal/query.ts";
 import type { JournalRelationType, JournalSessionPointer, NewJournalRecord } from "./journal/record.ts";
-import { appendAuthorizedJournalRecord, appendUserRelation } from "./journal/writer.ts";
+import { appendAuthorizedJournalRecord, appendIntegrationObservation, appendUserRelation } from "./journal/writer.ts";
 import { buildSessionContext, journalStats, type SessionContext } from "./session.ts";
 import { formatStatus, formatStatusLine, formatWarning } from "./status.ts";
 import { storeIdentity } from "./store/init.ts";
@@ -97,6 +98,9 @@ export default function (pi: ExtensionAPI): void {
 	 * gap worth proposing.
 	 */
 	let runsWithoutAgentEnd = 0;
+	/** Session custom entries already scheduled for idempotent integration ingest. */
+	const handledIntegrationEntries = new Set<string>();
+	const reportedIntegrationProblems = new Set<string>();
 	/** Entries appended and not yet committed to the active project store. */
 	const pending = new Map<string, number>();
 	const pendingTotal = (): number => [...pending.values()].reduce((total, count) => total + count, 0);
@@ -162,6 +166,51 @@ export default function (pi: ExtensionAPI): void {
 			transcriptRoots: [join(getAgentDir(), "sessions")],
 		});
 		return journal;
+	};
+
+	const enqueueSessionIntegrations = (ctx: {
+		cwd: string;
+		sessionManager: {
+			getBranch(): ReadonlyArray<{ id?: string; type?: string; customType?: string; data?: unknown }>;
+			getSessionFile(): string | undefined;
+			getLeafId(): string | null;
+		};
+	}): void => {
+		const current = session;
+		const currentState = state;
+		if (!current?.project || !currentState) return;
+		const project = current.project;
+		const storePath = captureTargetPath(current);
+		if (!storePath) return;
+		const collected = collectIntegrationEntries(ctx.sessionManager.getBranch());
+		for (const problem of collected.problems) {
+			if (reportedIntegrationProblems.has(problem)) continue;
+			reportedIntegrationProblems.add(problem);
+			process.stderr.write(`${problem}\n`);
+		}
+		for (const { key, observation } of collected.observations) {
+			if (handledIntegrationEntries.has(key)) continue;
+			handledIntegrationEntries.add(key);
+			queue.enqueue(`integration ${observation.integration.provider}`, async () => {
+				const git = await collectGitProvenance(ctx.cwd);
+				const pointer = journalSessionPointer(sessionPointer(ctx.sessionManager));
+				const record: NewJournalRecord = {
+					...integrationObservationRecord(observation),
+					task: currentState.task,
+					...(currentState.continues ? { continues: currentState.continues } : {}),
+					...(pointer ? { session: pointer } : {}),
+					...(git ? { git } : {}),
+				};
+				const written = await appendIntegrationObservation(record, {
+					storePath,
+					project: project.id,
+					member: project.member.id,
+					host: current.host.id,
+					lockTimeoutMs: BACKGROUND_LOCK_TIMEOUT_MS,
+				});
+				if (!written.replayed) afterJournalAppend(currentState, storePath, written);
+			});
+		}
 	};
 
 	const journalRuntime: JournalToolRuntime = {
@@ -349,6 +398,8 @@ export default function (pi: ExtensionAPI): void {
 		session = undefined;
 		journal = undefined;
 		pending.clear();
+		handledIntegrationEntries.clear();
+		reportedIntegrationProblems.clear();
 		previousAssistantText = undefined;
 		const current = await load(ctx.cwd, ctx.isProjectTrusted(), true);
 		setStatus = (text) => ctx.ui.setStatus("muninn", text);
@@ -379,6 +430,7 @@ export default function (pi: ExtensionAPI): void {
 		if (trouble.length > 0) {
 			process.stderr.write(`${[`muninn: ${trouble.length} problem(s)`, ...trouble].join("\n")}\n`);
 		}
+		enqueueSessionIntegrations(ctx as never);
 	});
 
 	pi.on("turn_end", (event) => {
@@ -599,6 +651,7 @@ export default function (pi: ExtensionAPI): void {
 		// The run is over and pi will not continue on its own: no retry, no
 		// compaction, no queued continuation.
 		if (!run.isEmpty && !run.hadAuthoritativeEnd) runsWithoutAgentEnd++;
+		enqueueSessionIntegrations(ctx as never);
 		const buffer = run.take();
 		await writeOutcome(ctx as never, buffer);
 		commitPending(false);
@@ -611,10 +664,12 @@ export default function (pi: ExtensionAPI): void {
 		// next compaction or when the run settles. Taking rather than peeking is
 		// what keeps the post-compaction work from being silently discarded.
 		// Returning nothing leaves pi's compaction exactly as it was.
+		enqueueSessionIntegrations(ctx as never);
 		await writeOutcome(ctx as never, run.take());
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
+		enqueueSessionIntegrations(ctx as never);
 		// An outcome call still in flight is the most valuable entry of the run
 		// that just finished. `/new`, `/fork`, `/resume` and `/reload` all arrive
 		// here too, and none of them is a reason to lose it — so it is waited
