@@ -1,8 +1,10 @@
 /** Read-only, structured diagnostics for a logical project journal. */
 import { existsSync } from "node:fs";
 import { GitError, git, gitToplevel, isGitRepository } from "./git.ts";
+import { projectPolicyProblem } from "./governance/enforcement.ts";
 import { cryptographicStatus } from "./governance/status.ts";
-import { VERIFICATION_STATES } from "./governance/verification.ts";
+import { readProjectTrust } from "./governance/trust.ts";
+import { VERIFICATION_STATES, VerificationProjection } from "./governance/verification.ts";
 import { inspectTranscriptExchange } from "./integrations/transcript.ts";
 import { scanJournal } from "./journal/jsonl.ts";
 import { inspectJournalIndex } from "./journal/query-index.ts";
@@ -11,7 +13,7 @@ import { readProjectRegistry } from "./project/registry.ts";
 import { type ResolvedProject, resolveLogicalProject } from "./project/resolver.ts";
 import { canonicalPath } from "./store/paths.ts";
 import { type ProjectManifest, readProjectManifest } from "./store/project-manifest.ts";
-import { lifecycleWarnings } from "./team/lifecycle.ts";
+import { lifecycleWarnings, type TeamRosterGovernance } from "./team/lifecycle.ts";
 
 export type DoctorStatus = "ok" | "warning" | "error";
 
@@ -164,7 +166,15 @@ export async function diagnoseProject(options: { agentDir: string; cwd: string }
 	}
 
 	if (manifest) {
-		const warnings = lifecycleWarnings(manifest, records);
+		let governance: TeamRosterGovernance | undefined;
+		try {
+			const trust = readProjectTrust(options.agentDir, manifest.project);
+			governance = { trust, projection: new VerificationProjection(manifest, trust) };
+		} catch {
+			// crypto.local below reports the malformed local state; retain the
+			// compatibility projection here so doctor can continue collecting checks.
+		}
+		const warnings = lifecycleWarnings(manifest, records, governance);
 		if (warnings.length === 0) add("lifecycle.consistent", "ok", "no records were written during a retired interval");
 		else {
 			add(
@@ -213,6 +223,37 @@ export async function diagnoseProject(options: { agentDir: string; cwd: string }
 					"run `muninn search --verification STATE` and inspect the original journal lines",
 				);
 			}
+			const governanceStates = VERIFICATION_STATES.filter(
+				(state) =>
+					state !== "unsigned" &&
+					state !== "verified" &&
+					(crypto.team_events.states[state] > 0 || crypto.key_events.states[state] > 0),
+			);
+			if (governanceStates.length === 0) {
+				add(
+					"crypto.governance",
+					"ok",
+					`${crypto.team_events.total} team and ${crypto.key_events.total} key event signature state(s) projected`,
+				);
+			} else {
+				add(
+					"crypto.governance",
+					"warning",
+					governanceStates
+						.map((state) => `${crypto.team_events.states[state] + crypto.key_events.states[state]} ${state}`)
+						.join(", "),
+					"run `muninn crypto status` and verify the named fingerprints out of band",
+				);
+			}
+			const policyProblem = projectPolicyProblem(project.storePath, options.agentDir);
+			if (policyProblem) {
+				add(
+					"crypto.policy",
+					"error",
+					policyProblem,
+					"inspect verification states and establish trust before the next push",
+				);
+			} else add("crypto.policy", "ok", `local ${crypto.policy.mode} policy is satisfied`);
 		} catch (error) {
 			add("crypto.local", "error", describe(error), "repair the local identity or project trust file");
 		}

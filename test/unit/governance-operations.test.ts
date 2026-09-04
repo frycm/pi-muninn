@@ -9,6 +9,7 @@ import {
 	rotateProjectSigningKey,
 } from "../../src/governance/operations.ts";
 import { enrollProjectSigningKey } from "../../src/governance/registry.ts";
+import { initializeProjectCryptography } from "../../src/governance/setup.ts";
 import {
 	distrustProjectSigningKey,
 	pinProjectSigningKey,
@@ -153,6 +154,40 @@ describe("cryptographic governance operations", () => {
 			host: setup.host.id,
 		});
 		expect(readProjectTrust(agentTwo, setup.project).distrust).toEqual([]);
+	});
+
+	it("explicitly enrolls the shared current identity into another project after rotation", async () => {
+		const setup = await fixture();
+		const otherStore = join(setup.base, "other-store");
+		const otherProject = newProjectId();
+		await ensureStore(otherStore, {
+			host: setup.host,
+			project: {
+				id: otherProject,
+				name: "other",
+				member: { id: setup.member, name: "member", createdAt: setup.host.createdAt },
+			},
+		});
+		await initializeProjectCryptography({
+			agentDir: setup.agentDir,
+			storePath: otherStore,
+			project: otherProject,
+			member: setup.member,
+			host: setup.host,
+		});
+		await rotateProjectSigningKey({ ...setup, now: new Date("2026-09-04T11:00:00.000Z") });
+		const current = readSigningIdentity(setup.agentDir, setup.member);
+		if (!current) throw new Error("current identity is missing");
+		const initialized = await initializeProjectCryptography({
+			agentDir: setup.agentDir,
+			storePath: otherStore,
+			project: otherProject,
+			member: setup.member,
+			host: setup.host,
+		});
+		expect(initialized).toMatchObject({ identity_created: false, key_enrolled: true, key_pinned: true });
+		expect(initialized.identity.key).toBe(current.id);
+		expect(initialized.manifest.signing_keys.find((key) => key.id === current.id)?.previous).toBeUndefined();
 	});
 
 	it("enforces only the local prospective cutoff and ignores refused lifecycle effects", async () => {

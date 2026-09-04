@@ -1,7 +1,7 @@
 # Phase 7 — optional cryptographic governance
 
-**Status: implementation in progress.** The contract and five implementation slices below
-are separate reviewable commits.
+**Status: implemented.** The contract and five implementation slices below are separate
+reviewable commits.
 
 *Outcome: a team can authenticate new journal records and self-governance declarations with
 explicitly trusted member keys, rotate or recover those keys without rewriting history, and
@@ -100,7 +100,10 @@ muninn crypto policy require [--from now|RFC3339] [--compromised-history retain|
 `init` creates, enrolls and locally pins the first key. `rotate` enrolls a transition-signed
 successor and revokes the old key from the rotation time. `recover` is accepted only when no
 readable local private identity exists; its unchained replacement is pinned only on the local
-machine. `trust` requires the exact key descriptor to exist in the current project manifest.
+machine. The member identity is shared across projects, so `init` also explicitly enrolls an
+existing current identity in another project without creating new material; that unchained
+project-specific enrollment requires fresh teammate pins. `trust` requires the exact key
+descriptor to exist in the current project manifest.
 
 ## Synchronized key and governance events
 
@@ -189,13 +192,13 @@ GitHub team or repository ACL; the operations guide makes that second action exp
 
 ## Commit sequence
 
-### Commit 0 — threat model and contract
+### Commit 0 — threat model and contract (implemented)
 
 - Freeze bootstrap, canonical signatures, verification states and compatibility behavior.
 - Define the local trust/enforcement boundary and honest remote-ACL limitation.
 - Link the plan from the roadmap before emitting new fields.
 
-### Commit 1 — member keys and manifest registry
+### Commit 1 — member keys and manifest registry (implemented)
 
 - Add atomic local Ed25519 identity creation and validation.
 - Add self-signed public descriptors and transition verification to `project.json`.
@@ -204,7 +207,7 @@ GitHub team or repository ACL; the operations guide makes that second action exp
 Tests: key-file permissions; corrupt/mismatched private material; fingerprint/proof/transition
 tampering; key collisions; merge order; no automatic key creation; private-byte non-disclosure.
 
-### Commit 2 — signed records and lifecycle declarations
+### Commit 2 — signed records and lifecycle declarations (implemented)
 
 - Sign canonical records after redaction and deterministic provenance.
 - Sign new self-lifecycle declarations without changing source authority.
@@ -213,7 +216,7 @@ tampering; key collisions; merge order; no automatic key creation; private-byte 
 Tests: every signed field; post-signature tampering; secret redaction before signing; record
 size; unsigned compatibility; model/integration authority; deterministic replay.
 
-### Commit 3 — verification and explicit interfaces
+### Commit 3 — verification and explicit interfaces (implemented)
 
 - Project record/event verification from synchronized keys and local pins.
 - Add the `verification` filter and stable DTO fields across scan/index, tools and CLI.
@@ -222,7 +225,7 @@ size; unsigned compatibility; model/integration authority; deterministic replay.
 Tests: all verification states; filter/interface parity; untrusted self-enrollment; rotation
 chain; bounded warnings; scan/index equality; no ranking contribution.
 
-### Commit 4 — rotation, recovery and enforcement
+### Commit 4 — rotation, recovery and enforcement (implemented)
 
 - Add explicit rotate, recover, revoke, compromise, trust, distrust and policy commands.
 - Apply prospective write/sync gates and signed lifecycle policy.
@@ -231,7 +234,7 @@ chain; bounded warnings; scan/index equality; no ranking contribution.
 Tests: rotation and recovery across clones; lost/compromised key; effective time; legacy
 cutoff; local-policy divergence; sync stop-before-push; remote ACL remains out of scope.
 
-### Commit 5 — release hardening
+### Commit 5 — release hardening (implemented)
 
 - Exercise signed capture, tools, governance and multi-clone sync through acceptance tests.
 - Document backup, recovery, fingerprint verification, ACL removal and rollback limitations.

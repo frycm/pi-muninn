@@ -4,10 +4,11 @@ Muninn stores one logical project's history in a separate Git repository. The co
 repository remains authoritative; this repository contains immutable JSONL history,
 `project.json` team metadata and an optional migration manifest.
 
-Validated onboarding, advisory lifecycle, conflict resolution, diagnostics and optional
-Phase 6 integrations are implemented. The manual team-join procedure below is a recovery
-path, not the normal setup. The integration boundaries are in
-[phase-6-plan.md](phase-6-plan.md).
+Validated onboarding, lifecycle governance, conflict resolution, diagnostics, optional
+Phase 6 integrations and optional Phase 7 signatures are implemented. The manual team-join
+procedure below is a recovery path, not the normal setup. Integration boundaries are in
+[phase-6-plan.md](phase-6-plan.md); the cryptographic threat model is in
+[phase-7-plan.md](phase-7-plan.md).
 
 ## Start a local project journal
 
@@ -88,9 +89,133 @@ Lifecycle commands can declare state only for the local member and hosts owned b
 member. They append events and commit `project.json`; they never rewrite prior events or
 journal records. `/muninn team` is the read-only attended view.
 
-Retirement is advisory because the Git content is unsigned. It adds lifecycle labels and
-diagnostics but does not hide records, block a writer or revoke remote access. Use repository
-ACLs for actual access control.
+Under the default `observe` policy, retirement remains advisory: it adds lifecycle labels and
+diagnostics but does not hide records, block a writer or revoke remote access. Optional
+signatures can authenticate a declaration, and `require` can refuse an unverified local
+declaration from its prospective cutoff. Repository ACLs still provide actual access control.
+
+## Enable and operate cryptographic governance
+
+Cryptographic governance is optional and never starts itself. To create the first local
+Ed25519 member identity, enroll its public descriptor, and pin it on this machine:
+
+```bash
+muninn crypto init
+muninn crypto public --json | jq '{member, key, public_key}'
+muninn crypto status
+```
+
+The private key is at `<agent-dir>/muninn/signing.json`, outside every journal repository.
+Keep that file mode `0600`, never paste or commit it, and include it in an encrypted private
+backup after initialization and every rotation. Test that the backup decrypts to a private
+mode-`0600` file and compare only its `id` field with the full `key` fingerprint captured by
+`muninn crypto public`; do not activate the test copy alongside the original. Do not use a
+transcript-exchange `age` key as this signing identity.
+
+### Verify and pin a teammate
+
+A synchronized public descriptor proves possession, not identity. Obtain the teammate's
+member UUID and complete `ed25519:...` key fingerprint over an independent authenticated
+channel, compare every character, and only then run:
+
+```bash
+muninn crypto trust <member-uuid> <full-ed25519-fingerprint>
+muninn crypto status --json | jq
+```
+
+`trust` accepts only an exact descriptor already present in the current `project.json`.
+Pins and distrust decisions live in
+`<agent-dir>/muninn-trust/<project-id>.json`; they are intentionally local and do not
+synchronize. To stop accepting a key or every rotation chained through it:
+
+```bash
+muninn crypto distrust <full-ed25519-fingerprint> --reason "device custody is uncertain"
+```
+
+Re-running `trust` after a new out-of-band comparison removes that local distrust entry.
+
+### Rotate, revoke, or recover a key
+
+Routine rotation retains continuity:
+
+```bash
+muninn crypto rotate
+muninn crypto public
+muninn sync
+```
+
+`rotate` creates a successor signed by both keys, records an effective revocation of the old
+key, commits the manifest, and then atomically replaces the local private identity. Trust
+follows the valid transition from an existing pin; teammates do not need a new pin. If the
+process stops after committing the successor but before replacing the private file, preserve
+the store and use the recovery procedure below rather than editing `project.json`.
+
+The local signing identity is shared by the member across logical projects, while public-key
+registries and trust remain project-specific. After rotation, visit every other signed project
+before writing and run `muninn crypto init`: it reuses and enrolls the current local identity
+instead of creating one. Because that other project's manifest did not observe the old key
+signing the transition, this enrollment is unchained there; teammates in that project must
+compare and pin the fingerprint again. `require` safely refuses writes in the interim.
+
+To revoke one of your enrolled keys explicitly:
+
+```bash
+muninn crypto revoke <old-key> --reason "retired device"
+```
+
+Recovery deliberately breaks continuity. Use it when the private key is lost or suspected
+compromised:
+
+1. Stop writers and preserve any suspect `signing.json` outside the agent directory for
+   incident analysis; `recover` runs only when no readable local identity exists.
+2. Run `muninn crypto recover`. It creates an unchained key, enrolls it, and pins it only on
+   this machine.
+3. Send the new member UUID and full fingerprint to every teammate over an independent
+   authenticated channel. Each teammate syncs, compares it, and runs `crypto trust`.
+4. From the recovered machine, declare the old key compromised at the earliest defensible
+   timestamp and synchronize:
+
+```bash
+muninn crypto compromise <old-key> --effective 2026-09-04T12:34:56.000Z --reason "laptop stolen"
+muninn sync
+```
+
+`compromised_history: retain` keeps valid pre-compromise records verified and marks records
+at or after the effective time compromised. The conservative `reject` setting marks all
+records from that key compromised. Neither setting changes a journal line.
+
+### Require verified new bytes locally
+
+The default mode only observes and reports verification states. After keys have been checked
+and pinned, a machine can set a prospective cutoff:
+
+```bash
+muninn crypto policy require --from now
+muninn crypto policy require --from now --compromised-history reject
+muninn search --verification untrusted --json | jq
+```
+
+At and after the cutoff, authorized writers require a `verified` signature. Signed lifecycle
+events are applied to that machine's roster only when verified. Sync fetches and reconciles
+first, then stops before push if the resulting store violates local policy; it does not hide
+or delete the offending evidence. Inspect the original bytes, establish trust if appropriate,
+append corrections where history is wrong, or explicitly return to reporting-only mode:
+
+```bash
+muninn crypto policy observe
+```
+
+Local policy does not promise journal completeness. A valid signature detects mutation of an
+object that is present, but a single checkout cannot detect a collaborator or remote that
+deleted, withheld, or rolled back valid Git history. Use protected branches, repository audit
+logs and independent remote backups where those properties matter.
+
+### Remove repository access separately
+
+Member retirement, key revocation, compromise and local distrust do not change Git hosting
+permissions. During offboarding or an incident, separately remove the person's/team's SSH
+keys, tokens, deploy keys and repository role at the hosting provider, then review branch
+protection and audit logs. Muninn intentionally has no provider credential or ACL automation.
 
 ## Search and correct history
 
@@ -240,7 +365,7 @@ JSONL.
 
 ## Recovery
 
-The journal has three recovery layers:
+The journal has four recovery layers:
 
 1. **Canonical JSONL** — the source of truth. A malformed or truncated line is reported
    locally; later valid records remain readable. Restore accidental byte damage from Git or
@@ -250,6 +375,10 @@ The journal has three recovery layers:
    outside `project.json` aborts the rebase and leaves the pre-sync HEAD checked out.
 3. **Disposable index** — move or delete `.index/` and run `muninn reindex`; canonical
    results do not depend on index files.
+4. **Local signing and trust state** — restore `signing.json` only from a private backup and
+   verify its public fingerprint before writing. Never reconstruct local trust from
+   synchronized self-assertions. If the key is unavailable or suspect, use unchained recovery
+   and repeat out-of-band pinning.
 
 Useful checks:
 
@@ -257,6 +386,7 @@ Useful checks:
 muninn doctor
 muninn doctor --json | jq
 muninn status --json | jq
+muninn crypto status --json | jq
 git -C "$(muninn path)" status --short
 git -C "$(muninn path)" log --oneline --decorate -20
 muninn reindex --json | jq

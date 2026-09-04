@@ -1,6 +1,6 @@
 # Logical project journal format
 
-> **Normative and implemented through Phase 6.** The legacy
+> **Normative and implemented through Phase 7.** The legacy
 > [Markdown journal format](journal-format.md) remains readable only as migration input.
 
 The logical project journal is an append-only, sharded JSONL event stream. It records bounded
@@ -32,6 +32,17 @@ temporary files are derived local state and are not committed.
 Imported transcript exchange copies live outside this Git store at
 `<agent-dir>/muninn-transcripts/<project-id>/<record-id>.jsonl`. They are optional,
 user-local evidence and never become canonical journal content.
+
+Optional Phase 7 private identity and trust state also live outside the Git store:
+
+```text
+<agent-dir>/muninn/signing.json
+<agent-dir>/muninn-trust/<project-id>.json
+```
+
+The first is a mode-`0600` Ed25519 private identity. The second contains explicit local pins,
+distrust entries and prospective policy. Neither path is synchronized or inferred from a
+checkout.
 
 ## Encoding rules
 
@@ -112,6 +123,30 @@ Retirement is advisory: records remain searchable and writable, while current ro
 adds `retired-member` or `retired-host` labels. Records written during a retired interval
 produce a diagnostic warning.
 
+### Signing keys and governance events
+
+The first explicit cryptographic action upgrades `project.json` to schema 2 and adds
+`signing_keys` and `key_events`. Older unsigned schema-1 manifests project both arrays as
+empty. A signing-key descriptor contains `id`, `algorithm: "ed25519"`, `member`,
+`created_at`, an SPKI `public_key`, and a proof-of-possession signature. A routine successor
+also contains `previous` and a transition signature made by that previous key.
+
+The descriptor ID is `ed25519:` plus the base64url SHA-256 fingerprint of the DER public key.
+Descriptors are immutable unions keyed by fingerprint. Parsing rejects fingerprint or proof
+tampering, missing or cross-member predecessors, invalid transitions, cycles, and
+non-identical duplicates.
+
+`key_events` is an additive stream of `key-revoked` and `key-compromised` declarations. Each
+event names the affected member/key, actor key, declaration time, effective time, optional
+reason, and Ed25519 signature. An actor may govern only its own member's keys; compromise
+must be declared by a different key. Removing an event cannot be detected from one checkout,
+so Git history and remote protections remain part of the operational boundary.
+
+Team events may carry the same signature envelope. Under `observe`, structurally valid
+unsigned events retain Phase 4 behavior. Under a local prospective `require` policy, an event
+at or after the cutoff affects that machine's roster only when its signature projects as
+`verified`.
+
 ## Record shape
 
 An outcome record serialized as its actual one-line representation:
@@ -151,6 +186,7 @@ An outcome record serialized as its actual one-line representation:
 | `integration` | Bounded external producer provenance and its idempotency key. |
 | `legacy` | Migration origin and fields not represented directly in schema 1. |
 | `redacted` | `true` when mandatory secret scanning changed free text. |
+| `signature` | Optional Ed25519 envelope authenticating the complete canonical record. |
 
 Unknown fields are returned under an extension view by readers and preserved by migrations.
 Writers emit only fields defined by the schema version they claim.
@@ -166,6 +202,21 @@ Writers emit only fields defined by the schema version they claim.
 
 Deterministic fields such as IDs, paths, Git refs, status and transcript pointers are filled
 by code. A summarizing model cannot supply or override them.
+
+### Canonical record signatures
+
+The signature envelope has exactly `algorithm`, `key` and `value`:
+
+```json
+{"algorithm":"ed25519","key":"ed25519:<sha256-base64url>","value":"<signature-base64url>"}
+```
+
+It signs `MUNINN-JOURNAL-RECORD-V1\0` followed by the existing canonical JSON record with the
+signature field omitted. Signing therefore binds identity, authority/source, text,
+relations, integration metadata, transcript pointer and Git/worktree provenance. Redaction
+and deterministic provenance run before signing; the 64 KiB line bound is checked after the
+envelope is added. Key proofs, key transitions, key events and team events use their own
+domain tags so a valid signature for one object cannot be replayed as another.
 
 ### Integration provenance
 
@@ -234,10 +285,12 @@ For one append the writer:
 1. validates the requested writer authority and relation shape;
 2. acquires the store lock;
 3. builds the complete record and redacts bounded free-text fields;
-4. verifies that an existing ID has identical canonical bytes;
-5. appends to the selected member/host shard with one write and flushes it;
-6. flushes a newly created shard directory where supported; and
-7. releases the lock.
+4. signs the canonical result when an explicitly enrolled local identity exists;
+5. applies the machine's prospective verification policy without changing historical bytes;
+6. verifies that an existing ID has identical canonical bytes;
+7. appends to the selected member/host shard with one write and flushes it;
+8. flushes a newly created shard directory where supported; and
+9. releases the lock.
 
 Two linked worktrees on one host share a store and lock. Two hosts write different shard
 paths. If synchronized data shows another writer appending under the local host ID, sync
@@ -255,10 +308,12 @@ Raw records are the source of truth. The canonical reader builds a deterministic
 3. resolve relation targets without changing either record;
 4. project advisory lifecycle and active correction conflicts;
 5. label trust relative to the local member;
-6. apply explicit record, projected trust and lifecycle/conflict filters;
-7. rank exact IDs, phrases, exact/prefix/conservative one-edit tokens, term coverage, user
+6. project the optional signature as `unsigned`, `unknown-key`, `invalid`, `untrusted`,
+   `verified`, `revoked` or `compromised` against local pins and policy;
+7. apply explicit record, projected trust, verification and lifecycle/conflict filters;
+8. rank exact IDs, phrases, exact/prefix/conservative one-edit tokens, term coverage, user
    corrections, deterministic recency and Git proximity using fixed weights; and
-8. return bounded stable IDs with an optional component-level explanation.
+9. return bounded stable IDs with an optional component-level explanation.
 
 The index is an acceleration of this projection, never an alternative source. Deleting
 `.index/` and scanning the journal must produce the same filtered record set.
@@ -300,13 +355,38 @@ while still emitting the record.
 Synchronization commits only `project.json`, `migration.json` and journal shards. Integration
 records use those same shards; transcript exchange files never enter this allowlist. Per-writer
 paths make ordinary pulls additive. Manifest reconciliation union-merges member, host and
-team-event additions. Incompatible remotes, identity/event collisions and host-ownership
-violations stop the operation for attended resolution.
+team-event additions, signing-key descriptors and key events. Incompatible remotes,
+identity/event collisions and host-ownership violations stop the operation for attended
+resolution. When local policy is `require`, sync validates the fetched/rebased current store
+and stops before push if any object at or after the cutoff is not `verified`.
 
 The code repository remote is never used as journal identity. It may be shown as a linking
 hint, but only explicit user action connects a local project UUID to a shared journal remote.
 
 See [operations.md](operations.md) for team onboarding, migration and recovery procedures.
+
+## Local verification policy
+
+Local trust is intentionally absent from Git. A synchronized self-signed descriptor begins
+as `untrusted`; a person pins the full `(member, key)` pair only after comparing it over an
+independent channel. Trust follows a valid transition-signed rotation chain. An unchained
+recovery key requires a new explicit pin on every machine. Local distrust cuts trust at that
+key, including descendants whose only path begins there.
+
+The default policy is:
+
+```json
+{"mode":"observe","required_after":null,"compromised_history":"retain"}
+```
+
+`require` always records an RFC 3339 `required_after` cutoff and applies only prospectively.
+It refuses new non-verified local records and lifecycle events and stops a synchronized
+violation before push. Reads never omit the evidence. `compromised_history: "retain"` accepts
+valid records before a compromise's effective time; `"reject"` conservatively projects every
+record made by that key as compromised.
+
+These signatures authenticate present bytes, not completeness. They do not detect deleted,
+withheld or rolled-back Git history, provide confidentiality, or update remote ACLs.
 
 ## Markdown migration
 

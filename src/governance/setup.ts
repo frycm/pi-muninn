@@ -30,10 +30,7 @@ export async function initializeProjectCryptography(options: {
 	const before = readProjectManifest(options.storePath);
 	if (!before) throw new Error(`muninn: no project.json at ${options.storePath}`);
 	const existing = readSigningIdentity(options.agentDir, options.member);
-	if (
-		before.signing_keys.some((key) => key.member === options.member) &&
-		(!existing || !before.signing_keys.some((key) => key.id === existing.id))
-	) {
+	if (before.signing_keys.some((key) => key.member === options.member) && !existing) {
 		throw new Error("muninn: this member already has signing history; use `muninn crypto recover`");
 	}
 	const initialized = initializeSigningIdentity(options.agentDir, options.member);
