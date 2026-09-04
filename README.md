@@ -23,7 +23,8 @@ The legacy Markdown migration-input contract is
 sequence is [docs/phase-3-plan.md](docs/phase-3-plan.md).
 The implemented identity and registry contract is
 [docs/project-registry.md](docs/project-registry.md). Team onboarding, migration and recovery
-are covered by [docs/operations.md](docs/operations.md).
+are covered by [docs/operations.md](docs/operations.md). The next implementation contract is
+[docs/phase-4-plan.md](docs/phase-4-plan.md).
 
 ## Why a project journal
 
@@ -335,11 +336,11 @@ model/human/Unix query interfaces and explicit multi-clone Git synchronization.
 
 ### Phase 4 — team operations and governance
 
-Improve team onboarding beyond the documented manual clone sequence, add attended member and
-host lifecycle controls, and make manifest/correction conflict review comfortable. Explore
-signed writer identity or revocation only if real team use requires it. The journal remains
-historical evidence rather than an authoritative shared summary. Transcript exchange remains
-opt-in and separate.
+Underway: replace the manual clone sequence with validated share/join commands, add attended
+member and host lifecycle declarations, provide an explicit correction-conflict inbox and
+resolution flow, and add a read-only operational doctor. Signed identity or enforceable
+revocation remains out of scope until real team use justifies its key-management cost. See
+the [Phase 4 plan](docs/phase-4-plan.md).
 
 ### Phase 5 — retrieval quality and scale
 

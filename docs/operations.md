@@ -4,6 +4,10 @@ Phase 3 stores one logical project's history in a separate Git repository. The c
 repository remains authoritative; this repository contains immutable JSONL history,
 `project.json` team metadata and an optional migration manifest.
 
+The manual team-join procedure below remains the Phase 3 recovery path. Phase 4's validated
+one-command onboarding and governance work is specified in
+[phase-4-plan.md](phase-4-plan.md).
+
 ## Start a local project journal
 
 From any checkout or linked worktree:
