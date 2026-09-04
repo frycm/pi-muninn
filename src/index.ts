@@ -40,6 +40,7 @@ import { formatStatus, formatStatusLine, formatWarning } from "./status.ts";
 import { storeIdentity } from "./store/init.ts";
 import { readProjectManifest } from "./store/project-manifest.ts";
 import { describeSync, type SyncResult, sync } from "./sync/sync.ts";
+import { projectTeamRoster, renderTeamRoster } from "./team/lifecycle.ts";
 import { journalContextTool } from "./tools/journal-context.ts";
 import { journalNoteTool } from "./tools/journal-note.ts";
 import { journalReadTool } from "./tools/journal-read.ts";
@@ -223,6 +224,13 @@ export default function (pi: ExtensionAPI): void {
 		});
 	};
 
+	const teamReport = (current: SessionContext): string => {
+		if (!current.project) return "muninn: no logical project is linked for this session";
+		const manifest = readProjectManifest(current.project.storePath);
+		if (!manifest) return "muninn: project journal has no project.json";
+		return renderTeamRoster(projectTeamRoster(manifest, current.project.member.id, current.host.id)).join("\n");
+	};
+
 	pi.registerCommand("muninn", {
 		description: "Muninn: search, inspect and correct this project journal",
 		handler: async (args, ctx) => {
@@ -315,6 +323,7 @@ export default function (pi: ExtensionAPI): void {
 					return outcomes;
 				},
 				statusReport,
+				teamReport,
 			};
 
 			let output: CommandOutput;

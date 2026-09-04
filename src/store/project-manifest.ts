@@ -1,7 +1,7 @@
 /** Durable identity, writer ownership and team metadata for a project journal. */
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { isHostId, isMemberId, isProjectId } from "../ids.ts";
+import { isHostId, isMemberId, isProjectId, isTeamEventId } from "../ids.ts";
 import { isUsableRemote } from "../settings.ts";
 
 export const PROJECT_MANIFEST_SCHEMA = 1 as const;
@@ -18,6 +18,26 @@ export interface ProjectManifestHost {
 	member: string;
 }
 
+export type TeamEventKind =
+	| "member-renamed"
+	| "member-retired"
+	| "member-restored"
+	| "host-renamed"
+	| "host-retired"
+	| "host-restored";
+
+export interface ProjectTeamEvent {
+	id: string;
+	at: string;
+	kind: TeamEventKind;
+	member: string;
+	actor_member: string;
+	actor_host: string;
+	host?: string;
+	name?: string;
+	reason?: string;
+}
+
 export interface ProjectManifest {
 	schema: typeof PROJECT_MANIFEST_SCHEMA;
 	project: string;
@@ -26,6 +46,7 @@ export interface ProjectManifest {
 	remote: string | null;
 	members: ProjectManifestMember[];
 	hosts: ProjectManifestHost[];
+	team_events: ProjectTeamEvent[];
 }
 
 export function projectManifestPath(storePath: string): string {
@@ -35,6 +56,20 @@ export function projectManifestPath(storePath: string): string {
 function nonempty(value: unknown, at: string): string {
 	if (typeof value !== "string" || value.trim() === "") throw new Error(`${at} must be a non-empty string`);
 	return value;
+}
+
+function bounded(value: unknown, at: string, max: number): string {
+	const text = nonempty(value, at);
+	if (text.length > max) throw new Error(`${at} must be at most ${max} characters`);
+	return text;
+}
+
+function timestamp(value: unknown, at: string): string {
+	const text = nonempty(value, at);
+	if (!RFC3339_MILLIS.test(text) || Number.isNaN(Date.parse(text))) {
+		throw new Error(`${at} must be an RFC 3339 UTC timestamp with milliseconds`);
+	}
+	return text;
 }
 
 function members(value: unknown): ProjectManifestMember[] {
@@ -67,6 +102,68 @@ function hosts(value: unknown): ProjectManifestHost[] {
 	});
 }
 
+const TEAM_EVENT_KINDS = new Set<TeamEventKind>([
+	"member-renamed",
+	"member-retired",
+	"member-restored",
+	"host-renamed",
+	"host-retired",
+	"host-restored",
+]);
+
+function teamEvents(value: unknown): ProjectTeamEvent[] {
+	if (value === undefined) return [];
+	if (!Array.isArray(value)) throw new Error("team_events must be an array");
+	const parsed = value.map((candidate, index): ProjectTeamEvent => {
+		const at = `team_events[${index}]`;
+		if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
+			throw new Error(`${at} must be an object`);
+		}
+		const event = candidate as Record<string, unknown>;
+		const kind = nonempty(event.kind, `${at}.kind`) as TeamEventKind;
+		if (!TEAM_EVENT_KINDS.has(kind)) throw new Error(`${at}.kind is not supported`);
+		const allowed = new Set(["id", "at", "kind", "member", "actor_member", "actor_host", "host", "name", "reason"]);
+		for (const key of Object.keys(event)) if (!allowed.has(key)) throw new Error(`${at}.${key} is not supported`);
+		const id = nonempty(event.id, `${at}.id`);
+		const member = nonempty(event.member, `${at}.member`);
+		const actorMember = nonempty(event.actor_member, `${at}.actor_member`);
+		const actorHost = nonempty(event.actor_host, `${at}.actor_host`);
+		if (!isTeamEventId(id)) throw new Error(`${at}.id must be a team-event UUIDv7`);
+		if (!isMemberId(member)) throw new Error(`${at}.member must be a member UUIDv7`);
+		if (!isMemberId(actorMember)) throw new Error(`${at}.actor_member must be a member UUIDv7`);
+		if (!isHostId(actorHost)) throw new Error(`${at}.actor_host must be a host UUIDv7`);
+		const host = event.host === undefined ? undefined : nonempty(event.host, `${at}.host`);
+		if (host !== undefined && !isHostId(host)) throw new Error(`${at}.host must be a host UUIDv7`);
+		const name = event.name === undefined ? undefined : bounded(event.name, `${at}.name`, 200);
+		const reason = event.reason === undefined ? undefined : bounded(event.reason, `${at}.reason`, 2_000);
+		const hostEvent = kind.startsWith("host-");
+		const rename = kind.endsWith("-renamed");
+		if (hostEvent !== (host !== undefined))
+			throw new Error(`${at}.host ${hostEvent ? "is required" : "is not allowed"}`);
+		if (rename !== (name !== undefined)) throw new Error(`${at}.name ${rename ? "is required" : "is not allowed"}`);
+		return {
+			id,
+			at: timestamp(event.at, `${at}.at`),
+			kind,
+			member,
+			actor_member: actorMember,
+			actor_host: actorHost,
+			...(host ? { host } : {}),
+			...(name ? { name } : {}),
+			...(reason ? { reason } : {}),
+		};
+	});
+	const found = new Map<string, ProjectTeamEvent>();
+	for (const event of parsed) {
+		const prior = found.get(event.id);
+		if (prior && JSON.stringify(prior) !== JSON.stringify(event)) {
+			throw new Error(`team event id collision for ${event.id}`);
+		}
+		found.set(event.id, event);
+	}
+	return [...found.values()].sort((left, right) => left.at.localeCompare(right.at) || left.id.localeCompare(right.id));
+}
+
 function uniqueById<T extends { id: string }>(items: T[], kind: string): T[] {
 	const found = new Map<string, T>();
 	for (const item of items) {
@@ -86,17 +183,27 @@ export function parseProjectManifest(text: string, path = "project.json"): Proje
 		if (raw.schema !== PROJECT_MANIFEST_SCHEMA) throw new Error(`schema must be ${PROJECT_MANIFEST_SCHEMA}`);
 		const project = nonempty(raw.project, "project");
 		if (!isProjectId(project)) throw new Error("project must be a full UUIDv7");
-		const createdAt = nonempty(raw.created_at, "created_at");
-		if (!RFC3339_MILLIS.test(createdAt) || Number.isNaN(Date.parse(createdAt))) {
-			throw new Error("created_at must be an RFC 3339 UTC timestamp with milliseconds");
-		}
+		const createdAt = timestamp(raw.created_at, "created_at");
 		if (raw.remote !== null && typeof raw.remote !== "string") throw new Error("remote must be a string or null");
 		if (typeof raw.remote === "string" && !isUsableRemote(raw.remote)) throw new Error("remote is not a safe Git URL");
 		const parsedMembers = uniqueById(members(raw.members), "member");
 		const parsedHosts = uniqueById(hosts(raw.hosts), "host");
+		const parsedEvents = teamEvents(raw.team_events);
 		for (const host of parsedHosts) {
 			if (!parsedMembers.some((member) => member.id === host.member)) {
 				throw new Error(`host ${host.id} names unknown member ${host.member}`);
+			}
+		}
+		const memberIds = new Set(parsedMembers.map((member) => member.id));
+		const hostOwners = new Map(parsedHosts.map((host) => [host.id, host.member]));
+		for (const event of parsedEvents) {
+			if (!memberIds.has(event.member)) throw new Error(`team event ${event.id} names unknown member ${event.member}`);
+			if (event.member !== event.actor_member) throw new Error(`team event ${event.id} is not self-declared`);
+			if (hostOwners.get(event.actor_host) !== event.actor_member) {
+				throw new Error(`team event ${event.id} actor host is not owned by its actor member`);
+			}
+			if (event.host && hostOwners.get(event.host) !== event.member) {
+				throw new Error(`team event ${event.id} target host is not owned by its member`);
 			}
 		}
 		return {
@@ -107,6 +214,7 @@ export function parseProjectManifest(text: string, path = "project.json"): Proje
 			remote: raw.remote as string | null,
 			members: parsedMembers,
 			hosts: parsedHosts,
+			team_events: parsedEvents,
 		};
 	} catch (error) {
 		throw new Error(
@@ -151,6 +259,7 @@ export function ensureProjectManifest(
 		remote: null,
 		members: [],
 		hosts: [],
+		team_events: [],
 	};
 	const before = formatProjectManifest(manifest);
 	if (project.member) manifest.members = uniqueById([...manifest.members, project.member], "member");
@@ -181,8 +290,16 @@ export function mergeProjectManifests(left: ProjectManifest, right: ProjectManif
 			remote: left.remote ?? right.remote,
 			members: [...left.members, ...right.members],
 			hosts: [...left.hosts, ...right.hosts],
+			team_events: [...left.team_events, ...right.team_events],
 		}),
 	);
+}
+
+/** Replace a manifest atomically after full canonical validation. */
+export function writeProjectManifest(storePath: string, manifest: ProjectManifest): ProjectManifest {
+	const canonical = parseProjectManifest(JSON.stringify(manifest));
+	writeAtomic(projectManifestPath(storePath), formatProjectManifest(canonical));
+	return canonical;
 }
 
 export function setProjectRemote(storePath: string, remote: string | null): ProjectManifest {
@@ -190,8 +307,7 @@ export function setProjectRemote(storePath: string, remote: string | null): Proj
 	if (!manifest) throw new Error(`muninn: no project.json at ${storePath}`);
 	if (remote !== null && !isUsableRemote(remote)) throw new Error(`muninn: refusing unsafe journal remote ${remote}`);
 	const updated = { ...manifest, remote };
-	writeAtomic(projectManifestPath(storePath), formatProjectManifest(updated));
-	return updated;
+	return writeProjectManifest(storePath, updated);
 }
 
 function writeAtomic(path: string, text: string): void {

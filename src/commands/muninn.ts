@@ -33,6 +33,7 @@ export interface CommandRuntime {
 	reindex(): Promise<number>;
 	sync(options: { noPush?: boolean }): Promise<Array<{ scope: "project"; result: SyncResult }>>;
 	statusReport(session: SessionContext): string;
+	teamReport(session: SessionContext): string;
 }
 
 export const USAGE = [
@@ -47,6 +48,7 @@ export const USAGE = [
 	"  /muninn correct ID TEXT",
 	"  /muninn annotate ID TEXT",
 	"  /muninn project",
+	"  /muninn team",
 	"  /muninn reindex",
 	"  /muninn sync [--no-push]",
 ].join("\n");
@@ -62,6 +64,8 @@ export async function runMuninnCommand(args: string, runtime: CommandRuntime): P
 			return status(runtime);
 		case "project":
 			return project(rest, runtime);
+		case "team":
+			return team(rest, runtime);
 		case "search":
 			return search(rest, runtime);
 		case "show":
@@ -104,6 +108,18 @@ async function project(args: string, runtime: CommandRuntime): Promise<CommandOu
 	const session = await runtime.load({ createStores: false });
 	if (!session.project) return { level: "warning", text: "muninn: no logical project is linked for this session" };
 	return { level: "info", text: formatResolvedProject(session.project).join("\n") };
+}
+
+async function team(args: string, runtime: CommandRuntime): Promise<CommandOutput> {
+	if (args !== "" && args !== "list") {
+		return {
+			level: "warning",
+			text: "muninn: /muninn team is read-only; use `muninn team ...` in a shell for lifecycle declarations",
+		};
+	}
+	const session = await runtime.load({ createStores: false });
+	if (!session.project) return { level: "warning", text: "muninn: no logical project is linked for this session" };
+	return { level: "info", text: runtime.teamReport(session) };
 }
 
 async function service(runtime: CommandRuntime): Promise<JournalQueryService> {

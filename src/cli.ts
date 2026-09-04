@@ -32,6 +32,7 @@ import { ensureStore, projectStoreIdentity, storeIdentity } from "./store/init.t
 import { storeExistsAt } from "./store/paths.ts";
 import { readProjectManifest, setProjectRemote } from "./store/project-manifest.ts";
 import { describeSync, sync } from "./sync/sync.ts";
+import { declareTeamEvent, projectTeamRoster, renderTeamRoster } from "./team/lifecycle.ts";
 import { MUNINN_VERSION } from "./version.ts";
 
 const USAGE = [
@@ -48,6 +49,11 @@ const USAGE = [
 	"  muninn project link|show|unlink|remote [URL|--remove]",
 	"  muninn project share [PATH] [--json]",
 	"  muninn project join JOURNAL-URL [PATH] [--force] [--json]",
+	"  muninn team list [--json]",
+	"  muninn team rename-member NAME [--reason TEXT] [--json]",
+	"  muninn team rename-host HOST-ID NAME [--reason TEXT] [--json]",
+	"  muninn team retire-host|restore-host HOST-ID [--reason TEXT] [--json]",
+	"  muninn team leave|return [--reason TEXT] [--json]",
 	"  muninn migrate [--dry-run] [--json]",
 	"  muninn reindex [--json]",
 	"  muninn status [--json]",
@@ -207,6 +213,46 @@ export async function runCli(
 			if (args.length > 0) throw new JournalArgumentError("path takes no arguments");
 			const context = await projectContext(cwd, false);
 			return { code: 0, out: [context.project.storePath], err };
+		}
+		if (command === "team") {
+			const parsed = parseTeamArgs(args);
+			const context = await projectContext(cwd, false);
+			const manifest = readProjectManifest(context.project.storePath);
+			if (!manifest) throw new Error("muninn: project journal has no project.json");
+			if (parsed.action === "list") {
+				const roster = projectTeamRoster(manifest, context.project.member.id, context.host.id);
+				return { code: 0, out: parsed.json ? [JSON.stringify(roster)] : renderTeamRoster(roster), err };
+			}
+			const kind =
+				parsed.action === "leave"
+					? "member-retired"
+					: parsed.action === "return"
+						? "member-restored"
+						: parsed.action === "rename-member"
+							? "member-renamed"
+							: parsed.action === "rename-host"
+								? "host-renamed"
+								: parsed.action === "retire-host"
+									? "host-retired"
+									: "host-restored";
+			const declared = await declareTeamEvent({
+				storePath: context.project.storePath,
+				project: context.project.id,
+				actorMember: context.project.member.id,
+				actorHost: context.host.id,
+				actorHostName: context.host.name,
+				kind,
+				...(parsed.host ? { host: parsed.host } : {}),
+				...(parsed.name ? { name: parsed.name } : {}),
+				...(parsed.reason ? { reason: parsed.reason } : {}),
+			});
+			return {
+				code: 0,
+				out: parsed.json
+					? [JSON.stringify({ schema: 1, kind: "team-event", event: declared.event, roster: declared.roster })]
+					: [`muninn: declared ${declared.event.kind} · ${declared.event.id}`, ...renderTeamRoster(declared.roster)],
+				err,
+			};
 		}
 		if (command === "search") {
 			const parsed = parseJournalQueryArgs(args, { positionalQuery: true });
@@ -427,6 +473,54 @@ function parseProjectJoinArgs(args: readonly string[]): {
 	}
 	if (!remote) throw new JournalArgumentError("project join needs a journal URL");
 	return { remote, ...(path ? { path } : {}), force, json };
+}
+
+type TeamAction = "list" | "rename-member" | "rename-host" | "retire-host" | "restore-host" | "leave" | "return";
+
+function parseTeamArgs(args: readonly string[]): {
+	action: TeamAction;
+	host?: string;
+	name?: string;
+	reason?: string;
+	json: boolean;
+} {
+	const action = (args[0] ?? "list") as TeamAction;
+	if (!["list", "rename-member", "rename-host", "retire-host", "restore-host", "leave", "return"].includes(action)) {
+		throw new JournalArgumentError(`unknown team command ${action}`);
+	}
+	const positional: string[] = [];
+	let reason: string | undefined;
+	let json = false;
+	for (let index = 1; index < args.length; index++) {
+		const arg = args[index] as string;
+		if (arg === "--json") json = true;
+		else if (arg === "--reason") {
+			reason = args[++index];
+			if (!reason) throw new JournalArgumentError("--reason needs text");
+		} else if (arg.startsWith("--")) throw new JournalArgumentError(`unknown team option ${arg}`);
+		else positional.push(arg);
+	}
+	const expected = action === "rename-host" ? 2 : action === "rename-member" || action.includes("-host") ? 1 : 0;
+	if (positional.length !== expected) {
+		throw new JournalArgumentError(
+			action === "rename-member"
+				? "team rename-member needs a name"
+				: action === "rename-host"
+					? "team rename-host needs a host ID and name"
+					: action.includes("-host")
+						? `team ${action} needs a host ID`
+						: `team ${action} takes no arguments`,
+		);
+	}
+	if (action === "list" && reason) throw new JournalArgumentError("team list does not accept --reason");
+	return {
+		action,
+		...(action.includes("-host") ? { host: positional[0] } : {}),
+		...(action === "rename-member" ? { name: positional[0] } : {}),
+		...(action === "rename-host" ? { name: positional[1] } : {}),
+		...(reason ? { reason } : {}),
+		json,
+	};
 }
 
 function hasFilters(query: object): boolean {

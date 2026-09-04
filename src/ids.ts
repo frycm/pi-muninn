@@ -160,6 +160,18 @@ export function isClaimId(value: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Team lifecycle declarations
+// ---------------------------------------------------------------------------
+
+export function newTeamEventId(): string {
+	return `t-${uuidv7()}`;
+}
+
+export function isTeamEventId(value: string): boolean {
+	return value.startsWith("t-") && UUID_V7.test(value.slice(2));
+}
+
+// ---------------------------------------------------------------------------
 // Display
 // ---------------------------------------------------------------------------
 

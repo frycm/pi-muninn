@@ -56,6 +56,7 @@ describe("muninn project-journal CLI", () => {
 		expect(help.code).toBe(0);
 		expect(help.out.join("\n")).toContain("muninn search QUERY");
 		expect(help.out.join("\n")).toContain("muninn correct ID TEXT");
+		expect(help.out.join("\n")).toContain("muninn team list");
 		const unknown = await runCli(["frobnicate"], cwd);
 		expect(unknown.code).toBe(2);
 		expect(unknown.err.join("\n")).toContain('unknown command "frobnicate"');
@@ -76,6 +77,35 @@ describe("muninn project-journal CLI", () => {
 		expect((await runCli(["status", "--json"], cwd)).out[0]).toContain(remote);
 		expect((await runCli(["project", "remote", "--remove"], cwd)).out).toEqual(["project journal remote removed"]);
 		expect((await runCli(["project", "remote"], cwd)).code).toBe(1);
+	});
+
+	it("declares and lists local member and host lifecycle state", async () => {
+		await note("Create a team journal.");
+		const host = loadHostIdentity(agentDir);
+		const renamed = await runCli(["team", "rename-member", "Marty", "--reason", "preferred name", "--json"], cwd);
+		expect(renamed.code).toBe(0);
+		expect(JSON.parse(renamed.out[0] as string)).toMatchObject({
+			schema: 1,
+			kind: "team-event",
+			event: { kind: "member-renamed", name: "Marty", reason: "preferred name" },
+		});
+		expect((await runCli(["team", "rename-host", host.id, "workstation"], cwd)).code).toBe(0);
+		expect((await runCli(["team", "retire-host", host.id], cwd)).code).toBe(0);
+		let roster = JSON.parse((await runCli(["team", "list", "--json"], cwd)).out[0] as string) as {
+			members: Array<{ name: string; state: string }>;
+			hosts: Array<{ name: string; state: string }>;
+		};
+		expect(roster.members[0]).toMatchObject({ name: "Marty", state: "active" });
+		expect(roster.hosts[0]).toMatchObject({ name: "workstation", state: "retired" });
+		expect((await runCli(["team", "restore-host", host.id], cwd)).code).toBe(0);
+		expect((await runCli(["team", "leave"], cwd)).code).toBe(0);
+		roster = JSON.parse((await runCli(["team", "list", "--json"], cwd)).out[0] as string);
+		expect(roster.members[0]?.state).toBe("retired");
+		expect(roster.hosts[0]?.state).toBe("retired");
+		expect((await runCli(["team", "return"], cwd)).code).toBe(0);
+		const text = await runCli(["team", "list"], cwd);
+		expect(text.out.join("\n")).toContain("● Marty");
+		expect(text.out.join("\n")).toContain("● workstation");
 	});
 
 	it("shares and joins a project journal on a fresh agent with one command", async () => {

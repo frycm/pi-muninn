@@ -117,6 +117,7 @@ function runtime(): CommandRuntime {
 			];
 		},
 		statusReport: () => "⟡ muninn 0.1.0 · project journal",
+		teamReport: () => "team: app · project-id\nmembers:\n  ● martin (you)",
 	};
 }
 
@@ -164,6 +165,12 @@ describe("/muninn project journal", () => {
 		const project = await runMuninnCommand("project", runtime());
 		expect(project.text).toContain(projectId);
 		expect(project.text).toContain("git common dir: /src/app/.git");
+	});
+
+	it("shows the read-only team roster", async () => {
+		const output = await runMuninnCommand("team", runtime());
+		expect(output.text).toContain("members:");
+		expect((await runMuninnCommand("team leave", runtime())).level).toBe("warning");
 	});
 
 	it("writes direct user notes and preserves text", async () => {

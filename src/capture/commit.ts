@@ -39,6 +39,8 @@ export interface CommitOptions {
 	identity?: GitIdentity;
 	/** Overrides the clock. Tests use it. */
 	now?: number;
+	/** A bounded caller-owned message for non-journal manifest operations. */
+	message?: string;
 }
 
 export interface CommitResult {
@@ -55,6 +57,7 @@ export function resetCommitDebounce(): void {
 }
 
 function message(options: CommitOptions): string {
+	if (options.message) return options.message;
 	const count = options.entries;
 	const noun = count === 1 ? "entry" : "entries";
 	return count > 0 ? `journal: ${options.hostName} ${count} ${noun}` : `journal: ${options.hostName}`;
