@@ -5,12 +5,11 @@
  * handlers and (from step 5) the capture path all see the same answer, and so
  * the expensive parts happen once per session rather than once per turn.
  */
-import { claimsOf } from "./journal/format.ts";
-import { readStoreJournal } from "./journal/read.ts";
+import { scanJournal } from "./journal/jsonl.ts";
 import { type ResolvedProject, resolveLogicalProject } from "./project/resolver.ts";
 import { type LoadedSettingsWithSources, loadSettings } from "./settings-io.ts";
 import { type HostIdentity, loadHostIdentity } from "./store/host.ts";
-import { ensureStore } from "./store/init.ts";
+import { ensureStore, projectStoreIdentity } from "./store/init.ts";
 import { storeExistsAt } from "./store/paths.ts";
 import { resolveScopes, type ScopeDecision } from "./store/scopes.ts";
 
@@ -67,13 +66,13 @@ export async function buildSessionContext(options: BuildSessionContextOptions): 
 		storeExists: storeExistsAt,
 	});
 
-	if (options.createStores) {
+	if (options.createStores && project) {
 		// Stores are owned repositories with separate locks, and this is
 		// on the path to the first keystroke, so they open side by side.
 		await Promise.all(
 			scopes.active.map(async (scope) => {
 				try {
-					const result = await ensureStore(scope.path, { host });
+					const result = await ensureStore(scope.path, projectStoreIdentity(project, host));
 					scope.exists = true;
 					problems.push(...result.problems.map((problem) => `${scope.scope} store: ${problem}`));
 				} catch (error) {
@@ -95,12 +94,11 @@ export interface ScopeJournalStats {
 	scope: string;
 	path: string;
 	entries: number;
-	claims: number;
 	problems: string[];
 }
 
 /**
- * Entry and claim counts per active scope.
+ * Record counts per active scope.
  *
  * Computed on demand for `/muninn` only, never at session start: counting means
  * parsing every daily file, and a session must not pay for a number nobody
@@ -108,12 +106,11 @@ export interface ScopeJournalStats {
  */
 export function journalStats(session: SessionContext): ScopeJournalStats[] {
 	return session.scopes.active.map((scope) => {
-		const read = readStoreJournal(scope.path);
+		const read = scanJournal(scope.path);
 		return {
 			scope: scope.scope,
 			path: scope.path,
-			entries: read.entries.length,
-			claims: read.entries.reduce((total, entry) => total + claimsOf(entry).length, 0),
+			entries: read.records.length,
 			problems: read.problems.map((problem) => `${problem.kind}: ${problem.message}`),
 		};
 	});

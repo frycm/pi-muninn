@@ -29,7 +29,7 @@ const execFileAsync = promisify(execFile);
  * Anything derived (`.index/`) is gitignored, and anything outside the store is
  * unreachable: `add` refuses an absolute path or one that climbs out.
  */
-const STAGEABLE = new Set([".gitignore", "store.md", "journal/"]);
+const STAGEABLE = new Set([".gitignore", "project.json", "migration.json", "journal/"]);
 
 export type GitCommand =
 	| { kind: "init" }
@@ -108,8 +108,8 @@ function assertName(kind: string, value: string): void {
  * A remote URL Muninn is willing to hand git.
  *
  * `ext::` and other transport helpers execute a command; a URL that starts
- * with `-` is a flag. Both are refused: `sync.remote` is a setting, and a
- * setting must not be a way to run a program.
+ * with `-` is a flag. Both are refused: project remote metadata must not be a
+ * way to run a program.
  */
 function assertRemoteUrl(url: string): void {
 	if (url.trim() === "" || url.startsWith("-") || /^ext::/i.test(url)) {
@@ -148,7 +148,7 @@ export function toArgv(command: GitCommand): string[] {
 		case "add":
 			for (const path of command.paths) assertStageable(path);
 			if (command.paths.length === 0) throw new Error("git add needs at least one path");
-			return ["add", "--", ...command.paths];
+			return ["add", "-A", "--", ...command.paths];
 		case "commit": {
 			if (command.message.trim() === "") throw new Error("git commit needs a message");
 			for (const path of command.paths) assertStageable(path);
@@ -317,8 +317,8 @@ export async function isGitRepository(path: string): Promise<boolean> {
  *
  * This one *does* swallow a missing git: it runs at session start to decide
  * whether a project scope exists, and a machine without git should get a
- * global store and a clear problem from the store it tries to open, not a
- * session that refuses to start.
+ * clear problem from the store it tries to open, not a session that refuses
+ * to start.
  */
 export async function gitToplevel(cwd: string): Promise<string | undefined> {
 	try {

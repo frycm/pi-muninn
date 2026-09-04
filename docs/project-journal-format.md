@@ -1,8 +1,7 @@
 # Logical project journal format
 
-> **Phase 3 target; not yet implemented.** The current release writes the
-> [Markdown journal format](journal-format.md). Migration preserves its stable IDs and
-> provenance while moving records into this format.
+> **Normative and implemented in Phase 3.** The legacy
+> [Markdown journal format](journal-format.md) remains readable only as migration input.
 
 The logical project journal is an append-only, sharded JSONL event stream. It records bounded
 session history and enough project/Git provenance to interpret that history from another
@@ -59,12 +58,20 @@ A reader handles damage locally:
   "project": "019c0111-1c2f-7d33-8e55-aa10b2c3d4e0",
   "name": "pi-muninn",
   "created_at": "2026-08-30T11:32:04.000Z",
-  "remote": null
+  "remote": "ssh://git.example/team/pi-muninn-journal.git",
+  "members": [
+    {"id": "019c0112-1c2f-7d33-8e55-aa10b2c3d4e0", "name": "martin"}
+  ],
+  "hosts": [
+    {"id": "019c0113-1c2f-7d33-8e55-aa10b2c3d4e0", "name": "mbp", "member": "019c0112-1c2f-7d33-8e55-aa10b2c3d4e0"}
+  ]
 }
 ```
 
-The project ID is immutable. The display name may change. A remote is set only through a
-user-level command; checked-in project configuration cannot select a store path or remote.
+The project ID is immutable. Member and host arrays are sorted unions keyed by immutable
+UUIDs. A host belongs to exactly one member; an ID observed with different metadata is a
+collision. The remote is set only through `muninn project remote`; checked-in code-project
+configuration cannot select a journal store path or remote.
 
 Project and member IDs are UUIDs stored in the user-owned project registry. The host UUID is
 kept in the agent-owned host identity file. Display names are local metadata and do not
@@ -215,7 +222,9 @@ only when:
 3. the file is available on the current host.
 
 A teammate can search and read the bounded journal record even when its transcript exists
-only on the originating host. The unavailable detail is reported explicitly.
+only on the originating host. The unavailable detail is reported explicitly in
+`journal_read` and `muninn show`; the CLI returns exit code `3` while still emitting the
+record.
 
 ## Git synchronization
 
@@ -225,6 +234,8 @@ violations stop the operation for attended resolution.
 
 The code repository remote is never used as journal identity. It may be shown as a linking
 hint, but only explicit user action connects a local project UUID to a shared journal remote.
+
+See [operations.md](operations.md) for team onboarding, migration and recovery procedures.
 
 ## Markdown migration
 

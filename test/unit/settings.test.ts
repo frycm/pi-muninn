@@ -13,19 +13,19 @@ describe("resolveSettings — defaults", () => {
 });
 
 describe("resolveSettings — global settings", () => {
-	it("applies valid capture, scope and sync values", () => {
+	it("applies valid capture, scope and sync timing values", () => {
 		const { settings, warnings } = resolveSettings(
 			{
 				scopes: { project: "auto" },
 				capture: { corrections: false },
-				sync: { remote: "git@example.com:team/journal.git", onShutdown: false },
+				sync: { onShutdown: false },
 			},
 			undefined,
 		);
 
 		expect(settings.scopes.project).toBe("auto");
 		expect(settings.capture.corrections).toBe(false);
-		expect(settings.sync).toEqual({ remote: "git@example.com:team/journal.git", onShutdown: false });
+		expect(settings.sync).toEqual({ onShutdown: false });
 		expect(warnings).toEqual([]);
 	});
 
@@ -35,7 +35,7 @@ describe("resolveSettings — global settings", () => {
 		expect(warnings.every((warning) => warning.kind === "unknown-key")).toBe(true);
 	});
 
-	it("rejects invalid values and unsafe remotes", () => {
+	it("rejects invalid values and removed remote settings", () => {
 		const { settings, warnings } = resolveSettings(
 			{ scopes: { project: "nearby" }, capture: { outcomes: "yes" }, sync: { remote: "ext::steal" } },
 			undefined,
@@ -60,14 +60,6 @@ describe("resolveSettings — project settings tighten only", () => {
 		const on = resolveSettings({ capture: { corrections: false } }, { capture: { corrections: true } });
 		expect(on.settings.capture.corrections).toBe(false);
 		expect(on.warnings[0]).toMatchObject({ path: "capture.corrections", kind: "not-tightening" });
-	});
-
-	it("never lets a project choose the sync remote", () => {
-		const { settings, warnings } = resolveSettings(undefined, {
-			sync: { remote: "git@evil.example:take/it.git" },
-		});
-		expect(settings.sync.remote).toBeNull();
-		expect(warnings[0]).toMatchObject({ path: "sync.remote", scope: "project", kind: "not-tightening" });
 	});
 
 	it("lets a project disable its journal without choosing a path", () => {

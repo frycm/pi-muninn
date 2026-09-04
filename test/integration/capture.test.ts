@@ -13,8 +13,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { StoreIndex } from "../../src/index/build.ts";
-import { readStoreJournal } from "../../src/journal/read.ts";
+import { scanJournal } from "../../src/journal/jsonl.ts";
+import { JournalQueryService } from "../../src/journal/query.ts";
+import { journalIndexPath } from "../../src/journal/query-index.ts";
 import { readProjectRegistry } from "../../src/project/registry.ts";
 import { projectStorePath } from "../../src/store/paths.ts";
 import { type MockProvider, startMockProvider } from "../fixtures/mock-provider.ts";
@@ -79,6 +80,10 @@ function projectStore(): string {
 	return projectStorePath(agentDir, registry?.projects[0]?.id as string);
 }
 
+function records() {
+	return scanJournal(projectStore()).records.map((item) => item.record);
+}
+
 function sessionFiles(): string[] {
 	const root = join(agentDir, "sessions");
 	if (!existsSync(root)) return [];
@@ -117,24 +122,21 @@ describe("capture through a real pi session", () => {
 		expect(output).toContain("npm install"); // the scripted model replied
 
 		const store = projectStore();
-		const journal = readStoreJournal(store);
+		const journal = scanJournal(store);
 		expect(journal.problems).toEqual([]);
-		expect(journal.entries).toHaveLength(1);
+		expect(journal.records).toHaveLength(1);
 
-		const entry = journal.entries[0];
+		const entry = journal.records[0]?.record;
 		expect(entry?.source).toBe("user");
-		expect(entry?.claims).toEqual(["Always use pnpm in this repo, never npm."]);
+		expect(entry?.body).toContain("Always use pnpm in this repo, never npm.");
 		expect(entry?.task).toBeDefined();
-		expect(entry?.session).toContain(".jsonl#");
-
-		// Global scope is active but is not the capture target.
-		expect(readStoreJournal(join(agentDir, "muninn")).entries).toEqual([]);
+		expect(entry?.session?.file).toContain(".jsonl");
 	}, 60_000);
 
 	it("does not journal an ordinary turn", async () => {
-		const before = readStoreJournal(projectStore()).entries.length;
+		const before = records().length;
 		await pi("Can you check the type errors please?");
-		expect(readStoreJournal(projectStore()).entries).toHaveLength(before);
+		expect(records()).toHaveLength(before);
 	}, 60_000);
 
 	it("persists its state into pi's own session file", async () => {
@@ -153,19 +155,17 @@ describe("capture through a real pi session", () => {
 		// the same session id forward or starts a new one and points back at the
 		// old, the two halves must end up in one task group — that group is what
 		// the evaluate phase holds out together.
-		const store = projectStore();
-
 		await pi("Note that the flaky test is checkout.spec.ts.");
-		const before = readStoreJournal(store).entries;
+		const before = records();
 		const priorTask = before[before.length - 1]?.task;
 		expect(priorTask).toBeDefined();
 
 		await pi("From now on, deploy only from the release branch.", ["--continue"]);
 
-		const after = readStoreJournal(store).entries;
+		const after = records();
 		expect(after.length).toBe(before.length + 1);
 		const resumed = after[after.length - 1];
-		expect(resumed?.claims[0]).toContain("release branch");
+		expect(resumed?.body).toContain("release branch");
 		expect(resumed?.continues ?? resumed?.task).toBe(priorTask);
 	}, 60_000);
 });
@@ -220,22 +220,15 @@ describe("journal commits", () => {
 	}, 60_000);
 });
 
-describe("the index, through a real pi session", () => {
-	it("is written to the store and finds what the session journaled", async () => {
+describe("the canonical index, through a real pi session", () => {
+	it("is rebuildable and finds what the session journaled", async () => {
 		await pi("Remember that vitest watch mode hangs the CI job.");
 
 		const store = projectStore();
-		expect(existsSync(join(store, ".index", "manifest.json"))).toBe(true);
-		expect(existsSync(join(store, ".index", "tier0.json"))).toBe(true);
-
-		// Opened from disk: what the session indexed while it ran is what a later
-		// reader finds. The one daily file the session appended to is re-read
-		// on open — by design, so that entries another session added to the
-		// same file meanwhile are picked up — but nothing is rebuilt.
-		const { index, result } = StoreIndex.open(store);
-		expect(result.kind).not.toBe("full");
-		expect(result.changed.every((path) => path.startsWith("journal/"))).toBe(true);
-		expect(index.search("vitest watch")[0]?.body).toContain("watch mode hangs");
+		const member = readProjectRegistry(agentDir)?.member.id as string;
+		const service = new JournalQueryService({ storePath: store, localMember: member, mode: "index" });
+		expect(existsSync(journalIndexPath(store))).toBe(true);
+		expect(service.query({ query: "vitest watch" }).records[0]?.snippet).toContain("watch mode hangs");
 	}, 60_000);
 
 	it("is never committed — it is derived and disposable", async () => {

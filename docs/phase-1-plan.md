@@ -34,9 +34,10 @@ properties remain requirements.
   transcript.
 - Search results are bounded before being returned to a model.
 
-### Scope and synchronization
+### Historical scope and synchronization
 
-- Global and project scopes are separate.
+- Phase 1 used separate global and project scopes; Phase 3 intentionally replaced them with
+  one logical-project journal.
 - Project settings may tighten user settings but cannot widen them or select a sync remote.
 - Each host writes its own journal path, reducing ordinary Git conflicts.
 - Sync commits only allowlisted store files, fetches, rebases and pushes.
@@ -51,9 +52,9 @@ properties remain requirements.
 - The standalone `muninn` binary provides headless status and synchronization.
 - No journal content is automatically inserted into a system prompt or turn.
 
-## Current format boundary
+## Legacy format boundary
 
-The implemented store contains:
+The migration input store contains:
 
 ```text
 <store>/
@@ -67,9 +68,9 @@ The implemented store contains:
 these entries into [project-journal-format.md](project-journal-format.md) while preserving
 IDs, timestamps, source, body, task grouping and session pointers.
 
-Phase 1 originally used the canonical checkout top-level as project identity. Phase 3 PR 1
-has replaced that boundary with a logical project UUID and Git-common-directory resolver;
-the temporary Markdown store now lives at that UUID path while migration is pending.
+Phase 1 originally used the canonical checkout top-level as project identity. Phase 3
+replaced that boundary with a logical project UUID and Git-common-directory resolver. The
+Markdown reader remains only for restartable import into the JSONL store.
 
 ## Foundation acceptance
 

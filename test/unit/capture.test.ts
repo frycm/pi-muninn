@@ -57,19 +57,18 @@ describe("decideCapture — what is not captured", () => {
 });
 
 describe("decideCapture — explicit", () => {
-	it("records the user's text as the claim", () => {
+	it("records the user's text in a note", () => {
 		const decision = decideCapture(input({ text: "Always use pnpm in this repo" }));
 		expect(decision?.kind).toBe("explicit");
-		expect(decision?.entry.claims).toEqual(["Always use pnpm in this repo"]);
-		expect(decision?.entry.prose).toBe("");
+		expect(decision?.entry.type).toBe("note");
+		expect(decision?.entry.body).toBe("- Always use pnpm in this repo");
 	});
 
 	it("splits bullets into separate claims", () => {
 		const decision = decideCapture(
 			input({ text: "Remember this:\n- deploys need the VPN\n- rollbacks are one command" }),
 		);
-		expect(decision?.entry.claims).toEqual(["deploys need the VPN", "rollbacks are one command"]);
-		expect(decision?.entry.prose).toBe("Remember this:");
+		expect(decision?.entry.body).toBe("Remember this:\n- deploys need the VPN\n- rollbacks are one command");
 	});
 
 	it("carries provenance, task grouping and channel", () => {
@@ -77,7 +76,7 @@ describe("decideCapture — explicit", () => {
 		expect(decision?.entry.source).toBe("user");
 		expect(decision?.entry.channel).toBe("rpc");
 		expect(decision?.entry.task).toBe(STATE.task);
-		expect(decision?.entry.phase).toBe("other");
+		expect(decision?.entry.tags).toEqual([]);
 	});
 
 	it("carries `continues` so a resumed session stays one task", () => {
@@ -88,7 +87,10 @@ describe("decideCapture — explicit", () => {
 
 	it("carries the evidence pointer when there is one", () => {
 		const pointer = "~/.pi/agent/sessions/--x--/y.jsonl#e5f6";
-		expect(decideCapture(input({ text: "Always use pnpm here", session: pointer }))?.entry.session).toBe(pointer);
+		expect(decideCapture(input({ text: "Always use pnpm here", session: pointer }))?.entry.session).toEqual({
+			file: "~/.pi/agent/sessions/--x--/y.jsonl",
+			last: "e5f6",
+		});
 	});
 });
 
@@ -100,15 +102,16 @@ describe("decideCapture — corrections", () => {
 		// would preserve exactly what the user just overruled.
 		const decision = decideCapture(input({ text: "No, use pnpm not npm", previousAssistantText }));
 		expect(decision?.kind).toBe("correction");
-		expect(decision?.entry.prose).toContain("The agent had said:");
-		expect(decision?.entry.prose).toContain("npm install");
-		expect(decision?.entry.claims).toEqual(["No, use pnpm not npm"]);
+		expect(decision?.entry.body).toContain("The agent had said:");
+		expect(decision?.entry.body).toContain("npm install");
+		expect(decision?.entry.body).toContain("No, use pnpm not npm");
+		expect(decision?.entry.tags).toEqual(["correction"]);
 	});
 
 	it("truncates a long previous turn instead of copying the whole thing", () => {
 		const decision = decideCapture(input({ text: "No, that is wrong", previousAssistantText: "x".repeat(2000) }));
-		expect(decision?.entry.prose.length).toBeLessThan(500);
-		expect(decision?.entry.prose).toContain("…");
+		expect(decision?.entry.body.length).toBeLessThan(520);
+		expect(decision?.entry.body).toContain("…");
 	});
 
 	it("is not a correction without a previous turn", () => {

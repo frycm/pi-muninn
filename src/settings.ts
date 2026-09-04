@@ -11,9 +11,9 @@
  *
  * Project settings are **tighten-only**. A `.pi/settings.json` travels with a
  * repository, so a cloned project must not be able to widen what Muninn does on
- * the machine that clones it: it cannot raise a budget, re-enable something the
- * user disabled globally or name the remote that history is pushed to. It can
- * always ask for *less*.
+ * the machine that clones it: it cannot re-enable something the user disabled
+ * globally. It can always ask for *less*. Journal remotes live in the explicit,
+ * user-owned project manifest rather than settings.
  */
 
 /** Automatically use a user-owned logical-project store, or disable it. */
@@ -21,10 +21,9 @@ export type ProjectScopeSetting = false | "auto";
 
 export interface MuninnSettings {
 	scopes: {
-		global: boolean;
 		project: ProjectScopeSetting;
 	};
-	sync: { remote: string | null; onShutdown: boolean };
+	sync: { onShutdown: boolean };
 	capture: {
 		corrections: boolean;
 		outcomes: boolean;
@@ -32,8 +31,8 @@ export interface MuninnSettings {
 }
 
 export const DEFAULT_SETTINGS: MuninnSettings = {
-	scopes: { global: true, project: "auto" },
-	sync: { remote: null, onShutdown: true },
+	scopes: { project: "auto" },
+	sync: { onShutdown: true },
 	capture: { corrections: true, outcomes: true },
 };
 
@@ -71,17 +70,11 @@ export interface LoadedSettings {
  *   Width is a rank: booleans false < true. Disabling a capture kind is a
  *   tightening operation under this rule.
  *
- * `global-only` — the project file may not set it at all. Used where a project
- *   value would widen behaviour in a way no ranking captures: naming a sync
- *   remote, which decides where project history is pushed.
  */
-type FieldPolicy = "lower-only" | "global-only";
-
-type FieldType = "boolean" | "string-or-null" | "project-scope";
+type FieldType = "boolean" | "project-scope";
 
 interface FieldSpec {
 	type: FieldType;
-	policy: FieldPolicy;
 }
 
 /**
@@ -93,13 +86,11 @@ interface FieldSpec {
  * path, or remote. Those are user-owned registry decisions outside the repo.
  */
 const FIELDS: Record<string, FieldSpec> = {
-	"scopes.global": { type: "boolean", policy: "lower-only" },
-	"scopes.project": { type: "project-scope", policy: "lower-only" },
-	"sync.remote": { type: "string-or-null", policy: "global-only" },
-	"sync.onShutdown": { type: "boolean", policy: "lower-only" },
+	"scopes.project": { type: "project-scope" },
+	"sync.onShutdown": { type: "boolean" },
 
-	"capture.corrections": { type: "boolean", policy: "lower-only" },
-	"capture.outcomes": { type: "boolean", policy: "lower-only" },
+	"capture.corrections": { type: "boolean" },
+	"capture.outcomes": { type: "boolean" },
 };
 
 const PROJECT_SCOPE_VALUES: ReadonlyArray<ProjectScopeSetting> = [false, "auto"];
@@ -164,15 +155,6 @@ function validate(
 	switch (spec.type) {
 		case "boolean":
 			return typeof value === "boolean" ? { ok: true, value } : bad("invalid-type", `"${path}" must be a boolean`);
-		case "string-or-null":
-			if (typeof value !== "string" && value !== null) return bad("invalid-type", `"${path}" must be a string or null`);
-			// A remote is handed to git. `ext::` runs a command and a leading `-`
-			// is a flag; neither is a place memory can be pushed to, and catching
-			// them here turns a stack trace at sync time into a settings warning.
-			if (typeof value === "string" && path.endsWith(".remote") && !isUsableRemote(value)) {
-				return bad("invalid-value", `"${path}" is not a git remote muninn will use: ${JSON.stringify(value)}`);
-			}
-			return { ok: true, value };
 		case "project-scope":
 			return PROJECT_SCOPE_VALUES.includes(value as ProjectScopeSetting)
 				? { ok: true, value }
@@ -254,16 +236,6 @@ export function resolveSettings(globalRaw: unknown, projectRaw: unknown): Loaded
 				const spec = FIELDS[path] as FieldSpec;
 				const result = validate(path, spec, value, "project", warnings);
 				if (!result.ok) continue;
-
-				if (spec.policy === "global-only") {
-					warnings.push({
-						path,
-						scope: "project",
-						kind: "not-tightening",
-						message: `"${path}" can only be set in global settings; project value ignored`,
-					});
-					continue;
-				}
 
 				if (path === "scopes.project") {
 					applyProjectScope(settings, result.value as ProjectScopeSetting, warnings);

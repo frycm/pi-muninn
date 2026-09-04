@@ -101,9 +101,7 @@ export function formatStatus(input: StatusInput): string {
 		} else {
 			input.journal.forEach((stats, index) => {
 				const label = index === 0 ? "journal  " : "         ";
-				lines.push(
-					`${label} ${stats.scope}: ${stats.entries} ${stats.entries === 1 ? "entry" : "entries"}, ${stats.claims} ${stats.claims === 1 ? "claim" : "claims"}`,
-				);
+				lines.push(`${label} ${stats.scope}: ${stats.entries} ${stats.entries === 1 ? "record" : "records"}`);
 				for (const problem of stats.problems) lines.push(`          ! ${problem}`);
 			});
 		}
@@ -123,7 +121,7 @@ export function formatStatus(input: StatusInput): string {
 	}
 
 	if (input.sync) {
-		lines.push(`sync      ${input.sync.remote ?? "no remote (sync.remote is unset)"}`);
+		lines.push(`sync      ${input.sync.remote ?? "no project journal remote configured"}`);
 		// In-session only: a timestamp that survived a restart would have to live
 		// in a file, and a status line is not worth a file format.
 		lines.push(`          ${input.sync.last ?? "no sync in this session"}`);
@@ -159,8 +157,6 @@ export function formatScopes(session: SessionContext): string {
 }
 
 export interface StatusLineExtras {
-	/** Retrieval tier actually in use. Phase 1 is always Tier 0. */
-	tier?: string;
 	/** Entries written this session and not yet committed. */
 	uncommitted?: number;
 }
@@ -175,7 +171,6 @@ export interface StatusLineExtras {
 export function formatStatusLine(session: SessionContext, extras: StatusLineExtras = {}): string {
 	const parts = ["⟡ muninn"];
 	parts.push(session.scopes.captureTarget ?? "no store");
-	if (extras.tier) parts.push(extras.tier);
 	if (extras.uncommitted) parts.push(`${extras.uncommitted} new`);
 	const trouble = session.loaded.warnings.length + session.problems.length;
 	if (trouble > 0) parts.push(`${trouble}⚠`);

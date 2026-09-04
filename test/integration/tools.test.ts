@@ -3,8 +3,8 @@
  *
  * The unit tests drive `execute` directly; this checks the part they cannot —
  * that pi accepts the registrations, hands the model the schemas, runs the
- * calls, and that a note written by `memory_note` is findable by
- * `memory_search` in the same run.
+ * calls, and that a note written by `journal_note` is findable by
+ * `journal_search` in the same run.
  */
 import { execFile, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { readStoreJournal } from "../../src/journal/read.ts";
+import { scanJournal } from "../../src/journal/jsonl.ts";
 import { readProjectRegistry } from "../../src/project/registry.ts";
 import { projectStorePath } from "../../src/store/paths.ts";
 import { type MockProvider, type MockRequest, startMockProvider } from "../fixtures/mock-provider.ts";
@@ -94,16 +94,16 @@ beforeAll(async () => {
 		if (step === 1) {
 			return {
 				toolCall: {
-					name: "memory_note",
+					name: "journal_note",
 					arguments: {
 						text: "Deploys need the VPN; the staging host is unreachable without it.",
 						cue: "when a deploy cannot reach staging",
-						phase: "ops",
+						tags: ["ops"],
 					},
 				},
 			};
 		}
-		if (step === 2) return { toolCall: { name: "memory_search", arguments: { query: "deploy VPN staging" } } };
+		if (step === 2) return { toolCall: { name: "journal_search", arguments: { query: "deploy VPN staging" } } };
 		return "Noted and confirmed.";
 	});
 
@@ -116,29 +116,31 @@ afterAll(async () => {
 	rmSync(home, { recursive: true, force: true });
 });
 
-describe("memory_note through pi", () => {
+describe("journal_note through pi", () => {
 	it("writes one entry attributed to the agent", () => {
-		const journal = readStoreJournal(store);
+		const journal = scanJournal(store);
 		expect(journal.problems).toEqual([]);
-		const notes = journal.entries.filter((entry) => entry.source === "agent");
+		const notes = journal.records.map((item) => item.record).filter((entry) => entry.source === "agent");
 		expect(notes).toHaveLength(1);
-		expect(notes[0]?.claims).toEqual(["Deploys need the VPN; the staging host is unreachable without it."]);
+		expect(notes[0]?.body).toBe("Deploys need the VPN; the staging host is unreachable without it.");
 		expect(notes[0]?.cue).toBe("when a deploy cannot reach staging");
-		expect(notes[0]?.phase).toBe("ops");
+		expect(notes[0]?.tags).toEqual(["ops"]);
 		// Print mode is a headless run, which is what `sdk` means.
 		expect(notes[0]?.channel).toBe("sdk");
-		expect(notes[0]?.session).toContain(".jsonl#");
+		expect(notes[0]?.session?.file).toContain(".jsonl");
+		expect(notes[0]?.session?.last).toBeTruthy();
 	});
 });
 
-describe("memory_search through pi", () => {
-	it("finds, in the same run, what memory_note just wrote", () => {
-		const note = readStoreJournal(store).entries.find((entry) => entry.source === "agent");
-		const claimId = `${note?.id}.1`;
+describe("journal_search through pi", () => {
+	it("finds, in the same run, what journal_note just wrote", () => {
+		const note = scanJournal(store)
+			.records.map((item) => item.record)
+			.find((entry) => entry.source === "agent");
 
 		// The tool result goes back to the model in the next request.
-		const afterSearch = mock.requests.filter((request: MockRequest) => request.raw.includes(claimId));
+		const afterSearch = mock.requests.filter((request: MockRequest) => request.raw.includes(note?.id as string));
 		expect(afterSearch.length).toBeGreaterThan(0);
-		expect(afterSearch.some((request) => request.raw.includes("scope: project"))).toBe(true);
+		expect(afterSearch.some((request) => request.raw.includes("local-agent"))).toBe(true);
 	});
 });

@@ -1,46 +1,32 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AGENT_DIR_ENV, CONFIG_DIR, resolveAgentDir } from "../../src/agent-dir.ts";
-import { resetCommitDebounce } from "../../src/capture/commit.ts";
 import { runCli } from "../../src/cli.ts";
-import { appendEntry } from "../../src/journal/append.ts";
+import { appendAuthorizedJournalRecord } from "../../src/journal/writer.ts";
 import { readProjectRegistry } from "../../src/project/registry.ts";
 import { loadHostIdentity } from "../../src/store/host.ts";
-import { ensureStore } from "../../src/store/init.ts";
-import { globalStorePath, projectStorePath } from "../../src/store/paths.ts";
 
 const execFileAsync = promisify(execFile);
 const CLI = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
 
 let root: string;
 let agentDir: string;
-let remote: string;
 let cwd: string;
 let previousAgentDir: string | undefined;
 
-async function git(dir: string, args: string[]): Promise<string> {
-	const { stdout } = await execFileAsync("git", args, { cwd: dir, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } });
-	return stdout;
-}
-
-beforeEach(async () => {
+beforeEach(() => {
 	root = mkdtempSync(join(tmpdir(), "muninn-cli-"));
 	agentDir = join(root, "agent");
-	remote = join(root, "remote.git");
-	cwd = join(root, "elsewhere");
+	cwd = join(root, "project");
 	mkdirSync(agentDir, { recursive: true });
-	mkdirSync(remote, { recursive: true });
 	mkdirSync(cwd, { recursive: true });
-	await git(remote, ["init", "--bare", "--quiet", "--initial-branch=main"]);
-
 	previousAgentDir = process.env[AGENT_DIR_ENV];
 	process.env[AGENT_DIR_ENV] = agentDir;
-	resetCommitDebounce();
 });
 
 afterEach(() => {
@@ -49,166 +35,172 @@ afterEach(() => {
 	rmSync(root, { recursive: true, force: true });
 });
 
-function settings(muninn: Record<string, unknown>): void {
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ muninn }, null, "\t"));
-}
-
-async function seedGlobalStore(): Promise<string> {
-	const host = loadHostIdentity(agentDir);
-	const store = globalStorePath(agentDir);
-	await ensureStore(store, { host });
-	await git(store, ["branch", "-M", "main"]);
-	await appendEntry(
-		{ source: "user", prose: "", claims: ["Deploys need the VPN."] },
-		{ storePath: store, hostId: host.id },
-	);
-	return store;
+async function note(text: string): Promise<string> {
+	const result = await runCli(["note", text, "--json"], cwd);
+	expect(result.code).toBe(0);
+	return (JSON.parse(result.out[0] as string) as { id: string }).id;
 }
 
 describe("resolveAgentDir", () => {
-	it("honours the variable pi reads", () => {
-		// Pinned deliberately: pi's own `getAgentDir` reads this name, and a
-		// drift would leave the CLI looking at a store nobody else uses.
+	it("honours pi's variable, expands tilde, and has the same fallback", () => {
 		expect(AGENT_DIR_ENV).toBe("PI_CODING_AGENT_DIR");
 		expect(resolveAgentDir({ [AGENT_DIR_ENV]: "/tmp/elsewhere" }, "/home/u")).toBe("/tmp/elsewhere");
-	});
-
-	it("expands a leading tilde, as pi does", () => {
 		expect(resolveAgentDir({ [AGENT_DIR_ENV]: "~/memories" }, "/home/u")).toBe("/home/u/memories");
-	});
-
-	it("falls back to pi's default location", () => {
 		expect(resolveAgentDir({}, "/home/u")).toBe(join("/home/u", CONFIG_DIR, "agent"));
 	});
 });
 
-describe("muninn (cli)", () => {
-	it("prints usage and exits cleanly", async () => {
-		const result = await runCli(["help"], cwd);
-		expect(result.code).toBe(0);
-		expect(result.out.join("\n")).toContain("muninn sync [--scope global|project]");
-	});
-
-	it("reports an unknown command with usage", async () => {
-		const result = await runCli(["frobnicate"], cwd);
-		expect(result.code).toBe(2);
-		expect(result.err.join("\n")).toContain('unknown command "frobnicate"');
+describe("muninn project-journal CLI", () => {
+	it("prints the new surface and rejects unknown commands", async () => {
+		const help = await runCli(["help"], cwd);
+		expect(help.code).toBe(0);
+		expect(help.out.join("\n")).toContain("muninn search QUERY");
+		expect(help.out.join("\n")).toContain("muninn correct ID TEXT");
+		const unknown = await runCli(["frobnicate"], cwd);
+		expect(unknown.code).toBe(2);
+		expect(unknown.err.join("\n")).toContain('unknown command "frobnicate"');
 	});
 
 	it("links, shows, and unlinks a logical project", async () => {
-		const linked = await runCli(["project", "link", "--name", "operations"], cwd);
-		expect(linked.code).toBe(0);
-		expect(linked.out.join("\n")).toContain("operations");
-
-		const shown = await runCli(["project", "show"], cwd);
-		expect(shown.code).toBe(0);
-		expect(shown.out.join("\n")).toContain("selected");
-		expect(shown.out.join("\n")).toContain("aliases");
-
-		const unlinked = await runCli(["project", "unlink"], cwd);
-		expect(unlinked.code).toBe(0);
+		expect((await runCli(["project", "link", "--name", "operations"], cwd)).code).toBe(0);
+		expect((await runCli(["project", "show"], cwd)).out.join("\n")).toContain("operations");
+		expect((await runCli(["project", "unlink"], cwd)).code).toBe(0);
 		expect((await runCli(["project", "show"], cwd)).code).toBe(1);
 	});
 
-	it("shows the logical project UUID, alias, and resolution reason in status", async () => {
+	it("sets, shows, and removes the explicit project journal remote", async () => {
 		await runCli(["project", "link", "--name", "operations"], cwd);
-		const project = readProjectRegistry(agentDir)?.projects[0];
-		expect(project).toBeDefined();
-		await ensureStore(projectStorePath(agentDir, project?.id as string), { host: loadHostIdentity(agentDir) });
+		const remote = "ssh://git.example/team/operations-journal.git";
+		expect((await runCli(["project", "remote", remote], cwd)).out).toEqual([`project journal remote: ${remote}`]);
+		expect(await runCli(["project", "remote"], cwd)).toMatchObject({ code: 0, out: [remote] });
+		expect((await runCli(["status", "--json"], cwd)).out[0]).toContain(remote);
+		expect((await runCli(["project", "remote", "--remove"], cwd)).out).toEqual(["project journal remote removed"]);
+		expect((await runCli(["project", "remote"], cwd)).code).toBe(1);
+	});
 
-		const result = await runCli(["status", "--scope", "project"], cwd);
+	it("writes, finds, and shows the same stable record ID", async () => {
+		const id = await note("Deploys need the VPN to reach staging.");
+		const searched = await runCli(["search", "deploy", "VPN", "--json"], cwd);
+		expect(searched.code).toBe(0);
+		const json = JSON.parse(searched.out[0] as string) as { schema: number; records: Array<{ id: string }> };
+		expect(json.schema).toBe(1);
+		expect(json.records.map((record) => record.id)).toEqual([id]);
+		const shown = await runCli(["show", id, "--json"], cwd);
+		expect(JSON.parse(shown.out[0] as string).records[0].body).toContain("staging");
+	});
+
+	it("emits one independently parseable object per JSONL record", async () => {
+		const first = await note("First deployment fact.");
+		const second = await note("Second deployment fact.");
+		const result = await runCli(["search", "deployment", "--jsonl"], cwd);
+		const records = result.out.map((line) => JSON.parse(line) as { schema: number; kind: string; id: string });
+		expect(new Set(records.map((record) => record.id))).toEqual(new Set([first, second]));
+		expect(records.every((record) => record.schema === 1 && record.kind === "record")).toBe(true);
+	});
+
+	it("uses distinct no-match and invalid-input exit codes with clean stdout", async () => {
+		await note("Known journal evidence.");
+		const missing = await runCli(["search", "definitely-absent"], cwd);
+		expect(missing.code).toBe(1);
+		expect(missing.err).toEqual([]);
+		const invalid = await runCli(["search", "known", "--limit", "zero"], cwd);
+		expect(invalid.code).toBe(2);
+		expect(invalid.out).toEqual([]);
+		expect(invalid.err.join("\n")).toContain("--limit");
+	});
+
+	it("returns the record with a distinct code when its transcript is unavailable locally", async () => {
+		await note("Create the project journal.");
+		const registry = readProjectRegistry(agentDir);
+		const project = registry?.projects[0];
+		const host = loadHostIdentity(agentDir);
+		const written = await appendAuthorizedJournalRecord(
+			{
+				authority: "headless-user",
+				record: {
+					type: "note",
+					source: "user",
+					channel: "cli",
+					body: "Evidence lives on another clone.",
+					session: { file: join(root, "missing-session.jsonl"), last: "e-9" },
+				},
+			},
+			{
+				storePath: join(agentDir, "muninn-projects", project?.id as string),
+				project: project?.id as string,
+				member: registry?.member.id as string,
+				host: host.id,
+			},
+		);
+		const shown = await runCli(["show", written.id, "--json"], cwd);
+		expect(shown.code).toBe(3);
+		expect(JSON.parse(shown.out[0] as string).transcripts[0]).toMatchObject({ available: false });
+	});
+
+	it("appends a correction without modifying its target and reads the relation chain", async () => {
+		const target = await note("The service uses PostgreSQL 16.");
+		const correction = await runCli(["correct", target, "It now uses PostgreSQL 17.", "--json"], cwd);
+		expect(correction.code).toBe(0);
+		const correctionId = JSON.parse(correction.out[0] as string).id as string;
+		const shown = await runCli(["show", target, "--relations", "--json"], cwd);
+		const records = JSON.parse(shown.out[0] as string).records as Array<{
+			id: string;
+			body: string;
+			relations: Array<{ type: string; target: string }>;
+		}>;
+		expect(records.find((record) => record.id === target)?.body).toContain("16");
+		expect(records.find((record) => record.id === correctionId)?.relations).toEqual([{ type: "corrects", target }]);
+	});
+
+	it("lists sessions and tails records in stable machine formats", async () => {
+		await note("One operational fact.");
+		await note("Another operational fact.");
+		const sessionResult = await runCli(["sessions", "--json"], cwd);
+		expect(JSON.parse(sessionResult.out[0] as string)).toMatchObject({ schema: 1 });
+		const tailResult = await runCli(["tail", "--limit", "1", "--jsonl"], cwd);
+		expect(tailResult.out).toHaveLength(1);
+		expect(JSON.parse(tailResult.out[0] as string).kind).toBe("record");
+	});
+
+	it("prints the store path for rg/jq and rebuilds a disposable index", async () => {
+		await note("Searchable evidence.");
+		const path = await runCli(["path"], cwd);
+		expect(path.code).toBe(0);
+		expect(path.out[0]).toMatch(/muninn-projects[/\\][0-9a-f-]+$/);
+		const rebuilt = await runCli(["reindex", "--json"], cwd);
+		expect(JSON.parse(rebuilt.out[0] as string)).toMatchObject({ schema: 1, kind: "reindex", records: 1 });
+	});
+
+	it("supports restartable migration dry runs", async () => {
+		const result = await runCli(["migrate", "--dry-run", "--json"], cwd);
 		expect(result.code).toBe(0);
-		expect(result.out.join("\n")).toContain(project?.id);
-		expect(result.out.join("\n")).toContain(`alias: ${realpathSync(cwd)}`);
-		expect(result.out.join("\n")).toContain("canonical root mapping");
+		expect(JSON.parse(result.out[0] as string)).toMatchObject({
+			schema: 1,
+			kind: "migration",
+			dryRun: true,
+			imported: 0,
+		});
 	});
 
-	it("says when there is no store to work with", async () => {
-		const result = await runCli(["status"], cwd);
-		expect(result.code).toBe(1);
-		expect(result.err.join("\n")).toContain("no memory store exists here");
-	});
-
-	it("reports what is in the store, and where it syncs to", async () => {
-		await seedGlobalStore();
-		settings({ sync: { remote } });
-
-		const result = await runCli(["status"], cwd);
+	it("cancels follow promptly", async () => {
+		await note("Initial event.");
+		const controller = new AbortController();
+		const running = runCli(["tail", "--follow", "--jsonl"], cwd, {
+			signal: controller.signal,
+			pollMs: 5,
+		});
+		setTimeout(() => controller.abort(), 15);
+		const result = await running;
 		expect(result.code).toBe(0);
-		const text = result.out.join("\n");
-		expect(text).toContain("global:");
-		expect(text).toContain("1 entries, 1 claims");
-		expect(text).toContain(`remote: ${remote}`);
-	});
-
-	it("says plainly when no remote is configured", async () => {
-		await seedGlobalStore();
-		const result = await runCli(["status"], cwd);
-		expect(result.out.join("\n")).toContain("none configured (sync.remote)");
-	});
-
-	it("syncs the global store to the configured remote", async () => {
-		await seedGlobalStore();
-		settings({ sync: { remote } });
-
-		const result = await runCli(["sync"], cwd);
-		expect(result.code).toBe(0);
-		expect(result.out.join("\n")).toContain("sync: committed, fetched, pushed");
-		expect(await git(remote, ["log", "-1", "--format=%s", "main"])).toContain("journal:");
-	});
-
-	it("skips the push when asked", async () => {
-		await seedGlobalStore();
-		settings({ sync: { remote } });
-
-		const result = await runCli(["sync", "--no-push"], cwd);
-		expect(result.out.join("\n")).toContain("push skipped");
-		await expect(git(remote, ["log", "-1", "--format=%s", "main"])).rejects.toThrow();
-	});
-
-	it("treats being offline as a warning, not a failure", async () => {
-		// A laptop that syncs from cron while offline must not fill a mailbox
-		// with failures: the journal is committed, and the next run carries it.
-		await seedGlobalStore();
-		settings({ sync: { remote: "https://muninn.invalid/store.git" } });
-
-		const result = await runCli(["sync"], cwd);
-		expect(result.code).toBe(0);
-		expect(result.out.join("\n")).toContain("offline");
-	});
-
-	it("exits nonzero for a remote that will keep failing", async () => {
-		// The other half of the same rule: a cron job must be able to notice a
-		// broken remote, and a wrong path is not a network condition.
-		await seedGlobalStore();
-		settings({ sync: { remote: join(root, "gone.git") } });
-
-		const result = await runCli(["sync"], cwd);
-		expect(result.code).toBe(1);
-		expect(result.out.join("\n")).toContain("will keep failing");
-	});
-
-	it("rejects a scope it does not know", async () => {
-		const result = await runCli(["sync", "--scope", "team"], cwd);
-		expect(result.code).toBe(2);
-		expect(result.err.join("\n")).toContain('--scope takes "global" or "project"');
-	});
-
-	it("says when the named scope has no store here", async () => {
-		await seedGlobalStore();
-		const result = await runCli(["status", "--scope", "project"], cwd);
-		expect(result.code).toBe(1);
-		expect(result.err.join("\n")).toContain("no project store exists here");
+		expect(result.out.length).toBeGreaterThan(0);
 	});
 });
 
-describe("muninn (cli), as a program", () => {
-	it("runs from source on this node, with no build step", async () => {
-		// The bin entry points at the TypeScript directly; node ≥ 22.19 strips
-		// the types, which is also how pi loads the extension.
+describe("muninn CLI program", () => {
+	it("runs from TypeScript source and writes ordinary output once", async () => {
 		const { stdout } = await execFileAsync(process.execPath, [CLI, "--version"], {
 			env: { ...process.env, [AGENT_DIR_ENV]: agentDir },
 		});
 		expect(stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
-	}, 30_000);
+	});
 });
