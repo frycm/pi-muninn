@@ -188,8 +188,9 @@ describe("/muninn project journal", () => {
 			session: { file: "/sessions/task.jsonl", last: "entry-1" },
 			git: { cwd: "/src/app", branch: "feature/ci", head: null, dirty: false },
 		});
-		const searched = await runMuninnCommand('search "vitest watch" --branch feature/ci', runtime());
+		const searched = await runMuninnCommand('search "vitest watch" --branch feature/ci --explain', runtime());
 		expect(searched.text).toContain(written.id);
+		expect(searched.text).toContain("why: direct");
 		const shown = await runMuninnCommand(`show ${written.id}`, runtime());
 		expect(shown.text).toContain("CI runner");
 		const sessions = await runMuninnCommand("sessions --branch feature/ci", runtime());

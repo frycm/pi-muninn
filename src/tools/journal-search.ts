@@ -2,6 +2,7 @@
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { RECORD_SOURCES, RECORD_STATUSES, RECORD_TYPES } from "../journal/record.ts";
+import { JOURNAL_TRUST_LABELS, RELATION_LABELS } from "../journal/relations.ts";
 import { type JournalToolRuntime, jsonToolResult, requireJournalSession, throwIfAborted } from "./journal-runtime.ts";
 
 const literalUnion = (values: readonly string[]) => Type.Union(values.map((value) => Type.Literal(value)));
@@ -19,11 +20,14 @@ export const JOURNAL_SEARCH_PARAMETERS = Type.Object({
 	path: Type.Optional(Type.Array(Type.String(), { maxItems: 50 })),
 	tag: Type.Optional(Type.Array(Type.String(), { maxItems: 50 })),
 	status: Type.Optional(Type.Array(literalUnion(RECORD_STATUSES), { maxItems: RECORD_STATUSES.length })),
+	trust: Type.Optional(Type.Array(literalUnion(JOURNAL_TRUST_LABELS), { maxItems: JOURNAL_TRUST_LABELS.length })),
+	label: Type.Optional(Type.Array(literalUnion(RELATION_LABELS), { maxItems: RELATION_LABELS.length })),
 	since: Type.Optional(Type.String()),
 	until: Type.Optional(Type.String()),
 	relatedTo: Type.Optional(Type.String()),
 	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
 	cursor: Type.Optional(Type.String()),
+	explain: Type.Optional(Type.Boolean({ description: "Include a bounded score explanation for every result." })),
 });
 
 export type JournalSearchParams = Static<typeof JOURNAL_SEARCH_PARAMETERS>;

@@ -185,8 +185,8 @@ An empty textual query with filters is valid. Exact IDs rank first. Lexical matc
 cue, paths and tags with documented fixed weights. Direct user corrections are returned with
 their targets but do not erase them. Recency and Git proximity are bounded secondary signals.
 
-The canonical implementation can scan JSONL without an index. MiniSearch or another local
-index accelerates it and is verified against scan-mode fixtures.
+The canonical implementation can scan JSONL without an index. The implemented disposable
+local postings index accelerates it and is verified against scan-mode fixtures.
 
 ## Interfaces
 
@@ -456,10 +456,11 @@ separate encrypted capability with explicit policy.
 
 ### Phase 5 — retrieval quality and scale
 
-Phase 5 evaluates real journal queries and improves deterministic retrieval: full-text/fuzzy
-indexes, Git/path-aware ranking, query explanation and larger histories. Local embeddings are
-considered only if measured misses justify their cost and opacity. Canonical JSONL scan stays
-the correctness oracle.
+Phase 5 is complete: it added explicit relevance evaluation, deterministic phrase/prefix/
+one-edit ranking, projected filters, score explanations, index equivalence and a 50,000-record
+gate. The eight-query fixture reaches Recall@10 `1.0`; it is below the 50-real-query embedding
+experiment gate, so no embedding store was added. Canonical JSONL scan stays the correctness
+oracle.
 
 ### Phase 6 — integrations
 

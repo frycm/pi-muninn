@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,9 +57,27 @@ describe("muninn project-journal CLI", () => {
 		expect(help.out.join("\n")).toContain("muninn search QUERY");
 		expect(help.out.join("\n")).toContain("muninn correct ID TEXT");
 		expect(help.out.join("\n")).toContain("muninn team list");
+		expect(help.out.join("\n")).toContain("muninn evaluate JUDGMENTS.jsonl");
 		const unknown = await runCli(["frobnicate"], cwd);
 		expect(unknown.code).toBe(2);
 		expect(unknown.err.join("\n")).toContain('unknown command "frobnicate"');
+	});
+
+	it("evaluates explicit relevance judgments through scan mode", async () => {
+		const id = await note("Canary deployments use a progressive rollout.");
+		const judgments = join(root, "judgments.jsonl");
+		writeFileSync(judgments, `${JSON.stringify({ id: "canary", query: "progressive rollout", relevant: [id] })}\n`);
+		const result = await runCli(["evaluate", judgments, "--json"], cwd);
+		expect(result).toMatchObject({ code: 0, err: [] });
+		expect(JSON.parse(result.out[0] as string)).toMatchObject({
+			schema: 1,
+			kind: "journal-evaluation",
+			evaluated: 1,
+			metrics: { recall_at_10: 1, mrr_at_10: 1, ndcg_at_10: 1 },
+		});
+		const invalid = join(root, "invalid-judgments.jsonl");
+		writeFileSync(invalid, "{bad\n");
+		expect(await runCli(["evaluate", invalid], cwd)).toMatchObject({ code: 2, out: [] });
 	});
 
 	it("emits a clean machine-readable doctor report without initializing a fresh agent", async () => {
@@ -166,11 +184,15 @@ describe("muninn project-journal CLI", () => {
 
 	it("writes, finds, and shows the same stable record ID", async () => {
 		const id = await note("Deploys need the VPN to reach staging.");
-		const searched = await runCli(["search", "deploy", "VPN", "--json"], cwd);
+		const searched = await runCli(["search", "deploy", "VPN", "--trust", "local-user", "--explain", "--json"], cwd);
 		expect(searched.code).toBe(0);
-		const json = JSON.parse(searched.out[0] as string) as { schema: number; records: Array<{ id: string }> };
+		const json = JSON.parse(searched.out[0] as string) as {
+			schema: number;
+			records: Array<{ id: string; explanation?: { total: number }; score: number }>;
+		};
 		expect(json.schema).toBe(1);
 		expect(json.records.map((record) => record.id)).toEqual([id]);
+		expect(json.records[0]?.explanation?.total).toBe(json.records[0]?.score);
 		const shown = await runCli(["show", id, "--json"], cwd);
 		expect(JSON.parse(shown.out[0] as string).records[0].body).toContain("staging");
 	});
@@ -193,6 +215,9 @@ describe("muninn project-journal CLI", () => {
 		expect(invalid.code).toBe(2);
 		expect(invalid.out).toEqual([]);
 		expect(invalid.err.join("\n")).toContain("--limit");
+		const unbounded = await runCli(["search", ...Array.from({ length: 65 }, (_, index) => `term-${index}`)], cwd);
+		expect(unbounded.code).toBe(2);
+		expect(unbounded.err.join("\n")).toContain("64 distinct terms");
 	});
 
 	it("returns the record with a distinct code when its transcript is unavailable locally", async () => {
@@ -228,6 +253,12 @@ describe("muninn project-journal CLI", () => {
 		const correction = await runCli(["correct", target, "It now uses PostgreSQL 17.", "--json"], cwd);
 		expect(correction.code).toBe(0);
 		const correctionId = JSON.parse(correction.out[0] as string).id as string;
+		const filtered = JSON.parse(
+			(await runCli(["search", "--label", "correction", "--json"], cwd)).out[0] as string,
+		) as {
+			records: Array<{ id: string }>;
+		};
+		expect(filtered.records.map((record) => record.id)).toEqual([correctionId]);
 		const shown = await runCli(["show", target, "--relations", "--json"], cwd);
 		const records = JSON.parse(shown.out[0] as string).records as Array<{
 			id: string;

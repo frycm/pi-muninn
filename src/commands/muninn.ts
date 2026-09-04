@@ -41,7 +41,7 @@ export const USAGE = [
 	"/muninn — project journal",
 	"",
 	"  /muninn                              status",
-	"  /muninn search QUERY [FILTERS]",
+	"  /muninn search QUERY [FILTERS] [--explain]",
 	"  /muninn show ID [--relations]",
 	"  /muninn sessions [FILTERS]",
 	"  /muninn tail [FILTERS]",
@@ -133,9 +133,12 @@ async function service(runtime: CommandRuntime): Promise<JournalQueryService> {
 }
 
 async function search(args: string, runtime: CommandRuntime): Promise<CommandOutput> {
-	const parsed = parseJournalQueryArgs(splitArgs(args), { positionalQuery: true });
-	if (!parsed.query.query && Object.keys(parsed.query).length === 0) {
-		return { level: "warning", text: "muninn: /muninn search QUERY [FILTERS]" };
+	const parsed = parseJournalQueryArgs(splitArgs(args), { positionalQuery: true, allowExplain: true });
+	if (
+		!parsed.query.query &&
+		!Object.entries(parsed.query).some(([key, value]) => key !== "explain" && value !== undefined)
+	) {
+		return { level: "warning", text: "muninn: /muninn search QUERY [FILTERS] [--explain]" };
 	}
 	const result = (await service(runtime)).query(parsed.query);
 	return { level: "info", text: renderSearch(result, "text").join("\n") };

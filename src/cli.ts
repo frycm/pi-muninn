@@ -7,6 +7,12 @@ import { resolveAgentDir } from "./agent-dir.ts";
 import { commitJournal } from "./capture/commit.ts";
 import { diagnoseProject, renderDoctor } from "./doctor.ts";
 import {
+	evaluateJournal,
+	JournalEvaluationError,
+	readJournalEvaluation,
+	renderJournalEvaluation,
+} from "./journal/evaluate.ts";
+import {
 	collectSearchRecords,
 	JournalArgumentError,
 	type JournalOutputMode,
@@ -23,7 +29,7 @@ import {
 import { scanJournal } from "./journal/jsonl.ts";
 import { discoverLegacyStoreCandidates, inventoryLegacyStores, migrateMarkdownStores } from "./journal/migrate.ts";
 import { collectGitProvenance } from "./journal/provenance.ts";
-import { JournalQueryService } from "./journal/query.ts";
+import { JournalQueryError, JournalQueryService } from "./journal/query.ts";
 import type { NewJournalRecord } from "./journal/record.ts";
 import { appendAuthorizedJournalRecord, appendUserRelation, resolveUserConflict } from "./journal/writer.ts";
 import { runProjectCommand } from "./project/command.ts";
@@ -40,7 +46,7 @@ import { MUNINN_VERSION } from "./version.ts";
 const USAGE = [
 	`muninn ${MUNINN_VERSION} — project journal`,
 	"",
-	"  muninn search QUERY [FILTERS] [--json|--jsonl]",
+	"  muninn search QUERY [FILTERS] [--explain] [--json|--jsonl]",
 	"  muninn show ID [--relations] [--json|--jsonl]",
 	"  muninn sessions [FILTERS] [--json|--jsonl]",
 	"  muninn tail [FILTERS] [--follow] [--jsonl]",
@@ -63,8 +69,9 @@ const USAGE = [
 	"  muninn status [--json]",
 	"  muninn sync [--no-push]",
 	"  muninn doctor [--json]",
+	"  muninn evaluate JUDGMENTS.jsonl [--json]",
 	"",
-	"Filters: --id --type --source --member --host --branch --path --tag --status",
+	"Filters: --id --type --source --member --host --branch --path --tag --status --trust --label",
 	"         --since --until --related-to --limit --cursor",
 	"",
 	"Exit 0: success; 1: no match/store or operation failure; 2: invalid input; 3: transcript unavailable.",
@@ -90,7 +97,12 @@ interface ProjectContext {
 	service: JournalQueryService;
 }
 
-async function projectContext(cwd: string, create: boolean, forceReindex = false): Promise<ProjectContext> {
+async function projectContext(
+	cwd: string,
+	create: boolean,
+	forceReindex = false,
+	mode: "scan" | "index" = "index",
+): Promise<ProjectContext> {
 	const agentDir = resolveAgentDir();
 	const host = loadHostIdentity(agentDir);
 	const project = await resolveLogicalProject({ agentDir, cwd, hostId: host.id, create });
@@ -107,7 +119,7 @@ async function projectContext(cwd: string, create: boolean, forceReindex = false
 		service: new JournalQueryService({
 			storePath: project.storePath,
 			localMember: project.member.id,
-			mode: "index",
+			mode,
 			forceReindex,
 			transcriptRoots: [join(agentDir, "sessions")],
 		}),
@@ -138,6 +150,16 @@ export async function runCli(
 			return {
 				code: result.summary.errors > 0 ? 1 : 0,
 				out: flags.has("json") ? [JSON.stringify(result)] : renderDoctor(result),
+				err,
+			};
+		}
+		if (command === "evaluate") {
+			const parsed = parseEvaluationArgs(args);
+			const context = await projectContext(cwd, false, false, "scan");
+			const report = evaluateJournal(context.service, readJournalEvaluation(resolve(cwd, parsed.path)));
+			return {
+				code: report.problems.length > 0 ? 1 : 0,
+				out: parsed.json ? [JSON.stringify(report)] : renderJournalEvaluation(report),
 				err,
 			};
 		}
@@ -270,7 +292,7 @@ export async function runCli(
 			};
 		}
 		if (command === "search") {
-			const parsed = parseJournalQueryArgs(args, { positionalQuery: true });
+			const parsed = parseJournalQueryArgs(args, { positionalQuery: true, allowExplain: true });
 			if (!parsed.query.query && !hasFilters(parsed.query)) {
 				throw new JournalArgumentError("search needs a query or at least one filter");
 			}
@@ -482,9 +504,27 @@ export async function runCli(
 		return { code: 2, out, err: [`muninn: unknown command "${command}"`, "", USAGE] };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		const code = error instanceof JournalArgumentError ? 2 : 1;
+		const code =
+			error instanceof JournalArgumentError ||
+			error instanceof JournalEvaluationError ||
+			error instanceof JournalQueryError
+				? 2
+				: 1;
 		return { code, out, err: [message.startsWith("muninn:") ? message : `muninn: ${message}`] };
 	}
+}
+
+function parseEvaluationArgs(args: readonly string[]): { path: string; json: boolean } {
+	let path: string | undefined;
+	let json = false;
+	for (const arg of args) {
+		if (arg === "--json") json = true;
+		else if (arg.startsWith("--")) throw new JournalArgumentError(`unknown evaluation option ${arg}`);
+		else if (path) throw new JournalArgumentError("evaluate takes one judgment file");
+		else path = arg;
+	}
+	if (!path) throw new JournalArgumentError("evaluate needs a judgment file");
+	return { path, json };
 }
 
 function parseProjectShareArgs(args: readonly string[]): { path?: string; json: boolean } {
@@ -570,7 +610,7 @@ function parseTeamArgs(args: readonly string[]): {
 }
 
 function hasFilters(query: object): boolean {
-	return Object.entries(query).some(([key, value]) => key !== "query" && value !== undefined);
+	return Object.entries(query).some(([key, value]) => key !== "query" && key !== "explain" && value !== undefined);
 }
 
 function shellQuote(value: string): string {

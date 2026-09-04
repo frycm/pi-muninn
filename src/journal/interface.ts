@@ -8,6 +8,7 @@ import type {
 	JournalSearchRecord,
 } from "./query.ts";
 import { type JournalRecord, type JournalStatus, RECORD_SOURCES, RECORD_STATUSES, RECORD_TYPES } from "./record.ts";
+import { JOURNAL_TRUST_LABELS, RELATION_LABELS } from "./relations.ts";
 
 export const JOURNAL_INTERFACE_SCHEMA = 1 as const;
 export type JournalOutputMode = "text" | "json" | "jsonl";
@@ -36,6 +37,8 @@ const ARRAY_FILTERS = new Map<string, keyof JournalQuery>([
 	["path", "path"],
 	["tag", "tag"],
 	["status", "status"],
+	["trust", "trust"],
+	["label", "label"],
 ]);
 
 function values(value: string): string[] {
@@ -62,7 +65,7 @@ function enumValues<T extends string>(items: string[], allowed: readonly T[], fl
 /** Parse the same filter vocabulary for CLI and attended commands. */
 export function parseJournalQueryArgs(
 	args: readonly string[],
-	options: { positionalQuery?: boolean; allowFollow?: boolean; allowRelations?: boolean } = {},
+	options: { positionalQuery?: boolean; allowFollow?: boolean; allowRelations?: boolean; allowExplain?: boolean } = {},
 ): ParsedJournalQuery {
 	const query: JournalQuery = {};
 	const words: string[] = [];
@@ -95,6 +98,11 @@ export function parseJournalQueryArgs(
 			relations = true;
 			continue;
 		}
+		if (flag === "explain") {
+			if (!options.allowExplain) throw new JournalArgumentError("--explain is only valid for search");
+			query.explain = true;
+			continue;
+		}
 		const arrayKey = ARRAY_FILTERS.get(flag);
 		if (arrayKey) {
 			const parsed = values(requireValue(args, at, flag));
@@ -106,7 +114,11 @@ export function parseJournalQueryArgs(
 						? enumValues(parsed, RECORD_SOURCES, flag)
 						: arrayKey === "status"
 							? enumValues(parsed, RECORD_STATUSES, flag)
-							: parsed;
+							: arrayKey === "trust"
+								? enumValues(parsed, JOURNAL_TRUST_LABELS, flag)
+								: arrayKey === "label"
+									? enumValues(parsed, RELATION_LABELS, flag)
+									: parsed;
 			(query as Record<string, unknown>)[arrayKey] = [
 				...((query as Record<string, string[]>)[arrayKey] ?? []),
 				...checked,
@@ -145,7 +157,10 @@ export function renderSearch(result: JournalQueryResult, mode: JournalOutputMode
 	if (result.records.length === 0) return ["muninn: no journal records matched"];
 	return [
 		`${result.records.length} journal ${result.records.length === 1 ? "record" : "records"}:`,
-		...result.records.map(formatSearchRecord),
+		...result.records.flatMap((record) => [
+			formatSearchRecord(record),
+			...(record.explanation ? [`  why: ${formatExplanation(record.explanation)}`] : []),
+		]),
 		...(result.next_cursor ? [`next cursor: ${result.next_cursor}`] : []),
 		...result.warnings.map((warning) => `! ${warning}`),
 	];
@@ -198,6 +213,27 @@ export function renderConflicts(result: JournalConflictsResult, mode: JournalOut
 function formatSearchRecord(record: JournalSearchRecord): string {
 	const labels = record.labels.length > 0 ? ` · ${record.labels.join(",")}` : "";
 	return `${record.at} · ${record.id} · ${record.type}/${record.source} · ${record.trust}${labels} · ${record.snippet}`;
+}
+
+function formatExplanation(explanation: NonNullable<JournalSearchRecord["explanation"]>): string {
+	const components = explanation.components;
+	const origin =
+		explanation.match === "relation-expanded"
+			? `relation-expanded from ${explanation.expanded_from} (${explanation.relation_type})`
+			: explanation.exact_id
+				? "direct exact-id"
+				: "direct";
+	const evidence = [
+		...explanation.phrases.map((phrase) => `phrase:${phrase.field}`),
+		...explanation.terms.map((term) => `${term.term}=${term.matched}/${term.field}/${term.kind}`),
+	];
+	return [
+		origin,
+		`lexical ${components.lexical} + relation ${components.relation} + git ${components.git} + recency ${components.recency} = ${explanation.total}`,
+		`coverage ${explanation.coverage.matched}/${explanation.coverage.total}`,
+		...(evidence.length > 0 ? [evidence.join(", ")] : []),
+		...(explanation.evidence_truncated ? ["evidence truncated"] : []),
+	].join(" · ");
 }
 
 export interface JournalSessionSummary {

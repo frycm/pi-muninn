@@ -12,11 +12,11 @@ The design is local-first and composable: append-only JSONL, Git synchronization
 retrieval and no hosted service in the storage or search path.
 
 > [!IMPORTANT]
-> Phases 3 and 4 are implemented. Linked worktrees and team clones share one sharded JSONL
-> project journal with validated onboarding, advisory lifecycle declarations, explicit
-> conflict resolution and read-only diagnostics. Automatic capture, model tools, attended
-> commands and Unix interfaces all use the same canonical service. Journal content is never
-> injected into prompts.
+> Phases 3 through 5 are implemented; Phase 6 is next. Linked worktrees and team clones
+> share one sharded JSONL project journal with validated onboarding, advisory lifecycle
+> declarations, explicit conflict resolution and read-only diagnostics. Automatic capture,
+> model tools, attended commands and Unix interfaces all use the same canonical service.
+> Journal content is never injected into prompts.
 
 The legacy Markdown migration-input contract is
 [docs/journal-format.md](docs/journal-format.md). The JSONL contract is
@@ -25,7 +25,8 @@ sequence is [docs/phase-3-plan.md](docs/phase-3-plan.md).
 The implemented identity and registry contract is
 [docs/project-registry.md](docs/project-registry.md). Team onboarding, migration and recovery
 are covered by [docs/operations.md](docs/operations.md). The implemented Phase 4 contract is
-[docs/phase-4-plan.md](docs/phase-4-plan.md).
+[docs/phase-4-plan.md](docs/phase-4-plan.md). Retrieval evaluation, explanation and scale are
+implemented in [docs/phase-5-plan.md](docs/phase-5-plan.md).
 
 ## Why a project journal
 
@@ -74,7 +75,7 @@ Current model tools:
 
 | Tool | Purpose |
 |---|---|
-| `journal_search` | Search this logical project's journal with bounded filters and pagination. |
+| `journal_search` | Search this logical project's journal with bounded filters, explanations and pagination. |
 | `journal_read` | Read one record by stable ID with a bounded relation neighborhood. |
 | `journal_context` | Batch records already selected by stable ID under a hard output budget. |
 | `journal_note` | Append an agent-authored note or annotation; never a user correction. |
@@ -83,7 +84,7 @@ Current attended commands:
 
 ```text
 /muninn
-/muninn search QUERY [FILTERS]
+/muninn search QUERY [FILTERS] [--explain]
 /muninn show ID [--relations]
 /muninn sessions [FILTERS]
 /muninn tail [FILTERS]
@@ -100,7 +101,7 @@ Current attended commands:
 Current headless commands:
 
 ```text
-muninn search QUERY [FILTERS] [--json|--jsonl]
+muninn search QUERY [FILTERS] [--explain] [--json|--jsonl]
 muninn show ID [--relations] [--json|--jsonl]
 muninn sessions [FILTERS] [--json|--jsonl]
 muninn tail [FILTERS] [--follow] [--jsonl]
@@ -126,6 +127,7 @@ muninn reindex [--json]
 muninn status [--json]
 muninn sync [--no-push]
 muninn doctor [--json]
+muninn evaluate JUDGMENTS.jsonl [--json]
 ```
 
 `project show` and `/muninn project` display the project UUID, member UUID, store, aliases and
@@ -178,7 +180,7 @@ This preserves a useful team history without publishing every prompt, tool resul
 
 ### Explicit model interface
 
-Phase 3 narrows the implemented model surface around the journal:
+The implemented model surface stays narrow around the journal:
 
 ```ts
 journal_search({
@@ -192,11 +194,14 @@ journal_search({
   path?: string[],
   tag?: string[],
   status?: string[],
+  trust?: string[],
+  label?: string[],
   since?: string,
   until?: string,
   relatedTo?: string,
   limit?: number,
-  cursor?: string
+  cursor?: string,
+  explain?: boolean
 })
 
 journal_read({
@@ -218,7 +223,12 @@ journal_note({
 })
 ```
 
-`journal_search` returns bounded summaries and stable IDs. `journal_read` expands a record,
+`journal_search` returns bounded summaries and stable IDs. Projected trust and lifecycle or
+conflict labels can be filtered explicitly; `explain` adds an auditable score breakdown.
+Ranking is deterministic across hosts: exact phrases and tokens lead prefix matches, while
+tokens of at least five characters allow one conservative insertion, deletion or substitution.
+Matching more distinct query terms earns an explicit coverage contribution.
+`journal_read` expands a record,
 its provenance and its correction chain. `journal_context` is an optional batching tool for
 the records a model has already chosen; it is not an automatic prompt hook. `journal_note`
 can write agent-authored observations, but it cannot claim user authority.
@@ -228,7 +238,7 @@ can write agent-authored observations, but it cannot claim user authority.
 The same query service backs the model tools, attended commands and headless CLI:
 
 ```text
-/muninn search QUERY
+/muninn search QUERY [FILTERS] [--explain]
 /muninn show ID
 /muninn sessions [FILTERS]
 /muninn tail [FILTERS]
@@ -237,7 +247,7 @@ The same query service backs the model tools, attended commands and headless CLI
 /muninn conflicts
 /muninn team
 
-muninn search QUERY [FILTERS] [--json]
+muninn search QUERY [FILTERS] [--explain] [--json]
 muninn show ID [--relations] [--json]
 muninn sessions [FILTERS] [--json]
 muninn tail [FILTERS] [--follow] [--json]
@@ -249,12 +259,14 @@ muninn path
 muninn project remote [URL|--remove]
 muninn team list [--json]
 muninn doctor [--json]
+muninn evaluate JUDGMENTS.jsonl [--json]
 ```
 
 Machine-readable output is stable enough for direct composition:
 
 ```bash
 muninn search "database migration" --json | jq -r '.records[] | [.at, .id, .snippet] | @tsv'
+muninn search "deploy" --trust teammate-user --label conflict --explain --json | jq '.records[] | {id, explanation}'
 muninn sessions --branch feature/auth --json | jq '.sessions[] | select(.status == "failed")'
 rg -n '"type":"correction"' "$(muninn path)"/journal
 muninn search "timeout" --json | jq -r '.records[].id' | fzf
@@ -370,13 +382,17 @@ cost. See the [Phase 4 plan](docs/phase-4-plan.md).
 
 ### Phase 5 — retrieval quality and scale
 
-Measure lexical retrieval on real project histories beyond the Phase 3 10,000-record budget,
-improve query explanation, filters and ranking, and consider local embeddings only if
-evaluation shows a material benefit. Raw JSONL scanning remains the correctness baseline.
+Complete: explicit relevance evaluation, projected trust/lifecycle filters, bounded score
+explanations, deterministic phrase/prefix/one-edit ranking, scan/index DTO equivalence and a
+50,000-record performance gate. The checked-in eight-query corpus reaches Recall@10 `1.0`,
+MRR@10 `0.9375` and nDCG@10 `0.953866`. It does not meet the 50-real-query embedding
+experiment gate, and lexical recall is already above its threshold, so no embeddings were
+added. Raw JSONL scanning remains the correctness oracle.
+See the [Phase 5 plan](docs/phase-5-plan.md).
 
 ### Phase 6 — integrations
 
-Add optional remote-session and sandbox integrations where the core journal contract is not
+Next: add optional remote-session and sandbox integrations where the core journal contract is not
 enough, including explicit encrypted transcript exchange if teams need it. Integrations must
 not make the plain-file local workflow secondary.
 
@@ -396,7 +412,8 @@ npm test
 ```
 
 The supported baseline is `@earendil-works/pi-coding-agent >=0.84.2 <0.85.0`, Node
-`>=22.19.0`, Git, MiniSearch and `proper-lockfile`.
+`>=22.19.0`, Git and `proper-lockfile`. Retrieval indexing uses no native or hosted search
+dependency.
 
 Sibling projects are [pi-huginn](https://github.com/frycm/pi-huginn) for remote sessions and
 voice, and [pi-enclave](https://github.com/frycm/pi-enclave) for sandbox-first automation.
