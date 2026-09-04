@@ -117,6 +117,7 @@ function runtime(): CommandRuntime {
 			];
 		},
 		statusReport: () => "⟡ muninn 0.1.0 · project journal",
+		teamReport: () => "team: app · project-id\nmembers:\n  ● martin (you)",
 	};
 }
 
@@ -166,6 +167,12 @@ describe("/muninn project journal", () => {
 		expect(project.text).toContain("git common dir: /src/app/.git");
 	});
 
+	it("shows the read-only team roster", async () => {
+		const output = await runMuninnCommand("team", runtime());
+		expect(output.text).toContain("members:");
+		expect((await runMuninnCommand("team leave", runtime())).level).toBe("warning");
+	});
+
 	it("writes direct user notes and preserves text", async () => {
 		const output = await runMuninnCommand("note Use --run in CI.\nKeep this line.", runtime());
 		expect(output.text).toContain("appended note j-");
@@ -202,6 +209,16 @@ describe("/muninn project journal", () => {
 		expect(
 			chain.filter((record) => record.relations[0]?.target === target.id).map((record) => record.relations[0]?.type),
 		).toEqual(expect.arrayContaining(["corrects", "annotates"]));
+	});
+
+	it("shows the read-only conflict inbox", async () => {
+		const target = await seed("The service uses one release channel.");
+		await runtime().appendRelation(target.id, "Use blue.", "corrects");
+		await runtime().appendRelation(target.id, "Use green.", "corrects");
+		const output = await runMuninnCommand("conflicts", runtime());
+		expect(output.text).toContain(`target ${target.id}`);
+		expect(output.text).toContain("Use blue.");
+		expect((await runMuninnCommand("conflicts now", runtime())).level).toBe("warning");
 	});
 
 	it("reports missing targets rather than creating dangling user corrections", async () => {

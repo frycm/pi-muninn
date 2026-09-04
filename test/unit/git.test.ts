@@ -11,6 +11,15 @@ const execFileAsync = promisify(execFile);
 describe("toArgv — the allow-list is the promise", () => {
 	it("maps each command to a fixed argv", () => {
 		expect(toArgv({ kind: "init" })).toEqual(["init", "--quiet"]);
+		expect(toArgv({ kind: "clone", url: "ssh://git@example.com/team/journal.git" })).toEqual([
+			"clone",
+			"--quiet",
+			"--no-local",
+			"--",
+			"ssh://git@example.com/team/journal.git",
+			".",
+		]);
+		expect(toArgv({ kind: "ls-files-stage" })).toEqual(["ls-files", "--stage", "-z"]);
 		// The branch is pinned by a symbolic-ref on the unborn HEAD — works on any
 		// git, where `--initial-branch` needs ≥ 2.28 — so two machines with
 		// different defaults never create stores on different branches.
@@ -55,6 +64,21 @@ describe("toArgv — the allow-list is the promise", () => {
 
 	it("refuses a path that could be read as a flag", () => {
 		expect(() => toArgv({ kind: "add", paths: ["--all"] })).toThrow(/outside the store/);
+	});
+
+	it("refuses executable Git transport helpers during clone", () => {
+		expect(() => toArgv({ kind: "clone", url: "ext::sh -c exploit" })).toThrow(/refusing/);
+	});
+
+	it("refuses credential-bearing remotes without echoing them", () => {
+		const remote = "https://token@example.com/team/journal.git";
+		try {
+			toArgv({ kind: "clone", url: remote });
+			expect.unreachable("credential-bearing remote should be rejected");
+		} catch (error) {
+			expect(String(error)).toContain("unsafe git remote");
+			expect(String(error)).not.toContain("token@");
+		}
 	});
 
 	it("refuses an empty add", () => {

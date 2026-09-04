@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,9 +56,22 @@ describe("muninn project-journal CLI", () => {
 		expect(help.code).toBe(0);
 		expect(help.out.join("\n")).toContain("muninn search QUERY");
 		expect(help.out.join("\n")).toContain("muninn correct ID TEXT");
+		expect(help.out.join("\n")).toContain("muninn team list");
 		const unknown = await runCli(["frobnicate"], cwd);
 		expect(unknown.code).toBe(2);
 		expect(unknown.err.join("\n")).toContain('unknown command "frobnicate"');
+	});
+
+	it("emits a clean machine-readable doctor report without initializing a fresh agent", async () => {
+		const fresh = await runCli(["doctor", "--json"], cwd);
+		expect(fresh).toMatchObject({ code: 1, err: [] });
+		expect(JSON.parse(fresh.out[0] as string)).toMatchObject({ schema: 1, kind: "doctor" });
+		expect(existsSync(join(agentDir, "muninn", "host.json"))).toBe(false);
+		await note("Create a healthy journal.");
+		await runCli(["reindex"], cwd);
+		const healthy = await runCli(["doctor", "--json"], cwd);
+		expect(healthy.code).toBe(0);
+		expect(JSON.parse(healthy.out[0] as string).summary.errors).toBe(0);
 	});
 
 	it("links, shows, and unlinks a logical project", async () => {
@@ -76,6 +89,79 @@ describe("muninn project-journal CLI", () => {
 		expect((await runCli(["status", "--json"], cwd)).out[0]).toContain(remote);
 		expect((await runCli(["project", "remote", "--remove"], cwd)).out).toEqual(["project journal remote removed"]);
 		expect((await runCli(["project", "remote"], cwd)).code).toBe(1);
+	});
+
+	it("never echoes credential-bearing remotes and shell-quotes share commands", async () => {
+		await note("Create a journal for sharing.");
+		const credential = "https://example.test/journal.git?access_token=very-secret-value";
+		const rejected = await runCli(["project", "remote", credential], cwd);
+		expect(rejected.code).toBe(1);
+		expect(rejected.err.join("\n")).not.toContain("very-secret-value");
+		const spaced = join(root, "journal remote.git");
+		expect((await runCli(["project", "remote", spaced], cwd)).code).toBe(0);
+		const shared = await runCli(["project", "share"], cwd);
+		expect(shared.out.join("\n")).toContain(`join: muninn project join '${spaced}'`);
+	});
+
+	it("declares and lists local member and host lifecycle state", async () => {
+		await note("Create a team journal.");
+		const host = loadHostIdentity(agentDir);
+		const renamed = await runCli(["team", "rename-member", "Marty", "--reason", "preferred name", "--json"], cwd);
+		expect(renamed.code).toBe(0);
+		expect(JSON.parse(renamed.out[0] as string)).toMatchObject({
+			schema: 1,
+			kind: "team-event",
+			event: { kind: "member-renamed", name: "Marty", reason: "preferred name" },
+		});
+		expect((await runCli(["team", "rename-host", host.id, "workstation"], cwd)).code).toBe(0);
+		expect((await runCli(["team", "retire-host", host.id], cwd)).code).toBe(0);
+		let roster = JSON.parse((await runCli(["team", "list", "--json"], cwd)).out[0] as string) as {
+			members: Array<{ name: string; state: string }>;
+			hosts: Array<{ name: string; state: string }>;
+		};
+		expect(roster.members[0]).toMatchObject({ name: "Marty", state: "active" });
+		expect(roster.hosts[0]).toMatchObject({ name: "workstation", state: "retired" });
+		expect((await runCli(["team", "restore-host", host.id], cwd)).code).toBe(0);
+		expect((await runCli(["team", "leave"], cwd)).code).toBe(0);
+		roster = JSON.parse((await runCli(["team", "list", "--json"], cwd)).out[0] as string);
+		expect(roster.members[0]?.state).toBe("retired");
+		expect(roster.hosts[0]?.state).toBe("retired");
+		expect((await runCli(["team", "return"], cwd)).code).toBe(0);
+		const text = await runCli(["team", "list"], cwd);
+		expect(text.out.join("\n")).toContain("● Marty");
+		expect(text.out.join("\n")).toContain("● workstation");
+	});
+
+	it("shares and joins a project journal on a fresh agent with one command", async () => {
+		await note("Shared onboarding evidence.");
+		const remote = join(root, "shared.git");
+		await execFileAsync("git", ["init", "--bare", "--quiet", "--initial-branch=main", remote], { cwd: root });
+		expect((await runCli(["project", "remote", remote], cwd)).code).toBe(0);
+		expect((await runCli(["sync"], cwd)).code).toBe(0);
+		const shared = await runCli(["project", "share", "--json"], cwd);
+		const descriptor = JSON.parse(shared.out[0] as string) as { project: string; remote: string };
+		expect(descriptor.remote).toBe(remote);
+
+		const targetAgent = join(root, "target-agent");
+		const targetCode = join(root, "target-code");
+		mkdirSync(targetAgent);
+		mkdirSync(targetCode);
+		process.env[AGENT_DIR_ENV] = targetAgent;
+		try {
+			const joined = await runCli(["project", "join", remote, "--json"], targetCode);
+			expect(joined.code).toBe(0);
+			const result = JSON.parse(joined.out[0] as string) as {
+				project: string;
+				member: string;
+				host: string;
+				store_created: boolean;
+			};
+			expect(result).toMatchObject({ project: descriptor.project, store_created: true });
+			expect(result.member).not.toBe(result.host);
+			expect((await runCli(["search", "onboarding"], targetCode)).code).toBe(0);
+		} finally {
+			process.env[AGENT_DIR_ENV] = agentDir;
+		}
 	});
 
 	it("writes, finds, and shows the same stable record ID", async () => {
@@ -150,6 +236,49 @@ describe("muninn project-journal CLI", () => {
 		}>;
 		expect(records.find((record) => record.id === target)?.body).toContain("16");
 		expect(records.find((record) => record.id === correctionId)?.relations).toEqual([{ type: "corrects", target }]);
+	});
+
+	it("lists, explicitly resolves, and reopens correction conflicts", async () => {
+		const target = await note("The deployment window is Tuesday.");
+		const first = await runCli(["correct", target, "Use Wednesday.", "--json"], cwd);
+		const second = await runCli(["correct", target, "Use Thursday.", "--json"], cwd);
+		const branchIds = [first, second].map((result) => JSON.parse(result.out[0] as string).id as string).sort();
+		const before = await runCli(["conflicts", "--json"], cwd);
+		const conflict = JSON.parse(before.out[0] as string).conflicts[0] as {
+			target: string;
+			branches: Array<{ id: string }>;
+		};
+		expect(conflict.target).toBe(target);
+		expect(conflict.branches.map((branch) => branch.id).sort()).toEqual(branchIds);
+		const resolved = await runCli(["resolve", target, "Use the approved Friday window.", "--json"], cwd);
+		expect(resolved.code).toBe(0);
+		const resolution = JSON.parse(resolved.out[0] as string) as {
+			id: string;
+			relations: Array<{ type: string; target: string }>;
+		};
+		expect(
+			resolution.relations
+				.filter((relation) => relation.type === "supersedes")
+				.map((item) => item.target)
+				.sort(),
+		).toEqual(branchIds);
+		expect(JSON.parse((await runCli(["conflicts", "--json"], cwd)).out[0] as string).conflicts).toEqual([]);
+		expect(JSON.parse((await runCli(["show", target, "--json"], cwd)).out[0] as string).records[0].body).toContain(
+			"Tuesday",
+		);
+		await runCli(["correct", target, "Emergency maintenance is Saturday."], cwd);
+		const reopened = JSON.parse((await runCli(["conflicts", "--json"], cwd)).out[0] as string).conflicts[0] as {
+			branches: Array<{ id: string }>;
+		};
+		expect(reopened.branches.map((branch) => branch.id)).toContain(resolution.id);
+	});
+
+	it("does not write when resolve targets a record without a conflict", async () => {
+		const target = await note("One undisputed fact.");
+		const result = await runCli(["resolve", target, "No change."], cwd);
+		expect(result).toMatchObject({ code: 1, out: [] });
+		expect(result.err.join("\n")).toContain("not conflicted; nothing written");
+		expect(JSON.parse((await runCli(["conflicts", "--json"], cwd)).out[0] as string).conflicts).toEqual([]);
 	});
 
 	it("lists sessions and tails records in stable machine formats", async () => {

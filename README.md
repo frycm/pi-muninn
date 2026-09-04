@@ -12,10 +12,11 @@ The design is local-first and composable: append-only JSONL, Git synchronization
 retrieval and no hosted service in the storage or search path.
 
 > [!IMPORTANT]
-> Phase 3 is implemented. Linked worktrees and explicitly linked clones share one sharded
-> JSONL project journal; automatic capture, model tools, attended commands, Unix interfaces,
-> corrections, migration and explicit Git synchronization all use that same canonical
-> service. Journal content is never injected into prompts.
+> Phases 3 and 4 are implemented. Linked worktrees and team clones share one sharded JSONL
+> project journal with validated onboarding, advisory lifecycle declarations, explicit
+> conflict resolution and read-only diagnostics. Automatic capture, model tools, attended
+> commands and Unix interfaces all use the same canonical service. Journal content is never
+> injected into prompts.
 
 The legacy Markdown migration-input contract is
 [docs/journal-format.md](docs/journal-format.md). The JSONL contract is
@@ -23,7 +24,8 @@ The legacy Markdown migration-input contract is
 sequence is [docs/phase-3-plan.md](docs/phase-3-plan.md).
 The implemented identity and registry contract is
 [docs/project-registry.md](docs/project-registry.md). Team onboarding, migration and recovery
-are covered by [docs/operations.md](docs/operations.md).
+are covered by [docs/operations.md](docs/operations.md). The implemented Phase 4 contract is
+[docs/phase-4-plan.md](docs/phase-4-plan.md).
 
 ## Why a project journal
 
@@ -47,7 +49,7 @@ This leads to three rules:
 
 ## Current foundation
 
-The repository now includes these Phase 3 foundations:
+The repository now includes:
 
 - a validated, canonically serialized, append-only JSONL record contract;
 - writer-owned member/host/month shards with single-write, fsync-backed appends;
@@ -58,7 +60,12 @@ The repository now includes these Phase 3 foundations:
 - a user-owned logical-project registry with atomic updates and stable member/project UUIDs;
 - canonical Git common-directory resolution across linked worktrees;
 - automatic user-cue and agent-outcome capture into the same JSONL contract; and
-- explicit project remotes, member/host ownership validation and additive multi-clone sync.
+- explicit project remotes, member/host ownership validation and additive multi-clone sync;
+- validated, rollback-safe `project share` and `project join` onboarding;
+- an additive team-event stream with deterministic active/retired roster projection;
+- a bounded active-conflict inbox and explicit append-only resolution records; and
+- a read-only doctor for registry, store, Git, manifest, shard, lifecycle, relation and
+  disposable-index health.
 
 The project store is now `<agent-dir>/muninn-projects/<project-id>/`. Checkout roots, Git
 common directories and paths are registry aliases or provenance, never durable identity.
@@ -83,7 +90,9 @@ Current attended commands:
 /muninn note TEXT
 /muninn correct ID TEXT
 /muninn annotate ID TEXT
+/muninn conflicts
 /muninn project
+/muninn team
 /muninn reindex
 /muninn sync [--no-push]
 ```
@@ -98,15 +107,25 @@ muninn tail [FILTERS] [--follow] [--jsonl]
 muninn note TEXT [--json]
 muninn correct ID TEXT [--json]
 muninn annotate ID TEXT [--json]
+muninn conflicts [--json|--jsonl]
+muninn resolve TARGET TEXT [--json]
 muninn path
 muninn project link [PATH] [--id UUID] [--name NAME] [--force]
 muninn project show [PATH]
 muninn project unlink [PATH]
 muninn project remote [URL|--remove]
+muninn project share [PATH] [--json]
+muninn project join JOURNAL-URL [PATH] [--force] [--json]
+muninn team list [--json]
+muninn team rename-member NAME [--reason TEXT] [--json]
+muninn team rename-host HOST-ID NAME [--reason TEXT] [--json]
+muninn team retire-host|restore-host HOST-ID [--reason TEXT] [--json]
+muninn team leave|return [--reason TEXT] [--json]
 muninn migrate [--dry-run] [--json]
 muninn reindex [--json]
 muninn status [--json]
 muninn sync [--no-push]
+muninn doctor [--json]
 ```
 
 `project show` and `/muninn project` display the project UUID, member UUID, store, aliases and
@@ -215,6 +234,8 @@ The same query service backs the model tools, attended commands and headless CLI
 /muninn tail [FILTERS]
 /muninn correct ID TEXT
 /muninn annotate ID TEXT
+/muninn conflicts
+/muninn team
 
 muninn search QUERY [FILTERS] [--json]
 muninn show ID [--relations] [--json]
@@ -222,8 +243,12 @@ muninn sessions [FILTERS] [--json]
 muninn tail [FILTERS] [--follow] [--json]
 muninn correct ID TEXT
 muninn annotate ID TEXT
+muninn conflicts [--json|--jsonl]
+muninn resolve TARGET TEXT [--json]
 muninn path
 muninn project remote [URL|--remove]
+muninn team list [--json]
+muninn doctor [--json]
 ```
 
 Machine-readable output is stable enough for direct composition:
@@ -288,6 +313,8 @@ its sync transport is Git and its canonical query path is deterministic lexical 
 - Code, docs, config and explicit project instructions outrank journal history.
 - Every record carries source, member, host, session and Git/worktree provenance when known.
 - Teammate records retain their original source but are labelled relative to the reader.
+- Lifecycle declarations are unsigned and advisory: retirement labels records but neither
+  hides them nor revokes Git access.
 - Secrets are redacted before append; records marked as redacted remain visibly so.
 - Full pi transcripts are local evidence and are not synchronized by default.
 - A project checkout cannot silently select an arbitrary journal path or sync remote.
@@ -335,11 +362,11 @@ model/human/Unix query interfaces and explicit multi-clone Git synchronization.
 
 ### Phase 4 — team operations and governance
 
-Improve team onboarding beyond the documented manual clone sequence, add attended member and
-host lifecycle controls, and make manifest/correction conflict review comfortable. Explore
-signed writer identity or revocation only if real team use requires it. The journal remains
-historical evidence rather than an authoritative shared summary. Transcript exchange remains
-opt-in and separate.
+Complete: validated share/join commands, deterministic roster projection, shell-only local
+member/host lifecycle declarations, attended read-only team/conflict views, an explicit
+correction-conflict resolution flow and a read-only operational doctor. Signed identity or
+enforceable revocation remains out of scope until real team use justifies its key-management
+cost. See the [Phase 4 plan](docs/phase-4-plan.md).
 
 ### Phase 5 — retrieval quality and scale
 
@@ -352,6 +379,13 @@ evaluation shows a material benefit. Raw JSONL scanning remains the correctness 
 Add optional remote-session and sandbox integrations where the core journal contract is not
 enough, including explicit encrypted transcript exchange if teams need it. Integrations must
 not make the plain-file local workflow secondary.
+
+### Phase 7 — optional cryptographic governance
+
+Only evidence from real distributed use should start this work. It requires a threat model,
+member keys, rotation and recovery, signed records/events, remote ACL interaction and an
+explicit policy for compromised-key history. Until then, lifecycle state stays honestly
+advisory.
 
 ## Development
 

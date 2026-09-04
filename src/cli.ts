@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 /** `muninn` — direct human and Unix access to one logical project journal. */
 import { realpathSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveAgentDir } from "./agent-dir.ts";
 import { commitJournal } from "./capture/commit.ts";
+import { diagnoseProject, renderDoctor } from "./doctor.ts";
 import {
 	collectSearchRecords,
 	JournalArgumentError,
 	type JournalOutputMode,
 	parseJournalQueryArgs,
 	renderAppend,
+	renderConflicts,
 	renderRead,
 	renderSearch,
 	renderSessions,
@@ -23,14 +25,16 @@ import { discoverLegacyStoreCandidates, inventoryLegacyStores, migrateMarkdownSt
 import { collectGitProvenance } from "./journal/provenance.ts";
 import { JournalQueryService } from "./journal/query.ts";
 import type { NewJournalRecord } from "./journal/record.ts";
-import { appendAuthorizedJournalRecord, appendUserRelation } from "./journal/writer.ts";
+import { appendAuthorizedJournalRecord, appendUserRelation, resolveUserConflict } from "./journal/writer.ts";
 import { runProjectCommand } from "./project/command.ts";
+import { joinProjectJournal, projectShare } from "./project/onboarding.ts";
 import { type ResolvedProject, resolveLogicalProject } from "./project/resolver.ts";
 import { type HostIdentity, loadHostIdentity } from "./store/host.ts";
 import { ensureStore, projectStoreIdentity, storeIdentity } from "./store/init.ts";
 import { storeExistsAt } from "./store/paths.ts";
 import { readProjectManifest, setProjectRemote } from "./store/project-manifest.ts";
 import { describeSync, sync } from "./sync/sync.ts";
+import { declareTeamEvent, projectTeamRoster, renderTeamRoster } from "./team/lifecycle.ts";
 import { MUNINN_VERSION } from "./version.ts";
 
 const USAGE = [
@@ -43,12 +47,22 @@ const USAGE = [
 	"  muninn note TEXT [--json]",
 	"  muninn correct ID TEXT [--json]",
 	"  muninn annotate ID TEXT [--json]",
+	"  muninn conflicts [--json|--jsonl]",
+	"  muninn resolve TARGET TEXT [--json]",
 	"  muninn path",
 	"  muninn project link|show|unlink|remote [URL|--remove]",
+	"  muninn project share [PATH] [--json]",
+	"  muninn project join JOURNAL-URL [PATH] [--force] [--json]",
+	"  muninn team list [--json]",
+	"  muninn team rename-member NAME [--reason TEXT] [--json]",
+	"  muninn team rename-host HOST-ID NAME [--reason TEXT] [--json]",
+	"  muninn team retire-host|restore-host HOST-ID [--reason TEXT] [--json]",
+	"  muninn team leave|return [--reason TEXT] [--json]",
 	"  muninn migrate [--dry-run] [--json]",
 	"  muninn reindex [--json]",
 	"  muninn status [--json]",
 	"  muninn sync [--no-push]",
+	"  muninn doctor [--json]",
 	"",
 	"Filters: --id --type --source --member --host --branch --path --tag --status",
 	"         --since --until --related-to --limit --cursor",
@@ -118,7 +132,68 @@ export async function runCli(
 	try {
 		if (command === "help" || command === "--help" || command === "-h") return { code: 0, out: [USAGE], err };
 		if (command === "version" || command === "--version") return { code: 0, out: [MUNINN_VERSION], err };
+		if (command === "doctor") {
+			const flags = parseSimpleFlags(args, ["json"]);
+			const result = await diagnoseProject({ agentDir: resolveAgentDir(), cwd });
+			return {
+				code: result.summary.errors > 0 ? 1 : 0,
+				out: flags.has("json") ? [JSON.stringify(result)] : renderDoctor(result),
+				err,
+			};
+		}
 		if (command === "project") {
+			if (args[0] === "share") {
+				const parsed = parseProjectShareArgs(args.slice(1));
+				const context = await projectContext(parsed.path ? resolve(cwd, parsed.path) : cwd, false);
+				const shared = projectShare(context.project, readProjectManifest(context.project.storePath));
+				return {
+					code: 0,
+					out: parsed.json
+						? [JSON.stringify(shared)]
+						: [
+								`project: ${shared.name} · ${shared.project}`,
+								`journal: ${shared.remote}`,
+								`join: muninn project join ${shellQuote(shared.remote)}`,
+							],
+					err,
+				};
+			}
+			if (args[0] === "join") {
+				const parsed = parseProjectJoinArgs(args.slice(1));
+				const agentDir = resolveAgentDir();
+				const host = loadHostIdentity(agentDir);
+				const joined = await joinProjectJournal({
+					agentDir,
+					host,
+					remote: parsed.remote,
+					cwd: parsed.path ? resolve(cwd, parsed.path) : cwd,
+					force: parsed.force,
+					...(options.signal ? { signal: options.signal } : {}),
+				});
+				const result = {
+					schema: 1 as const,
+					kind: "project-join" as const,
+					project: joined.project.id,
+					name: joined.project.name,
+					member: joined.project.member.id,
+					host: host.id,
+					store: joined.project.storePath,
+					remote: joined.remote,
+					store_created: joined.storeCreated,
+				};
+				return {
+					code: 0,
+					out: parsed.json
+						? [JSON.stringify(result)]
+						: [
+								`muninn: joined ${joined.project.name} · ${joined.project.id}`,
+								`store: ${joined.project.storePath}${joined.storeCreated ? " (installed)" : " (reused)"}`,
+								`member: ${joined.project.member.name} · ${joined.project.member.id}`,
+								`journal: ${joined.remote}`,
+							],
+					err,
+				};
+			}
 			if (args[0] === "remote") {
 				const values = args.slice(1);
 				if (values.length > 1) throw new JournalArgumentError("project remote takes one URL or --remove");
@@ -154,6 +229,46 @@ export async function runCli(
 			const context = await projectContext(cwd, false);
 			return { code: 0, out: [context.project.storePath], err };
 		}
+		if (command === "team") {
+			const parsed = parseTeamArgs(args);
+			const context = await projectContext(cwd, false);
+			const manifest = readProjectManifest(context.project.storePath);
+			if (!manifest) throw new Error("muninn: project journal has no project.json");
+			if (parsed.action === "list") {
+				const roster = projectTeamRoster(manifest, context.project.member.id, context.host.id);
+				return { code: 0, out: parsed.json ? [JSON.stringify(roster)] : renderTeamRoster(roster), err };
+			}
+			const kind =
+				parsed.action === "leave"
+					? "member-retired"
+					: parsed.action === "return"
+						? "member-restored"
+						: parsed.action === "rename-member"
+							? "member-renamed"
+							: parsed.action === "rename-host"
+								? "host-renamed"
+								: parsed.action === "retire-host"
+									? "host-retired"
+									: "host-restored";
+			const declared = await declareTeamEvent({
+				storePath: context.project.storePath,
+				project: context.project.id,
+				actorMember: context.project.member.id,
+				actorHost: context.host.id,
+				actorHostName: context.host.name,
+				kind,
+				...(parsed.host ? { host: parsed.host } : {}),
+				...(parsed.name ? { name: parsed.name } : {}),
+				...(parsed.reason ? { reason: parsed.reason } : {}),
+			});
+			return {
+				code: 0,
+				out: parsed.json
+					? [JSON.stringify({ schema: 1, kind: "team-event", event: declared.event, roster: declared.roster })]
+					: [`muninn: declared ${declared.event.kind} · ${declared.event.id}`, ...renderTeamRoster(declared.roster)],
+				err,
+			};
+		}
 		if (command === "search") {
 			const parsed = parseJournalQueryArgs(args, { positionalQuery: true });
 			if (!parsed.query.query && !hasFilters(parsed.query)) {
@@ -162,6 +277,14 @@ export async function runCli(
 			const context = await projectContext(cwd, false);
 			const result = context.service.query(parsed.query);
 			return { code: result.records.length === 0 ? 1 : 0, out: renderSearch(result, parsed.mode), err };
+		}
+		if (command === "conflicts") {
+			const parsed = parseJournalQueryArgs(args);
+			if (Object.keys(parsed.query).length > 0 || parsed.follow || parsed.relations) {
+				throw new JournalArgumentError("conflicts accepts only --json or --jsonl");
+			}
+			const context = await projectContext(cwd, false);
+			return { code: 0, out: renderConflicts(context.service.conflictInbox(), parsed.mode), err };
 		}
 		if (command === "show") {
 			const id = args.shift();
@@ -247,6 +370,29 @@ export async function runCli(
 				host: context.host.id,
 			});
 			return { code: 0, out: renderAppend(written.record, parsed.mode), err };
+		}
+		if (command === "resolve") {
+			const parsed = parseRelationArgs(args, command);
+			const context = await projectContext(cwd, true);
+			const git = await collectGitProvenance(cwd);
+			const resolved = await resolveUserConflict({
+				authority: "headless-user",
+				target: parsed.target,
+				text: parsed.text,
+				channel: "cli",
+				storePath: context.project.storePath,
+				project: context.project.id,
+				member: context.project.member.id,
+				host: context.host.id,
+				...(git ? { git } : {}),
+			});
+			if (resolved.status === "missing") {
+				return { code: 1, out, err: [`muninn: no journal record has id ${parsed.target}`] };
+			}
+			if (resolved.status === "not-conflicted") {
+				return { code: 1, out, err: [`muninn: journal record ${parsed.target} is not conflicted; nothing written`] };
+			}
+			return { code: 0, out: renderAppend(resolved.written.record, parsed.mode), err };
 		}
 		if (command === "migrate") {
 			const parsed = parseSimpleFlags(args, ["dry-run", "json"]);
@@ -341,8 +487,95 @@ export async function runCli(
 	}
 }
 
+function parseProjectShareArgs(args: readonly string[]): { path?: string; json: boolean } {
+	let path: string | undefined;
+	let json = false;
+	for (const arg of args) {
+		if (arg === "--json") json = true;
+		else if (arg.startsWith("--")) throw new JournalArgumentError(`unknown project share option ${arg}`);
+		else if (path) throw new JournalArgumentError("project share takes at most one path");
+		else path = arg;
+	}
+	return { ...(path ? { path } : {}), json };
+}
+
+function parseProjectJoinArgs(args: readonly string[]): {
+	remote: string;
+	path?: string;
+	force: boolean;
+	json: boolean;
+} {
+	let remote: string | undefined;
+	let path: string | undefined;
+	let force = false;
+	let json = false;
+	for (const arg of args) {
+		if (arg === "--force") force = true;
+		else if (arg === "--json") json = true;
+		else if (arg.startsWith("--")) throw new JournalArgumentError(`unknown project join option ${arg}`);
+		else if (!remote) remote = arg;
+		else if (!path) path = arg;
+		else throw new JournalArgumentError("project join takes one journal URL and at most one project path");
+	}
+	if (!remote) throw new JournalArgumentError("project join needs a journal URL");
+	return { remote, ...(path ? { path } : {}), force, json };
+}
+
+type TeamAction = "list" | "rename-member" | "rename-host" | "retire-host" | "restore-host" | "leave" | "return";
+
+function parseTeamArgs(args: readonly string[]): {
+	action: TeamAction;
+	host?: string;
+	name?: string;
+	reason?: string;
+	json: boolean;
+} {
+	const action = (args[0] ?? "list") as TeamAction;
+	if (!["list", "rename-member", "rename-host", "retire-host", "restore-host", "leave", "return"].includes(action)) {
+		throw new JournalArgumentError(`unknown team command ${action}`);
+	}
+	const positional: string[] = [];
+	let reason: string | undefined;
+	let json = false;
+	for (let index = 1; index < args.length; index++) {
+		const arg = args[index] as string;
+		if (arg === "--json") json = true;
+		else if (arg === "--reason") {
+			reason = args[++index];
+			if (!reason) throw new JournalArgumentError("--reason needs text");
+		} else if (arg.startsWith("--")) throw new JournalArgumentError(`unknown team option ${arg}`);
+		else positional.push(arg);
+	}
+	const expected = action === "rename-host" ? 2 : action === "rename-member" || action.includes("-host") ? 1 : 0;
+	if (positional.length !== expected) {
+		throw new JournalArgumentError(
+			action === "rename-member"
+				? "team rename-member needs a name"
+				: action === "rename-host"
+					? "team rename-host needs a host ID and name"
+					: action.includes("-host")
+						? `team ${action} needs a host ID`
+						: `team ${action} takes no arguments`,
+		);
+	}
+	if (action === "list" && reason) throw new JournalArgumentError("team list does not accept --reason");
+	return {
+		action,
+		...(action.includes("-host") ? { host: positional[0] } : {}),
+		...(action === "rename-member" ? { name: positional[0] } : {}),
+		...(action === "rename-host" ? { name: positional[1] } : {}),
+		...(reason ? { reason } : {}),
+		json,
+	};
+}
+
 function hasFilters(query: object): boolean {
 	return Object.entries(query).some(([key, value]) => key !== "query" && value !== undefined);
+}
+
+function shellQuote(value: string): string {
+	if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value;
+	return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function parseWriteArgs(args: readonly string[]): { text: string; mode: JournalOutputMode } {
@@ -365,7 +598,7 @@ function parseWriteArgs(args: readonly string[]): { text: string; mode: JournalO
 
 function parseRelationArgs(
 	args: readonly string[],
-	command: "correct" | "annotate",
+	command: "correct" | "annotate" | "resolve",
 ): { target: string; text: string; mode: JournalOutputMode } {
 	const target = args[0];
 	if (!target) throw new JournalArgumentError(`${command} needs a target ID and text`);
@@ -427,5 +660,5 @@ if (isMain()) {
 	});
 	if (result.out.length > emitted) process.stdout.write(`${result.out.slice(emitted).join("\n")}\n`);
 	if (result.err.length > 0) process.stderr.write(`${result.err.join("\n")}\n`);
-	process.exit(result.code);
+	process.exitCode = result.code;
 }

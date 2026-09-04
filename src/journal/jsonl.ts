@@ -76,25 +76,34 @@ export async function appendJournalRecord(
 	input: NewJournalRecord,
 	options: AppendJournalOptions,
 ): Promise<AppendJournalResult> {
+	const lock = { host: options.host, ...(options.lockTimeoutMs ? { timeoutMs: options.lockTimeoutMs } : {}) };
+	return withStoreLock(options.storePath, "append", lock, () => appendJournalRecordLocked(input, options));
+}
+
+/** Append with the store lock already held; used by atomic read-decide-write workflows. */
+export function appendJournalRecordLocked(input: NewJournalRecord, options: AppendJournalOptions): AppendJournalResult {
 	const now = options.now ?? new Date();
 	const record = buildJournalRecord(input, { ...options, now });
 	const line = serializeJournalRecord(record);
 	const path = journalShardPath(options.storePath, options.member, options.host, now);
-	const lock = { host: options.host, ...(options.lockTimeoutMs ? { timeoutMs: options.lockTimeoutMs } : {}) };
-
-	await withStoreLock(options.storePath, "append", lock, () => {
-		const existing = scanJournal(options.storePath).records.find((candidate) => candidate.record.id === record.id);
-		if (existing) {
-			if (serializeJournalRecord(existing.record) === line) return;
-			throw new Error(`journal id collision: ${record.id} already has different bytes in ${existing.path}`);
+	const existing = scanJournal(options.storePath).records.find((candidate) => candidate.record.id === record.id);
+	if (existing) {
+		if (serializeJournalRecord(existing.record) === line) {
+			return {
+				id: record.id,
+				path: existing.path,
+				shard: relative(options.storePath, existing.path).split("\\").join("/"),
+				record: existing.record,
+				bytes: Buffer.byteLength(line, "utf-8"),
+			};
 		}
-		const dir = join(options.storePath, "journal", options.member, options.host);
-		const created = !existsSync(path);
-		mkdirSync(dir, { recursive: true, mode: 0o700 });
-		writeLine(path, line);
-		if (created) fsyncDirectory(dir);
-	});
-
+		throw new Error(`journal id collision: ${record.id} already has different bytes in ${existing.path}`);
+	}
+	const dir = join(options.storePath, "journal", options.member, options.host);
+	const created = !existsSync(path);
+	mkdirSync(dir, { recursive: true, mode: 0o700 });
+	writeLine(path, line);
+	if (created) fsyncDirectory(dir);
 	return {
 		id: record.id,
 		path,

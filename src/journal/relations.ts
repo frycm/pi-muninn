@@ -8,7 +8,14 @@ export type RelationLabel =
 	| "correction"
 	| "conflict"
 	| "cycle"
-	| "missing-target";
+	| "missing-target"
+	| "retired-member"
+	| "retired-host";
+
+export interface RelationLifecycle {
+	retiredMembers: ReadonlySet<string>;
+	retiredHosts: ReadonlySet<string>;
+}
 
 export interface RelationEdge {
 	from: string;
@@ -39,6 +46,8 @@ const LABEL_ORDER: RelationLabel[] = [
 	"conflict",
 	"cycle",
 	"missing-target",
+	"retired-member",
+	"retired-host",
 ];
 
 export function trustLabel(record: JournalRecord, localMember: string): RelationView["trust"] {
@@ -47,11 +56,19 @@ export function trustLabel(record: JournalRecord, localMember: string): Relation
 	return `${actor}-${source}`;
 }
 
-export function projectRelations(records: readonly JournalRecord[], localMember: string): RelationProjection {
+export function projectRelations(
+	records: readonly JournalRecord[],
+	localMember: string,
+	lifecycle?: RelationLifecycle,
+): RelationProjection {
 	const views = new Map<string, RelationView>();
 	for (const record of [...records].sort(byRecord)) {
 		if (views.has(record.id)) continue;
 		views.set(record.id, { record, incoming: [], outgoing: [], labels: [], trust: trustLabel(record, localMember) });
+	}
+	for (const view of views.values()) {
+		if (lifecycle?.retiredMembers.has(view.record.member)) addLabel(view, "retired-member");
+		if (lifecycle?.retiredHosts.has(view.record.host)) addLabel(view, "retired-host");
 	}
 
 	const missing: RelationEdge[] = [];
@@ -70,11 +87,22 @@ export function projectRelations(records: readonly JournalRecord[], localMember:
 	}
 
 	const conflicts: RelationProjection["conflicts"] = [];
+	const superseded = new Set(
+		[...views.values()].flatMap((candidate) =>
+			candidate.outgoing.filter((edge) => edge.type === "supersedes").map((edge) => edge.to),
+		),
+	);
 	for (const view of views.values()) {
 		for (const edge of view.incoming) {
 			addLabel(view, edge.type === "corrects" ? "corrected" : edge.type === "supersedes" ? "superseded" : "annotated");
 		}
-		const disputing = view.incoming.filter((edge) => edge.type === "corrects" || edge.type === "supersedes");
+		const disputing = view.incoming.filter(
+			(edge) =>
+				(edge.type === "corrects" ||
+					(edge.type === "supersedes" &&
+						!views.get(edge.from)?.outgoing.some((candidate) => candidate.type === "corrects"))) &&
+				!superseded.has(edge.from),
+		);
 		if (disputing.length > 1) {
 			const records = disputing.map((edge) => edge.from).sort();
 			conflicts.push({ target: view.record.id, records });

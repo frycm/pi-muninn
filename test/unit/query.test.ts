@@ -138,6 +138,18 @@ function ids(result: ReturnType<JournalQueryService["query"]>): string[] {
 }
 
 describe("canonical journal query", () => {
+	it("exposes a bounded conflict inbox with target, trust, and lifecycle-aware branch summaries", () => {
+		const inbox = service().conflictInbox();
+		expect(inbox.conflicts).toHaveLength(1);
+		expect(inbox.conflicts[0]?.target).toBe(records[0]?.id);
+		expect(inbox.conflicts[0]?.target_record.snippet).toContain("PostgreSQL 16");
+		expect(inbox.conflicts[0]?.branches.map((branch) => branch.trust).sort()).toEqual(["local-user", "teammate-user"]);
+		expect(inbox.conflicts[0]?.branches.every((branch) => branch.labels.includes("conflict"))).toBe(true);
+		const bounded = service("scan", { maxChars: 1024 }).conflictInbox();
+		expect(JSON.stringify(bounded).length).toBeLessThanOrEqual(1024);
+		expect(bounded.truncated).toBe(true);
+	});
+
 	it("ranks an exact ID first, then its explicit corrections", () => {
 		const result = service().query({ query: records[0]?.id as string });
 		expect(ids(result)[0]).toBe(records[0]?.id);

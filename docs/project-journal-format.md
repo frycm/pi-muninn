@@ -1,6 +1,6 @@
 # Logical project journal format
 
-> **Normative and implemented in Phase 3.** The legacy
+> **Normative and implemented through Phase 4.** The legacy
 > [Markdown journal format](journal-format.md) remains readable only as migration input.
 
 The logical project journal is an append-only, sharded JSONL event stream. It records bounded
@@ -64,6 +64,19 @@ A reader handles damage locally:
   ],
   "hosts": [
     {"id": "019c0113-1c2f-7d33-8e55-aa10b2c3d4e0", "name": "mbp", "member": "019c0112-1c2f-7d33-8e55-aa10b2c3d4e0"}
+  ],
+  "team_events": [
+    {
+      "id": "t-019c0114-1c2f-7d33-8e55-aa10b2c3d4e0",
+      "at": "2026-09-04T10:00:00.000Z",
+      "kind": "host-renamed",
+      "member": "019c0112-1c2f-7d33-8e55-aa10b2c3d4e0",
+      "actor_member": "019c0112-1c2f-7d33-8e55-aa10b2c3d4e0",
+      "actor_host": "019c0113-1c2f-7d33-8e55-aa10b2c3d4e0",
+      "host": "019c0113-1c2f-7d33-8e55-aa10b2c3d4e0",
+      "name": "workstation",
+      "reason": "preferred display name"
+    }
   ]
 }
 ```
@@ -74,8 +87,26 @@ collision. The remote is set only through `muninn project remote`; checked-in co
 configuration cannot select a journal store path or remote.
 
 Project and member IDs are UUIDs stored in the user-owned project registry. The host UUID is
-kept in the agent-owned host identity file. Display names are local metadata and do not
-rewrite old records.
+kept in the agent-owned host identity file. Display names are projected metadata and do not
+rewrite old records. Names and lifecycle reasons are bounded and reject terminal controls,
+direction-changing characters and credential-shaped text.
+
+### Team lifecycle events
+
+`team_events` is optional in schema 1 for compatibility with pre-Phase-4 manifests; readers
+project a missing field as an empty array. Once emitted, events are union-merged by immutable
+ID and sorted by `(at, id)`. A non-identical duplicate ID is a collision.
+
+Kinds are `member-renamed`, `member-retired`, `member-restored`, `host-renamed`,
+`host-retired` and `host-restored`. Rename events require `name`; host events require `host`;
+`reason` is optional. The actor host must belong to `actor_member`, the target member must be
+the actor member, and a target host must belong to that member. This self-declaration rule
+prevents accidental cross-member administration but is not cryptographic authentication.
+
+Projection starts from the base member/host arrays and applies events in canonical order.
+Retirement is advisory: records remain searchable and writable, while current roster state
+adds `retired-member` or `retired-host` labels. Records written during a retired interval
+produce a diagnostic warning.
 
 ## Record shape
 
@@ -152,6 +183,13 @@ a target as corrected and rank its user-authored correction first. It must still
 original and complete relation chain available. Two unrelated corrections of the same target
 are a visible conflict; timestamp order alone does not decide which claim is true.
 
+An active branch is one not targeted by a `supersedes` relation. `muninn resolve` appends one
+user correction with `corrects TARGET` and `supersedes BRANCH` for every active branch it
+observed under the append lock. Those supersession edges retire branches; they are not
+additional independent claims about each branch. The inbox closes when one active branch
+remains, reopens after a later independent correction, and exposes concurrent resolutions as
+competing active branches.
+
 Only these paths may create `source: "user"` corrections:
 
 - an attended `/muninn correct|annotate` command;
@@ -168,14 +206,13 @@ changes record state. Corrective meaning enters the journal only through an expl
 
 For one append the writer:
 
-1. builds and validates the complete record outside the lock;
-2. redacts bounded free-text fields;
-3. verifies project, member and host identity;
-4. acquires the store lock;
-5. verifies that the selected shard belongs to this member/host;
-6. appends the encoded line with one write and flushes it;
-7. flushes a newly created shard directory where supported; and
-8. releases the lock.
+1. validates the requested writer authority and relation shape;
+2. acquires the store lock;
+3. builds the complete record and redacts bounded free-text fields;
+4. verifies that an existing ID has identical canonical bytes;
+5. appends to the selected member/host shard with one write and flushes it;
+6. flushes a newly created shard directory where supported; and
+7. releases the lock.
 
 Two linked worktrees on one host share a store and lock. Two hosts write different shard
 paths. If synchronized data shows another writer appending under the local host ID, sync
@@ -191,11 +228,12 @@ Raw records are the source of truth. The canonical reader builds a deterministic
 1. validate and collect records from every shard;
 2. de-duplicate identical IDs and report non-identical collisions;
 3. resolve relation targets without changing either record;
-4. label trust relative to the local member;
-5. apply explicit filters;
-6. rank exact IDs, user corrections, cue/body matches, recency and Git proximity using fixed
+4. project advisory lifecycle and active correction conflicts;
+5. label trust relative to the local member;
+6. apply explicit filters;
+7. rank exact IDs, user corrections, cue/body matches, recency and Git proximity using fixed
    documented weights; and
-7. return bounded results with stable IDs.
+8. return bounded results with stable IDs.
 
 The index is an acceleration of this projection, never an alternative source. Deleting
 `.index/` and scanning the journal must produce the same filtered record set.
@@ -229,7 +267,8 @@ record.
 ## Git synchronization
 
 Synchronization commits only `project.json`, `migration.json` and journal shards. Per-writer
-paths make ordinary pulls additive. Manifest conflicts, ID collisions and host-ownership
+paths make ordinary pulls additive. Manifest reconciliation union-merges member, host and
+team-event additions. Incompatible remotes, identity/event collisions and host-ownership
 violations stop the operation for attended resolution.
 
 The code repository remote is never used as journal identity. It may be shown as a linking

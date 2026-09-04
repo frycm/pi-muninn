@@ -48,7 +48,8 @@ The current registry schema is:
 
 Member and project IDs are full UUIDv7 values. Locations are canonical absolute paths. A
 location may become stale after a rename; paths are aliases and never replace the project
-UUID as identity.
+UUID as identity. Display names are bounded and reject credential-shaped text, terminal
+controls and direction-changing characters before registry bytes are written.
 
 Registry read-modify-write operations use one cross-process lock. A changed file is written
 with owner-only permissions to a new file, flushed, atomically renamed and followed by a
@@ -91,6 +92,8 @@ muninn project show [PATH]
 muninn project link [PATH] [--id UUID] [--name NAME] [--force]
 muninn project unlink [PATH]
 muninn project remote [URL|--remove]
+muninn project share [PATH] [--json]
+muninn project join JOURNAL-URL [PATH] [--force] [--json]
 ```
 
 - `show` is read-only and reports the project and member IDs, UUID store, current root,
@@ -105,6 +108,15 @@ muninn project remote [URL|--remove]
   commands so an attended session cannot silently switch stores beneath pending writes.
 - `remote` reads or changes the explicit remote in the journal's `project.json`. The value is
   user-owned metadata and is never inferred from the code repository's remotes.
+- `share` prints the project UUID, name and explicit journal remote without exposing a store
+  path as team identity.
+- `join` validates an untrusted temporary clone before installing the UUID store and mapping
+  the selected code checkout. `--force` may replace an existing checkout mapping but never
+  an existing store directory. Cancellation and validation failures publish neither a
+  registry mapping nor a destination store; a later join cleans abandoned private staging
+  clones. If the process stops after the validated store rename but before registry
+  publication, an agent-local recovery marker lets a later join revalidate and finish only
+  that same project/remote/member transaction.
 
 To reconnect a renamed repository, retain the UUID printed by `unlink` or obtain it with
 `show`, then run:
@@ -116,5 +128,6 @@ muninn project link --id <project-id>
 No command deletes a store. Recovery from a mistaken mapping is therefore an unlink/relink,
 not data restoration.
 
-Cloning and joining an existing team journal requires both the shared project UUID and the
-journal repository. The exact sequence is documented in [operations.md](operations.md).
+Joining normally requires only the explicit journal URL; the manifest supplies the project
+UUID. The automated and manual recovery sequences are documented in
+[operations.md](operations.md).

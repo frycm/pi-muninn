@@ -15,6 +15,7 @@ import { type EnsureProjectStoreOptions, ensureStore } from "../../src/store/ini
 import { withStoreLock } from "../../src/store/lock.ts";
 import { mergeProjectManifests, readProjectManifest } from "../../src/store/project-manifest.ts";
 import { describeSync, sync } from "../../src/sync/sync.ts";
+import { declareTeamEvent, projectTeamRoster } from "../../src/team/lifecycle.ts";
 
 const execFileAsync = promisify(execFile);
 let root: string;
@@ -118,6 +119,42 @@ describe("project journal sync", () => {
 		expect(readProjectManifest(two)?.members).toHaveLength(3);
 	});
 
+	it("exchanges and union-merges concurrent lifecycle declarations", async () => {
+		await seed();
+		await git(root, ["clone", "--quiet", remote, two]);
+		await ensureStore(two, options(hostTwo, memberTwo));
+		await declareTeamEvent({
+			storePath: one,
+			project,
+			actorMember: memberOne.id,
+			actorHost: hostOne.id,
+			actorHostName: hostOne.name,
+			kind: "member-renamed",
+			name: "Martin One",
+		});
+		await declareTeamEvent({
+			storePath: two,
+			project,
+			actorMember: memberTwo.id,
+			actorHost: hostTwo.id,
+			actorHostName: hostTwo.name,
+			kind: "member-renamed",
+			name: "Ada Two",
+		});
+		expect((await synchronize(one, hostOne)).problem).toBeUndefined();
+		const merged = await synchronize(two, hostTwo);
+		expect(merged.problem).toBeUndefined();
+		expect(merged.mergedManifest).toBe(true);
+		expect((await synchronize(one, hostOne)).problem).toBeUndefined();
+		const manifest = readProjectManifest(one) as NonNullable<ReturnType<typeof readProjectManifest>>;
+		expect(manifest.team_events).toHaveLength(2);
+		expect(
+			projectTeamRoster(manifest)
+				.members.map((candidate) => candidate.name)
+				.sort(),
+		).toEqual(["Ada Two", "Martin One"]);
+	});
+
 	it("refuses a remote for another logical project", async () => {
 		await seed();
 		const otherProject = newProjectId();
@@ -210,6 +247,7 @@ describe("project manifest reconciliation", () => {
 			remote: null,
 			members: [{ id: memberOne.id, name: memberOne.name }],
 			hosts: [{ id: hostOne.id, name: hostOne.name, member: memberOne.id }],
+			team_events: [],
 		};
 		const teammate = {
 			...base,

@@ -2,6 +2,8 @@
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { readProjectManifest } from "../store/project-manifest.ts";
+import { lifecycleWarnings, projectTeamRoster } from "../team/lifecycle.ts";
 import { type JournalScanProblem, scanJournal } from "./jsonl.ts";
 import { JournalLexicalIndex, tokenizeJournalText } from "./query-index.ts";
 import type { JournalRecord, JournalRecordType, JournalSource, JournalStatus } from "./record.ts";
@@ -68,6 +70,19 @@ export interface JournalReadResult {
 	truncated: boolean;
 }
 
+export interface JournalConflict {
+	target: string;
+	target_record: JournalSearchRecord;
+	branches: JournalSearchRecord[];
+}
+
+export interface JournalConflictsResult {
+	schema: 1;
+	conflicts: JournalConflict[];
+	warnings: string[];
+	truncated: boolean;
+}
+
 export class JournalQueryError extends Error {
 	constructor(message: string) {
 		super(`muninn: invalid journal query: ${message}`);
@@ -128,13 +143,16 @@ export class JournalQueryService {
 	private index?: JournalLexicalIndex;
 	private readonly indexWarnings: string[];
 	private readonly mode: "scan" | "index";
+	private teamWarnings: string[];
 
 	constructor(options: JournalQueryServiceOptions) {
 		this.options = options;
 		const scan = scanJournal(options.storePath);
 		this.records = scan.records.map((item) => item.record);
 		this.problems = scan.problems;
-		this.projection = projectRelations(this.records, options.localMember);
+		const lifecycle = loadLifecycle(options.storePath, this.records, options.localMember);
+		this.projection = projectRelations(this.records, options.localMember, lifecycle);
+		this.teamWarnings = lifecycle.warnings;
 		this.mode = options.mode ?? "index";
 		this.indexWarnings = [];
 		if (this.mode === "index") {
@@ -154,7 +172,9 @@ export class JournalQueryService {
 		if (at >= 0) this.records[at] = record;
 		else this.records.push(record);
 		this.records.sort(byTimeThenId);
-		this.projection = projectRelations(this.records, this.options.localMember);
+		const lifecycle = loadLifecycle(this.options.storePath, this.records, this.options.localMember);
+		this.projection = projectRelations(this.records, this.options.localMember, lifecycle);
+		this.teamWarnings = lifecycle.warnings;
 		this.index?.add(record);
 		this.index?.save(this.options.storePath);
 	}
@@ -163,7 +183,9 @@ export class JournalQueryService {
 		const scan = scanJournal(this.options.storePath);
 		this.records = scan.records.map((item) => item.record);
 		this.problems = scan.problems;
-		this.projection = projectRelations(this.records, this.options.localMember);
+		const lifecycle = loadLifecycle(this.options.storePath, this.records, this.options.localMember);
+		this.projection = projectRelations(this.records, this.options.localMember, lifecycle);
+		this.teamWarnings = lifecycle.warnings;
 		if (this.mode === "index")
 			this.index = JournalLexicalIndex.open(this.options.storePath, this.records, forceReindex).index;
 	}
@@ -235,15 +257,69 @@ export class JournalQueryService {
 		};
 	}
 
+	/** The complete active conflict inbox, independently of search ranking or filters. */
+	conflictInbox(limit = 100): JournalConflictsResult {
+		if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+			throw new JournalQueryError("conflict limit must be 1 to 100");
+		const conflicts: JournalConflict[] = [];
+		const warnings: string[] = [];
+		const maxChars = Math.max(1024, this.options.maxChars ?? DEFAULT_MAX_CHARS);
+		let truncated = false;
+		const fits = (nextConflicts: JournalConflict[], nextWarnings: string[]) =>
+			JSON.stringify({ schema: 1, conflicts: nextConflicts, warnings: nextWarnings, truncated: false }).length <=
+			maxChars;
+		for (const conflict of this.projection.conflicts.slice(0, limit)) {
+			const target = this.projection.views.get(conflict.target)?.record;
+			if (!target) continue;
+			const dto: JournalConflict = {
+				target: target.id,
+				target_record: searchDto({ record: target, score: 0, expanded: false }, this.projection, "", 160),
+				branches: conflict.records.flatMap((id) => {
+					const record = this.projection.views.get(id)?.record;
+					return record ? [searchDto({ record, score: 0, expanded: false }, this.projection, "", 160)] : [];
+				}),
+			};
+			if (!fits([...conflicts, dto], warnings)) {
+				truncated = true;
+				break;
+			}
+			conflicts.push(dto);
+		}
+		if (this.projection.conflicts.length > conflicts.length) truncated = true;
+		const sourceWarnings = this.warnings();
+		for (const warning of sourceWarnings) {
+			if (!fits(conflicts, [...warnings, warning])) {
+				truncated = true;
+				break;
+			}
+			warnings.push(warning);
+		}
+		if (sourceWarnings.length > warnings.length) truncated = true;
+		return { schema: 1, conflicts, warnings, truncated };
+	}
+
 	private warnings(): string[] {
 		return [
 			...this.problems.map(
 				(problem) => `${problem.kind}: ${problem.path}${problem.line ? `:${problem.line}` : ""}: ${problem.message}`,
 			),
 			...this.indexWarnings,
+			...this.teamWarnings,
 			...this.projection.cycles.map((cycle) => `relation cycle: ${cycle.join(" -> ")}`),
 		];
 	}
+}
+
+function loadLifecycle(storePath: string, records: readonly JournalRecord[], localMember: string) {
+	const manifest = readProjectManifest(storePath);
+	if (!manifest)
+		return { retiredMembers: new Set<string>(), retiredHosts: new Set<string>(), warnings: [] as string[] };
+	const roster = projectTeamRoster(manifest, localMember);
+	return {
+		retiredMembers: new Set(roster.members.filter((member) => member.state === "retired").map((member) => member.id)),
+		retiredHosts: new Set(roster.hosts.filter((host) => host.state === "retired").map((host) => host.id)),
+		warnings: lifecycleWarnings(manifest, records),
+	};
 }
 
 function normalizeQuery(input: JournalQuery): Omit<JournalQuery, "cursor"> {

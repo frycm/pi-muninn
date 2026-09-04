@@ -6,6 +6,9 @@ export const PROJECT_USAGE = [
 	"muninn project show [path]",
 	"muninn project link [path] [--id UUID] [--name NAME] [--force]",
 	"muninn project unlink [path]",
+	"muninn project remote [URL|--remove]",
+	"muninn project share [path] [--json]",
+	"muninn project join JOURNAL-URL [path] [--force] [--json]",
 ].join("\n");
 
 export interface ProjectCommandContext {
