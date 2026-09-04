@@ -184,11 +184,15 @@ describe("muninn project-journal CLI", () => {
 
 	it("writes, finds, and shows the same stable record ID", async () => {
 		const id = await note("Deploys need the VPN to reach staging.");
-		const searched = await runCli(["search", "deploy", "VPN", "--json"], cwd);
+		const searched = await runCli(["search", "deploy", "VPN", "--trust", "local-user", "--explain", "--json"], cwd);
 		expect(searched.code).toBe(0);
-		const json = JSON.parse(searched.out[0] as string) as { schema: number; records: Array<{ id: string }> };
+		const json = JSON.parse(searched.out[0] as string) as {
+			schema: number;
+			records: Array<{ id: string; explanation?: { total: number }; score: number }>;
+		};
 		expect(json.schema).toBe(1);
 		expect(json.records.map((record) => record.id)).toEqual([id]);
+		expect(json.records[0]?.explanation?.total).toBe(json.records[0]?.score);
 		const shown = await runCli(["show", id, "--json"], cwd);
 		expect(JSON.parse(shown.out[0] as string).records[0].body).toContain("staging");
 	});
@@ -246,6 +250,12 @@ describe("muninn project-journal CLI", () => {
 		const correction = await runCli(["correct", target, "It now uses PostgreSQL 17.", "--json"], cwd);
 		expect(correction.code).toBe(0);
 		const correctionId = JSON.parse(correction.out[0] as string).id as string;
+		const filtered = JSON.parse(
+			(await runCli(["search", "--label", "correction", "--json"], cwd)).out[0] as string,
+		) as {
+			records: Array<{ id: string }>;
+		};
+		expect(filtered.records.map((record) => record.id)).toEqual([correctionId]);
 		const shown = await runCli(["show", target, "--relations", "--json"], cwd);
 		const records = JSON.parse(shown.out[0] as string).records as Array<{
 			id: string;

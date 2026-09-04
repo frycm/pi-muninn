@@ -46,7 +46,7 @@ import { MUNINN_VERSION } from "./version.ts";
 const USAGE = [
 	`muninn ${MUNINN_VERSION} — project journal`,
 	"",
-	"  muninn search QUERY [FILTERS] [--json|--jsonl]",
+	"  muninn search QUERY [FILTERS] [--explain] [--json|--jsonl]",
 	"  muninn show ID [--relations] [--json|--jsonl]",
 	"  muninn sessions [FILTERS] [--json|--jsonl]",
 	"  muninn tail [FILTERS] [--follow] [--jsonl]",
@@ -71,7 +71,7 @@ const USAGE = [
 	"  muninn doctor [--json]",
 	"  muninn evaluate JUDGMENTS.jsonl [--json]",
 	"",
-	"Filters: --id --type --source --member --host --branch --path --tag --status",
+	"Filters: --id --type --source --member --host --branch --path --tag --status --trust --label",
 	"         --since --until --related-to --limit --cursor",
 	"",
 	"Exit 0: success; 1: no match/store or operation failure; 2: invalid input; 3: transcript unavailable.",
@@ -292,7 +292,7 @@ export async function runCli(
 			};
 		}
 		if (command === "search") {
-			const parsed = parseJournalQueryArgs(args, { positionalQuery: true });
+			const parsed = parseJournalQueryArgs(args, { positionalQuery: true, allowExplain: true });
 			if (!parsed.query.query && !hasFilters(parsed.query)) {
 				throw new JournalArgumentError("search needs a query or at least one filter");
 			}
@@ -605,7 +605,7 @@ function parseTeamArgs(args: readonly string[]): {
 }
 
 function hasFilters(query: object): boolean {
-	return Object.entries(query).some(([key, value]) => key !== "query" && value !== undefined);
+	return Object.entries(query).some(([key, value]) => key !== "query" && key !== "explain" && value !== undefined);
 }
 
 function shellQuote(value: string): string {

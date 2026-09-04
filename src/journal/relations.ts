@@ -1,16 +1,30 @@
 /** Deterministic projection over explicit journal relations. */
 import type { JournalRecord, JournalRelationType } from "./record.ts";
 
-export type RelationLabel =
-	| "corrected"
-	| "superseded"
-	| "annotated"
-	| "correction"
-	| "conflict"
-	| "cycle"
-	| "missing-target"
-	| "retired-member"
-	| "retired-host";
+export const RELATION_LABELS = [
+	"correction",
+	"corrected",
+	"superseded",
+	"annotated",
+	"conflict",
+	"cycle",
+	"missing-target",
+	"retired-member",
+	"retired-host",
+] as const;
+
+export type RelationLabel = (typeof RELATION_LABELS)[number];
+
+export const JOURNAL_TRUST_LABELS = [
+	"local-user",
+	"local-agent",
+	"local-other",
+	"teammate-user",
+	"teammate-agent",
+	"teammate-other",
+] as const;
+
+export type JournalTrust = (typeof JOURNAL_TRUST_LABELS)[number];
 
 export interface RelationLifecycle {
 	retiredMembers: ReadonlySet<string>;
@@ -28,7 +42,7 @@ export interface RelationView {
 	incoming: RelationEdge[];
 	outgoing: RelationEdge[];
 	labels: RelationLabel[];
-	trust: "local-user" | "local-agent" | "local-other" | "teammate-user" | "teammate-agent" | "teammate-other";
+	trust: JournalTrust;
 }
 
 export interface RelationProjection {
@@ -38,19 +52,7 @@ export interface RelationProjection {
 	missing: RelationEdge[];
 }
 
-const LABEL_ORDER: RelationLabel[] = [
-	"correction",
-	"corrected",
-	"superseded",
-	"annotated",
-	"conflict",
-	"cycle",
-	"missing-target",
-	"retired-member",
-	"retired-host",
-];
-
-export function trustLabel(record: JournalRecord, localMember: string): RelationView["trust"] {
+export function trustLabel(record: JournalRecord, localMember: string): JournalTrust {
 	const actor = record.member === localMember ? "local" : "teammate";
 	const source = record.source === "user" ? "user" : record.source === "agent" ? "agent" : "other";
 	return `${actor}-${source}`;
@@ -116,7 +118,7 @@ export function projectRelations(
 	const cycles = findCycles(views);
 	for (const cycle of cycles) for (const id of cycle) addLabel(views.get(id), "cycle");
 	for (const view of views.values())
-		view.labels.sort((left, right) => LABEL_ORDER.indexOf(left) - LABEL_ORDER.indexOf(right));
+		view.labels.sort((left, right) => RELATION_LABELS.indexOf(left) - RELATION_LABELS.indexOf(right));
 	conflicts.sort((left, right) => left.target.localeCompare(right.target));
 	missing.sort(byEdge);
 	return { views, conflicts, cycles, missing };

@@ -182,6 +182,48 @@ describe("canonical journal query", () => {
 		);
 	});
 
+	it("filters projected trust and labels with OR within fields and AND across fields", () => {
+		const query = service();
+		expect(ids(query.query({ trust: ["teammate-user"], label: ["conflict"] }))).toEqual([records[4]?.id]);
+		expect(
+			new Set(
+				query
+					.query({ trust: ["local-agent", "teammate-user"], label: ["conflict", "cycle"] })
+					.records.map((record) => record.id),
+			),
+		).toEqual(new Set([records[0]?.id, records[4]?.id]));
+	});
+
+	it("returns bounded, auditable explanations only when requested", () => {
+		const hidden = service().query({ query: "vitest hangs" });
+		expect(hidden.records[0]?.explanation).toBeUndefined();
+
+		const explained = service().query({ query: "vitest hangs", explain: true });
+		const result = explained.records[0];
+		expect(result?.id).toBe(records[1]?.id);
+		expect(result?.explanation).toMatchObject({
+			match: "direct",
+			exact_id: false,
+			phrases: [{ field: "cue", score: 300 }],
+			coverage: { matched: 2, total: 2, score: 0 },
+			evidence_truncated: false,
+		});
+		const components = result?.explanation?.components;
+		expect(components && Object.values(components).reduce((sum, value) => sum + value, 0)).toBe(result?.score);
+
+		const byId = service().query({ query: records[0]?.id as string, explain: true });
+		expect(byId.records[0]?.explanation).toMatchObject({ match: "direct", exact_id: true });
+		for (const correction of byId.records.slice(1)) {
+			expect(correction.explanation).toMatchObject({
+				match: "relation-expanded",
+				expanded_from: records[0]?.id,
+				relation_type: "corrects",
+				terms: [],
+				phrases: [],
+			});
+		}
+	});
+
 	it("paginates stably and rejects a cursor used with another query", () => {
 		const query = service();
 		const first = query.query({ limit: 2 });
@@ -192,6 +234,10 @@ describe("canonical journal query", () => {
 		expect(() => query.query({ query: "different", limit: 2, cursor: first.next_cursor as string })).toThrow(
 			JournalQueryError,
 		);
+		const explained = query.query({ query: "database", explain: true, limit: 1 });
+		expect(() =>
+			query.query({ query: "database", explain: false, limit: 1, cursor: explained.next_cursor as string }),
+		).toThrow(JournalQueryError);
 	});
 
 	it("bounds summaries and full relation reads", () => {

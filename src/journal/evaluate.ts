@@ -3,6 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { isEntryId } from "../ids.ts";
 import type { JournalQuery, JournalQueryService } from "./query.ts";
 import { RECORD_SOURCES, RECORD_STATUSES, RECORD_TYPES } from "./record.ts";
+import { JOURNAL_TRUST_LABELS, RELATION_LABELS } from "./relations.ts";
 
 const EVALUATION_SCHEMA = 1 as const;
 const EVALUATION_K = 10;
@@ -23,11 +24,25 @@ const QUERY_KEYS = [
 	"path",
 	"tag",
 	"status",
+	"trust",
+	"label",
 	"since",
 	"until",
 	"relatedTo",
 ] as const;
-const ARRAY_KEYS = ["ids", "type", "source", "member", "host", "branch", "path", "tag", "status"] as const;
+const ARRAY_KEYS = [
+	"ids",
+	"type",
+	"source",
+	"member",
+	"host",
+	"branch",
+	"path",
+	"tag",
+	"status",
+	"trust",
+	"label",
+] as const;
 
 export interface JournalEvaluationJudgment {
 	id: string;
@@ -115,7 +130,11 @@ function parseQuery(raw: Record<string, unknown>, at: string): Omit<JournalQuery
 					? enumArray(raw[key], `${at}.${key}`, RECORD_SOURCES)
 					: key === "status"
 						? enumArray(raw[key], `${at}.${key}`, RECORD_STATUSES)
-						: stringArray(raw[key], `${at}.${key}`);
+						: key === "trust"
+							? enumArray(raw[key], `${at}.${key}`, JOURNAL_TRUST_LABELS)
+							: key === "label"
+								? enumArray(raw[key], `${at}.${key}`, RELATION_LABELS)
+								: stringArray(raw[key], `${at}.${key}`);
 		(query as Record<string, unknown>)[key] = values;
 	}
 	for (const key of ["since", "until"] as const) {

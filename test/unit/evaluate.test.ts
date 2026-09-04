@@ -87,6 +87,15 @@ describe("journal relevance evaluation", () => {
 		const valid = { id: "one", query: "database", relevant: ["j-019c1000-0001-7000-8000-000000000001"] };
 		expect(() => parseJournalEvaluation(`${JSON.stringify(valid)}\n${JSON.stringify(valid)}\n`)).toThrow(/duplicates/);
 		expect(() => parseJournalEvaluation(`${JSON.stringify({ ...valid, surprise: true })}\n`)).toThrow(/not supported/);
+		expect(() => parseJournalEvaluation(`${JSON.stringify({ ...valid, trust: ["untrusted"] })}\n`)).toThrow(
+			/does not accept/,
+		);
+		expect(
+			parseJournalEvaluation(`${JSON.stringify({ ...valid, trust: ["local-user"], label: ["conflict"] })}\n`)[0]?.query,
+		).toMatchObject({
+			trust: ["local-user"],
+			label: ["conflict"],
+		});
 		expect(() => parseJournalEvaluation("x".repeat(1024 * 1024 + 1))).toThrow(/exceeds/);
 	});
 

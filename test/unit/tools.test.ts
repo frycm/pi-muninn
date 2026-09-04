@@ -121,7 +121,11 @@ describe("journal tool schemas", () => {
 		expect(schemas).not.toContain("memory_");
 		expect(JSON.stringify(tools[3]?.parameters)).not.toContain('"source"');
 		expect(schemas).not.toContain('"path":{"description":"A path inside');
-		expect(JSON.parse(JSON.stringify(tools[0]?.parameters)).properties).toHaveProperty("relatedTo");
+		const searchProperties = JSON.parse(JSON.stringify(tools[0]?.parameters)).properties;
+		expect(searchProperties).toHaveProperty("relatedTo");
+		expect(searchProperties).toHaveProperty("trust");
+		expect(searchProperties).toHaveProperty("label");
+		expect(searchProperties).toHaveProperty("explain");
 		expect(JSON.parse(JSON.stringify(tools[3]?.parameters)).properties.relations.items.properties.type.const).toBe(
 			"annotates",
 		);
@@ -153,6 +157,12 @@ describe("journal_search and journal_read", () => {
 			records: Array<{ id: string }>;
 		};
 		expect(read.records.map((record) => record.id)).toEqual([target.id, correction.id]);
+		const explained = JSON.parse(textOf(await run(journalSearchTool(rt), { query: "VPN", explain: true }))) as {
+			records: Array<{ id: string; explanation?: { match: string; total: number }; score: number }>;
+		};
+		const direct = explained.records.find((record) => record.id === target.id);
+		expect(direct?.explanation).toMatchObject({ match: "direct" });
+		expect(direct?.explanation?.total).toBe(direct?.score);
 	});
 
 	it("accepts only stable IDs, never filesystem or transcript paths", async () => {

@@ -149,5 +149,9 @@ describe("team lifecycle declarations", () => {
 		expect(result.records[0]?.labels).toContain("retired-member");
 		expect(result.records[0]?.labels).toContain("retired-host");
 		expect(result.warnings.join("\n")).toContain("was written while its member was retired");
+		const filtered = new JournalQueryService({ storePath: store, localMember: member.id, mode: "scan" }).query({
+			label: ["retired-member"],
+		});
+		expect(filtered.records.map((record) => record.id)).toEqual([written.id]);
 	});
 });

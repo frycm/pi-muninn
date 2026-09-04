@@ -75,7 +75,7 @@ Current model tools:
 
 | Tool | Purpose |
 |---|---|
-| `journal_search` | Search this logical project's journal with bounded filters and pagination. |
+| `journal_search` | Search this logical project's journal with bounded filters, explanations and pagination. |
 | `journal_read` | Read one record by stable ID with a bounded relation neighborhood. |
 | `journal_context` | Batch records already selected by stable ID under a hard output budget. |
 | `journal_note` | Append an agent-authored note or annotation; never a user correction. |
@@ -84,7 +84,7 @@ Current attended commands:
 
 ```text
 /muninn
-/muninn search QUERY [FILTERS]
+/muninn search QUERY [FILTERS] [--explain]
 /muninn show ID [--relations]
 /muninn sessions [FILTERS]
 /muninn tail [FILTERS]
@@ -101,7 +101,7 @@ Current attended commands:
 Current headless commands:
 
 ```text
-muninn search QUERY [FILTERS] [--json|--jsonl]
+muninn search QUERY [FILTERS] [--explain] [--json|--jsonl]
 muninn show ID [--relations] [--json|--jsonl]
 muninn sessions [FILTERS] [--json|--jsonl]
 muninn tail [FILTERS] [--follow] [--jsonl]
@@ -180,7 +180,7 @@ This preserves a useful team history without publishing every prompt, tool resul
 
 ### Explicit model interface
 
-Phase 3 narrows the implemented model surface around the journal:
+The implemented model surface stays narrow around the journal:
 
 ```ts
 journal_search({
@@ -194,11 +194,14 @@ journal_search({
   path?: string[],
   tag?: string[],
   status?: string[],
+  trust?: string[],
+  label?: string[],
   since?: string,
   until?: string,
   relatedTo?: string,
   limit?: number,
-  cursor?: string
+  cursor?: string,
+  explain?: boolean
 })
 
 journal_read({
@@ -220,7 +223,9 @@ journal_note({
 })
 ```
 
-`journal_search` returns bounded summaries and stable IDs. `journal_read` expands a record,
+`journal_search` returns bounded summaries and stable IDs. Projected trust and lifecycle or
+conflict labels can be filtered explicitly; `explain` adds an auditable score breakdown.
+`journal_read` expands a record,
 its provenance and its correction chain. `journal_context` is an optional batching tool for
 the records a model has already chosen; it is not an automatic prompt hook. `journal_note`
 can write agent-authored observations, but it cannot claim user authority.
@@ -230,7 +235,7 @@ can write agent-authored observations, but it cannot claim user authority.
 The same query service backs the model tools, attended commands and headless CLI:
 
 ```text
-/muninn search QUERY
+/muninn search QUERY [FILTERS] [--explain]
 /muninn show ID
 /muninn sessions [FILTERS]
 /muninn tail [FILTERS]
@@ -239,7 +244,7 @@ The same query service backs the model tools, attended commands and headless CLI
 /muninn conflicts
 /muninn team
 
-muninn search QUERY [FILTERS] [--json]
+muninn search QUERY [FILTERS] [--explain] [--json]
 muninn show ID [--relations] [--json]
 muninn sessions [FILTERS] [--json]
 muninn tail [FILTERS] [--follow] [--json]
@@ -258,6 +263,7 @@ Machine-readable output is stable enough for direct composition:
 
 ```bash
 muninn search "database migration" --json | jq -r '.records[] | [.at, .id, .snippet] | @tsv'
+muninn search "deploy" --trust teammate-user --label conflict --explain --json | jq '.records[] | {id, explanation}'
 muninn sessions --branch feature/auth --json | jq '.sessions[] | select(.status == "failed")'
 rg -n '"type":"correction"' "$(muninn path)"/journal
 muninn search "timeout" --json | jq -r '.records[].id' | fzf
