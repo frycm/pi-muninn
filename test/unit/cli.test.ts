@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,9 +57,27 @@ describe("muninn project-journal CLI", () => {
 		expect(help.out.join("\n")).toContain("muninn search QUERY");
 		expect(help.out.join("\n")).toContain("muninn correct ID TEXT");
 		expect(help.out.join("\n")).toContain("muninn team list");
+		expect(help.out.join("\n")).toContain("muninn evaluate JUDGMENTS.jsonl");
 		const unknown = await runCli(["frobnicate"], cwd);
 		expect(unknown.code).toBe(2);
 		expect(unknown.err.join("\n")).toContain('unknown command "frobnicate"');
+	});
+
+	it("evaluates explicit relevance judgments through scan mode", async () => {
+		const id = await note("Canary deployments use a progressive rollout.");
+		const judgments = join(root, "judgments.jsonl");
+		writeFileSync(judgments, `${JSON.stringify({ id: "canary", query: "progressive rollout", relevant: [id] })}\n`);
+		const result = await runCli(["evaluate", judgments, "--json"], cwd);
+		expect(result).toMatchObject({ code: 0, err: [] });
+		expect(JSON.parse(result.out[0] as string)).toMatchObject({
+			schema: 1,
+			kind: "journal-evaluation",
+			evaluated: 1,
+			metrics: { recall_at_10: 1, mrr_at_10: 1, ndcg_at_10: 1 },
+		});
+		const invalid = join(root, "invalid-judgments.jsonl");
+		writeFileSync(invalid, "{bad\n");
+		expect(await runCli(["evaluate", invalid], cwd)).toMatchObject({ code: 2, out: [] });
 	});
 
 	it("emits a clean machine-readable doctor report without initializing a fresh agent", async () => {

@@ -7,6 +7,12 @@ import { resolveAgentDir } from "./agent-dir.ts";
 import { commitJournal } from "./capture/commit.ts";
 import { diagnoseProject, renderDoctor } from "./doctor.ts";
 import {
+	evaluateJournal,
+	JournalEvaluationError,
+	readJournalEvaluation,
+	renderJournalEvaluation,
+} from "./journal/evaluate.ts";
+import {
 	collectSearchRecords,
 	JournalArgumentError,
 	type JournalOutputMode,
@@ -63,6 +69,7 @@ const USAGE = [
 	"  muninn status [--json]",
 	"  muninn sync [--no-push]",
 	"  muninn doctor [--json]",
+	"  muninn evaluate JUDGMENTS.jsonl [--json]",
 	"",
 	"Filters: --id --type --source --member --host --branch --path --tag --status",
 	"         --since --until --related-to --limit --cursor",
@@ -90,7 +97,12 @@ interface ProjectContext {
 	service: JournalQueryService;
 }
 
-async function projectContext(cwd: string, create: boolean, forceReindex = false): Promise<ProjectContext> {
+async function projectContext(
+	cwd: string,
+	create: boolean,
+	forceReindex = false,
+	mode: "scan" | "index" = "index",
+): Promise<ProjectContext> {
 	const agentDir = resolveAgentDir();
 	const host = loadHostIdentity(agentDir);
 	const project = await resolveLogicalProject({ agentDir, cwd, hostId: host.id, create });
@@ -107,7 +119,7 @@ async function projectContext(cwd: string, create: boolean, forceReindex = false
 		service: new JournalQueryService({
 			storePath: project.storePath,
 			localMember: project.member.id,
-			mode: "index",
+			mode,
 			forceReindex,
 			transcriptRoots: [join(agentDir, "sessions")],
 		}),
@@ -138,6 +150,16 @@ export async function runCli(
 			return {
 				code: result.summary.errors > 0 ? 1 : 0,
 				out: flags.has("json") ? [JSON.stringify(result)] : renderDoctor(result),
+				err,
+			};
+		}
+		if (command === "evaluate") {
+			const parsed = parseEvaluationArgs(args);
+			const context = await projectContext(cwd, false, false, "scan");
+			const report = evaluateJournal(context.service, readJournalEvaluation(resolve(cwd, parsed.path)));
+			return {
+				code: report.problems.length > 0 ? 1 : 0,
+				out: parsed.json ? [JSON.stringify(report)] : renderJournalEvaluation(report),
 				err,
 			};
 		}
@@ -482,9 +504,22 @@ export async function runCli(
 		return { code: 2, out, err: [`muninn: unknown command "${command}"`, "", USAGE] };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		const code = error instanceof JournalArgumentError ? 2 : 1;
+		const code = error instanceof JournalArgumentError || error instanceof JournalEvaluationError ? 2 : 1;
 		return { code, out, err: [message.startsWith("muninn:") ? message : `muninn: ${message}`] };
 	}
+}
+
+function parseEvaluationArgs(args: readonly string[]): { path: string; json: boolean } {
+	let path: string | undefined;
+	let json = false;
+	for (const arg of args) {
+		if (arg === "--json") json = true;
+		else if (arg.startsWith("--")) throw new JournalArgumentError(`unknown evaluation option ${arg}`);
+		else if (path) throw new JournalArgumentError("evaluate takes one judgment file");
+		else path = arg;
+	}
+	if (!path) throw new JournalArgumentError("evaluate needs a judgment file");
+	return { path, json };
 }
 
 function parseProjectShareArgs(args: readonly string[]): { path?: string; json: boolean } {

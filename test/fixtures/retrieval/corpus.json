@@ -1,0 +1,90 @@
+[
+	{
+		"id": "j-019c1000-0001-7000-8000-000000000001",
+		"at": "2026-08-01T10:00:00.000Z",
+		"type": "outcome",
+		"source": "agent",
+		"channel": "tui",
+		"status": "completed",
+		"body": "Completed the PostgreSQL database schema migration to version 17.",
+		"cue": "when upgrading PostgreSQL",
+		"tags": ["database", "release"],
+		"paths": ["src/db/migrate.ts"]
+	},
+	{
+		"id": "j-019c1000-0002-7000-8000-000000000002",
+		"at": "2026-08-02T10:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "CI must run pnpm test with watch mode disabled.",
+		"cue": "when Vitest hangs",
+		"tags": ["ci", "test"],
+		"paths": [".github/workflows/ci.yml"]
+	},
+	{
+		"id": "j-019c1000-0003-7000-8000-000000000003",
+		"at": "2026-08-03T10:00:00.000Z",
+		"type": "checkpoint",
+		"source": "external",
+		"channel": "rpc",
+		"status": "partial",
+		"body": "Production deploy uses a canary rollout before regional promotion.",
+		"cue": "when releasing production",
+		"tags": ["deploy", "ops"],
+		"paths": ["deploy/canary.yaml"]
+	},
+	{
+		"id": "j-019c1000-0004-7000-8000-000000000004",
+		"at": "2026-08-04T10:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Rotate the OAuth signing key through the secrets operator.",
+		"tags": ["auth", "security"],
+		"paths": ["infra/auth/oauth.tf"]
+	},
+	{
+		"id": "j-019c1000-0005-7000-8000-000000000005",
+		"at": "2026-08-05T10:00:00.000Z",
+		"type": "outcome",
+		"source": "agent",
+		"channel": "tui",
+		"status": "completed",
+		"body": "Recovered the database by restoring the latest snapshot and replaying WAL.",
+		"tags": ["database", "recovery"],
+		"paths": ["runbooks/database.md"]
+	},
+	{
+		"id": "j-019c1000-0006-7000-8000-000000000006",
+		"at": "2026-08-06T10:00:00.000Z",
+		"type": "correction",
+		"source": "user",
+		"channel": "cli",
+		"body": "The deployment window moved from Tuesday to Friday.",
+		"tags": ["deploy"],
+		"paths": ["deploy/calendar.md"],
+		"relations": [{ "type": "corrects", "target": "j-019c1000-0003-7000-8000-000000000003" }]
+	},
+	{
+		"id": "j-019c1000-0007-7000-8000-000000000007",
+		"at": "2026-08-07T10:00:00.000Z",
+		"type": "outcome",
+		"source": "agent",
+		"channel": "tui",
+		"status": "completed",
+		"body": "Diagnosed the Kubernetes ingress timeout as stale DNS.",
+		"tags": ["kubernetes", "network"],
+		"paths": ["infra/ingress.yaml"]
+	},
+	{
+		"id": "j-019c1000-0008-7000-8000-000000000008",
+		"at": "2026-08-08T10:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Restart the worker with systemctl and inspect its journalctl output.",
+		"tags": ["linux", "operations"],
+		"paths": ["runbooks/worker.md"]
+	}
+]

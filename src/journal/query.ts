@@ -166,6 +166,10 @@ export class JournalQueryService {
 		return this.records.length;
 	}
 
+	has(id: string): boolean {
+		return this.projection.views.has(id);
+	}
+
 	/** Add a just-appended record without waiting for a filesystem rescan. */
 	add(record: JournalRecord): void {
 		const at = this.records.findIndex((candidate) => candidate.id === record.id);

@@ -127,6 +127,7 @@ muninn reindex [--json]
 muninn status [--json]
 muninn sync [--no-push]
 muninn doctor [--json]
+muninn evaluate JUDGMENTS.jsonl [--json]
 ```
 
 `project show` and `/muninn project` display the project UUID, member UUID, store, aliases and
@@ -250,6 +251,7 @@ muninn path
 muninn project remote [URL|--remove]
 muninn team list [--json]
 muninn doctor [--json]
+muninn evaluate JUDGMENTS.jsonl [--json]
 ```
 
 Machine-readable output is stable enough for direct composition:
