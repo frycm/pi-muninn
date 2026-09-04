@@ -473,6 +473,7 @@ export function journalRecordSigningPayload(record: JournalRecord): Buffer {
 
 export function signJournalRecord(record: JournalRecord, material: SigningMaterial): JournalRecord {
 	if (material.member !== record.member) throw new Error("journal signing key belongs to another member");
+	if (record.at < material.created_at) throw new Error("journal record predates its signing key");
 	const unsigned = { ...record };
 	delete unsigned.signature;
 	const valid = validateJournalRecord(unsigned);

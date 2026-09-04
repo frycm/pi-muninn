@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 import { resolveAgentDir } from "./agent-dir.ts";
 import { commitJournal } from "./capture/commit.ts";
 import { diagnoseProject, renderDoctor } from "./doctor.ts";
-import { readEnrolledSigningIdentity } from "./governance/identity.ts";
+import { publicSigningIdentity, readEnrolledSigningIdentity, readSigningIdentity } from "./governance/identity.ts";
+import { initializeProjectCryptography } from "./governance/setup.ts";
+import { cryptographicStatus, renderCryptographicStatus } from "./governance/status.ts";
 import { EnclaveAuditError, enclaveAuditObservation } from "./integrations/enclave.ts";
 import {
 	INTEGRATION_INPUT_MAX_BYTES,
@@ -82,6 +84,7 @@ const USAGE = [
 	"  muninn team rename-host HOST-ID NAME [--reason TEXT] [--json]",
 	"  muninn team retire-host|restore-host HOST-ID [--reason TEXT] [--json]",
 	"  muninn team leave|return [--reason TEXT] [--json]",
+	"  muninn crypto init|public|status [--json]",
 	"  muninn migrate [--dry-run] [--json]",
 	"  muninn reindex [--json]",
 	"  muninn status [--json]",
@@ -90,7 +93,7 @@ const USAGE = [
 	"  muninn evaluate JUDGMENTS.jsonl [--json]",
 	"",
 	"Filters: --id --type --source --member --host --branch --path --tag --status --integration --trust --label",
-	"         --since --until --related-to --limit --cursor",
+	"         --verification --since --until --related-to --limit --cursor",
 	"",
 	"Exit 0: success; 1: no match/store or operation failure; 2: invalid input; 3: transcript unavailable.",
 ].join("\n");
@@ -273,6 +276,56 @@ export async function runCli(
 			const host = loadHostIdentity(agentDir);
 			const result = await runProjectCommand(args, { agentDir, cwd, hostId: host.id });
 			return { code: result.code, out: result.out, err: result.err };
+		}
+		if (command === "crypto") {
+			const parsed = parseCryptoArgs(args);
+			const context = await projectContext(cwd, parsed.action === "init");
+			if (parsed.action === "init") {
+				const result = await initializeProjectCryptography({
+					agentDir: context.agentDir,
+					storePath: context.project.storePath,
+					project: context.project.id,
+					member: context.project.member.id,
+					host: context.host,
+				});
+				return {
+					code: 0,
+					out: parsed.json
+						? [JSON.stringify(result)]
+						: [
+								`muninn: signing key ${result.identity.key} is enrolled and locally pinned`,
+								`public key: ${result.identity.public_key}`,
+							],
+					err,
+				};
+			}
+			if (parsed.action === "public") {
+				const identity = readSigningIdentity(context.agentDir, context.project.member.id);
+				if (!identity) return { code: 1, out, err: ["muninn: no signing identity; run `muninn crypto init`"] };
+				const result = publicSigningIdentity(identity);
+				return {
+					code: 0,
+					out: parsed.json
+						? [JSON.stringify(result)]
+						: [
+								`member: ${result.member}`,
+								`key: ${result.key}`,
+								`algorithm: ${result.algorithm}`,
+								`created: ${result.created_at}`,
+								`public key: ${result.public_key}`,
+							],
+					err,
+				};
+			}
+			const manifest = readProjectManifest(context.project.storePath);
+			if (!manifest) throw new Error("muninn: project journal has no project.json");
+			const result = cryptographicStatus({
+				agentDir: context.agentDir,
+				storePath: context.project.storePath,
+				manifest,
+				member: context.project.member.id,
+			});
+			return { code: 0, out: parsed.json ? [JSON.stringify(result)] : renderCryptographicStatus(result), err };
 		}
 		if (command === "ingest") {
 			const parsed = parseIngestArgs(args);
@@ -666,6 +719,17 @@ export async function runCli(
 				: 1;
 		return { code, out, err: [message.startsWith("muninn:") ? message : `muninn: ${message}`] };
 	}
+}
+
+function parseCryptoArgs(args: readonly string[]): { action: "init" | "public" | "status"; json: boolean } {
+	const action = args[0];
+	if (action !== "init" && action !== "public" && action !== "status") {
+		throw new JournalArgumentError(
+			action ? `unknown crypto command ${action}` : "crypto needs init, public, or status",
+		);
+	}
+	const flags = parseSimpleFlags(args.slice(1), ["json"]);
+	return { action, json: flags.has("json") };
 }
 
 function parseEvaluationArgs(args: readonly string[]): { path: string; json: boolean } {

@@ -332,6 +332,7 @@ export function parseSigningKeyEvents(value: unknown, keys: readonly SigningKeyD
 			effective_at: signingTimestamp(input.effective_at, `${at}.effective_at`),
 			...(reason ? { reason } : {}),
 		} as const;
+		if (unsigned.at < actor.created_at) throw new Error(`${at}.actor_key was created after the event`);
 		const signature = parseSignatureEnvelope(input.signature, `${at}.signature`);
 		if (signature.key !== actorKey || !verifyPayload(eventPayload(unsigned), signature.value, actor.public_key)) {
 			throw new Error(`${at}.signature is invalid`);

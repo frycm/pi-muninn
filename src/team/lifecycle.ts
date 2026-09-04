@@ -41,6 +41,7 @@ export function teamEventSigningPayload(event: ProjectTeamEvent): Buffer {
 
 export function signTeamEvent(event: ProjectTeamEvent, material: SigningMaterial): ProjectTeamEvent {
 	if (material.member !== event.actor_member) throw new Error("team event signing key belongs to another member");
+	if (event.at < material.created_at) throw new Error("team event predates its signing key");
 	const unsigned = { ...event };
 	delete unsigned.signature;
 	const valid = parseProjectTeamEvent(unsigned);

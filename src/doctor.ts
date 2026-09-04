@@ -1,6 +1,8 @@
 /** Read-only, structured diagnostics for a logical project journal. */
 import { existsSync } from "node:fs";
 import { GitError, git, gitToplevel, isGitRepository } from "./git.ts";
+import { cryptographicStatus } from "./governance/status.ts";
+import { VERIFICATION_STATES } from "./governance/verification.ts";
 import { inspectTranscriptExchange } from "./integrations/transcript.ts";
 import { scanJournal } from "./journal/jsonl.ts";
 import { inspectJournalIndex } from "./journal/query-index.ts";
@@ -171,6 +173,48 @@ export async function diagnoseProject(options: { agentDir: string; cwd: string }
 				`${warnings.length} record(s) were written during a retired interval`,
 				"review the lifecycle declaration and append a correction if the journal is stale",
 			);
+		}
+	}
+
+	if (manifest) {
+		try {
+			const crypto = cryptographicStatus({
+				agentDir: options.agentDir,
+				storePath: project.storePath,
+				manifest,
+				member: project.member.id,
+			});
+			if (crypto.identity.state === "absent" && crypto.keys.synchronized === 0) {
+				add("crypto.local", "ok", "optional cryptographic signing is not enabled");
+			} else if (crypto.identity.state !== "enrolled") {
+				add(
+					"crypto.local",
+					"warning",
+					`local signing identity is ${crypto.identity.state}; ${crypto.keys.trusted} key(s) are locally trusted`,
+					"run `muninn crypto status` and explicitly initialize or repair local trust",
+				);
+			} else {
+				add(
+					"crypto.local",
+					"ok",
+					`local signing identity is enrolled; ${crypto.keys.trusted} key(s) are locally trusted`,
+				);
+			}
+			const concerning = VERIFICATION_STATES.filter(
+				(state) => state !== "unsigned" && state !== "verified" && crypto.records.states[state] > 0,
+			);
+			if (concerning.length === 0) {
+				add("crypto.records", "ok", `${crypto.records.total} record signature state(s) projected`);
+			} else {
+				add(
+					"crypto.records",
+					"warning",
+					concerning.map((state) => `${crypto.records.states[state]} ${state}`).join(", "),
+					"run `muninn search --verification STATE` and inspect the original journal lines",
+				);
+			}
+		} catch (error) {
+			add("crypto.local", "error", describe(error), "repair the local identity or project trust file");
 		}
 	}
 

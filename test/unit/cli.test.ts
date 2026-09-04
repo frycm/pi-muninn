@@ -8,13 +8,11 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AGENT_DIR_ENV, CONFIG_DIR, resolveAgentDir } from "../../src/agent-dir.ts";
 import { runCli } from "../../src/cli.ts";
-import { initializeSigningIdentity } from "../../src/governance/identity.ts";
-import { enrollProjectSigningKey } from "../../src/governance/registry.ts";
-import { scanJournal } from "../../src/journal/jsonl.ts";
-import { verifyJournalRecordSignature } from "../../src/journal/record.ts";
+import { readSigningIdentity } from "../../src/governance/identity.ts";
 import { appendAuthorizedJournalRecord } from "../../src/journal/writer.ts";
 import { readProjectRegistry } from "../../src/project/registry.ts";
 import { loadHostIdentity } from "../../src/store/host.ts";
+import { projectTrustPath } from "../../src/store/paths.ts";
 
 const execFileAsync = promisify(execFile);
 const CLI = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
@@ -56,25 +54,45 @@ describe("resolveAgentDir", () => {
 });
 
 describe("muninn project-journal CLI", () => {
-	it("signs new CLI records once the local member key is explicitly enrolled", async () => {
+	it("explicitly initializes cryptography and exposes safe status and verification", async () => {
 		await note("Create the unsigned journal.");
 		const registry = readProjectRegistry(agentDir);
 		const project = registry?.projects[0];
 		if (!registry || !project) throw new Error("project fixture was not created");
-		const host = loadHostIdentity(agentDir);
-		const storePath = join(agentDir, "muninn-projects", project.id);
-		const signing = initializeSigningIdentity(agentDir, registry.member.id).identity;
-		await enrollProjectSigningKey({
-			storePath,
-			project: project.id,
-			member: registry.member.id,
-			host,
-			identity: signing,
+		const before = await runCli(["crypto", "status", "--json"], cwd);
+		expect(JSON.parse(before.out[0] as string)).toMatchObject({ identity: { state: "absent" }, keys: { pins: 0 } });
+		expect(readSigningIdentity(agentDir, registry.member.id)).toBeUndefined();
+		expect(existsSync(projectTrustPath(agentDir, project.id))).toBe(false);
+
+		const initialized = await runCli(["crypto", "init", "--json"], cwd);
+		const initializedJson = JSON.parse(initialized.out[0] as string) as {
+			identity: { key: string; public_key: string };
+			identity_created: boolean;
+			key_enrolled: boolean;
+			key_pinned: boolean;
+		};
+		expect(initializedJson).toMatchObject({ identity_created: true, key_enrolled: true, key_pinned: true });
+		const signing = readSigningIdentity(agentDir, registry.member.id);
+		if (!signing) throw new Error("signing identity fixture was not created");
+		expect(initialized.out.join("\n")).not.toContain(signing.private_key);
+		const repeated = await runCli(["crypto", "init", "--json"], cwd);
+		expect(JSON.parse(repeated.out[0] as string)).toMatchObject({
+			identity_created: false,
+			key_enrolled: false,
+			key_pinned: false,
 		});
+		const publicResult = await runCli(["crypto", "public", "--json"], cwd);
+		expect(JSON.parse(publicResult.out[0] as string)).toMatchObject({
+			key: signing.id,
+			public_key: signing.public_key,
+		});
+		expect(publicResult.out.join("\n")).not.toContain(signing.private_key);
+
 		await note("This record is signed.");
-		const record = scanJournal(storePath).records.find((item) => item.record.body === "This record is signed.")?.record;
-		expect(record?.signature).toMatchObject({ key: signing.id });
-		expect(record && verifyJournalRecordSignature(record, signing.public_key)).toBe(true);
+		const searched = await runCli(["search", "record signed", "--verification", "verified", "--json"], cwd);
+		expect(JSON.parse(searched.out[0] as string).records).toEqual([
+			expect.objectContaining({ verification: "verified" }),
+		]);
 	});
 
 	it("prints the new surface and rejects unknown commands", async () => {
@@ -83,6 +101,7 @@ describe("muninn project-journal CLI", () => {
 		expect(help.out.join("\n")).toContain("muninn search QUERY");
 		expect(help.out.join("\n")).toContain("muninn correct ID TEXT");
 		expect(help.out.join("\n")).toContain("muninn team list");
+		expect(help.out.join("\n")).toContain("muninn crypto init|public|status");
 		expect(help.out.join("\n")).toContain("muninn evaluate JUDGMENTS.jsonl");
 		const unknown = await runCli(["frobnicate"], cwd);
 		expect(unknown.code).toBe(2);

@@ -1,6 +1,7 @@
 /** `journal_search` — explicit, bounded retrieval of fallible project history. */
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
+import { VERIFICATION_STATES } from "../governance/verification.ts";
 import { RECORD_SOURCES, RECORD_STATUSES, RECORD_TYPES } from "../journal/record.ts";
 import { JOURNAL_TRUST_LABELS, RELATION_LABELS } from "../journal/relations.ts";
 import { type JournalToolRuntime, jsonToolResult, requireJournalSession, throwIfAborted } from "./journal-runtime.ts";
@@ -23,6 +24,12 @@ export const JOURNAL_SEARCH_PARAMETERS = Type.Object({
 	integration: Type.Optional(Type.Array(Type.String({ maxLength: 64 }), { maxItems: 50 })),
 	trust: Type.Optional(Type.Array(literalUnion(JOURNAL_TRUST_LABELS), { maxItems: JOURNAL_TRUST_LABELS.length })),
 	label: Type.Optional(Type.Array(literalUnion(RELATION_LABELS), { maxItems: RELATION_LABELS.length })),
+	verification: Type.Optional(
+		Type.Array(literalUnion(VERIFICATION_STATES), {
+			maxItems: VERIFICATION_STATES.length,
+			description: "Local cryptographic verification states to include.",
+		}),
+	),
 	since: Type.Optional(Type.String()),
 	until: Type.Optional(Type.String()),
 	relatedTo: Type.Optional(Type.String()),

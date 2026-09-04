@@ -70,7 +70,7 @@ describe("muninn doctor", () => {
 		const indexBefore = readFileSync(journalIndexPath(project.storePath), "utf-8");
 		const manifestBefore = readFileSync(join(project.storePath, "project.json"), "utf-8");
 		const result = await diagnoseProject({ agentDir, cwd });
-		expect(result.summary).toEqual({ ok: 12, warnings: 0, errors: 0 });
+		expect(result.summary).toEqual({ ok: 14, warnings: 0, errors: 0 });
 		expect(result.checks.map((candidate) => candidate.code)).toEqual([
 			"registry.valid",
 			"project.mapping",
@@ -81,6 +81,8 @@ describe("muninn doctor", () => {
 			"remote.consistent",
 			"journal.valid",
 			"lifecycle.consistent",
+			"crypto.local",
+			"crypto.records",
 			"relations.consistent",
 			"transcripts.local",
 			"index.valid",
@@ -98,6 +100,7 @@ describe("muninn doctor", () => {
 		expect(result.summary.errors).toBeGreaterThan(0);
 		expect(existsSync(hostFilePath(freshAgent))).toBe(false);
 		expect(existsSync(join(freshAgent, "muninn-projects"))).toBe(false);
+		expect(existsSync(join(freshAgent, "muninn-trust"))).toBe(false);
 	});
 
 	it("reports a stale or damaged index without repairing it", async () => {

@@ -1,5 +1,7 @@
 /** Canonical journal scan, filters, relation-aware ranking and stable DTOs. */
 import { createHash } from "node:crypto";
+import { readProjectTrust } from "../governance/trust.ts";
+import { VERIFICATION_STATES, VerificationProjection, type VerificationState } from "../governance/verification.ts";
 import { locateTranscript } from "../integrations/transcript.ts";
 import { readProjectManifest } from "../store/project-manifest.ts";
 import { lifecycleWarnings, projectTeamRoster } from "../team/lifecycle.ts";
@@ -46,6 +48,7 @@ export interface JournalQuery {
 	integration?: string[];
 	trust?: JournalTrust[];
 	label?: RelationLabel[];
+	verification?: VerificationState[];
 	since?: string;
 	until?: string;
 	relatedTo?: string;
@@ -103,11 +106,14 @@ export interface JournalSearchRecord {
 	integration?: Pick<NonNullable<JournalRecord["integration"]>, "provider" | "kind" | "event">;
 	trust: string;
 	labels: string[];
+	verification: VerificationState;
 	score: number;
 	snippet: string;
 	expanded: boolean;
 	explanation?: JournalScoreExplanation;
 }
+
+export type VerifiedJournalRecord = JournalRecord & { verification: VerificationState };
 
 export interface JournalQueryResult {
 	schema: 1;
@@ -121,7 +127,7 @@ export interface JournalQueryResult {
 }
 
 export interface JournalReadResult {
-	records: JournalRecord[];
+	records: VerifiedJournalRecord[];
 	transcripts: Array<{
 		record: string;
 		file: string;
@@ -194,6 +200,7 @@ export class JournalQueryService {
 	private readonly indexWarnings: string[];
 	private readonly mode: "scan" | "index";
 	private teamWarnings: string[];
+	private verification: VerificationProjection;
 
 	constructor(options: JournalQueryServiceOptions) {
 		this.options = options;
@@ -203,6 +210,7 @@ export class JournalQueryService {
 		const lifecycle = loadLifecycle(options.storePath, this.records, options.localMember);
 		this.projection = projectRelations(this.records, options.localMember, lifecycle);
 		this.teamWarnings = lifecycle.warnings;
+		this.verification = loadVerification(options);
 		this.mode = options.mode ?? "index";
 		this.indexWarnings = [];
 		if (this.mode === "index") {
@@ -229,6 +237,7 @@ export class JournalQueryService {
 		const lifecycle = loadLifecycle(this.options.storePath, this.records, this.options.localMember);
 		this.projection = projectRelations(this.records, this.options.localMember, lifecycle);
 		this.teamWarnings = lifecycle.warnings;
+		this.verification = loadVerification(this.options);
 		this.index?.add(record);
 		this.index?.save(this.options.storePath);
 	}
@@ -240,6 +249,7 @@ export class JournalQueryService {
 		const lifecycle = loadLifecycle(this.options.storePath, this.records, this.options.localMember);
 		this.projection = projectRelations(this.records, this.options.localMember, lifecycle);
 		this.teamWarnings = lifecycle.warnings;
+		this.verification = loadVerification(this.options);
 		if (this.mode === "index")
 			this.index = JournalLexicalIndex.open(this.options.storePath, this.records, forceReindex).index;
 	}
@@ -252,7 +262,9 @@ export class JournalQueryService {
 		const offset = decodeCursor(input.cursor, query);
 		const textual = query.query?.trim() ?? "";
 		const candidates = this.mode === "index" && textual !== "" ? this.index?.candidates(textual) : undefined;
-		const eligible = this.records.filter((record) => matchesFilters(record, query, this.projection));
+		const eligible = this.records.filter((record) =>
+			matchesFilters(record, query, this.projection, this.verification.record(record)),
+		);
 		const lexicalCandidates = candidates ? eligible.filter((record) => candidates.has(record.id)) : eligible;
 		const ranked = rankRecords(
 			lexicalCandidates,
@@ -281,6 +293,7 @@ export class JournalQueryService {
 				textual,
 				this.options.snippetChars ?? DEFAULT_SNIPPET_CHARS,
 				query.explain === true,
+				this.verification.record(candidate.record),
 			);
 			const nextRecords = [...response.records, dto];
 			const nextConsumed = offset + nextRecords.length;
@@ -324,7 +337,10 @@ export class JournalQueryService {
 	read(id: string, relationDepth = 0, limit = 50): JournalReadResult | undefined {
 		const neighborhood = relationNeighborhood(this.projection, id, { depth: relationDepth, limit });
 		if (!neighborhood) return undefined;
-		const records = neighborhood.records.map((view) => view.record);
+		const records = neighborhood.records.map((view) => ({
+			...view.record,
+			verification: this.verification.record(view.record),
+		}));
 		return {
 			records,
 			transcripts: records.flatMap((record) => {
@@ -361,10 +377,28 @@ export class JournalQueryService {
 			if (!target) continue;
 			const dto: JournalConflict = {
 				target: target.id,
-				target_record: searchDto({ record: target, score: 0, expanded: false }, this.projection, "", 160),
+				target_record: searchDto(
+					{ record: target, score: 0, expanded: false },
+					this.projection,
+					"",
+					160,
+					false,
+					this.verification.record(target),
+				),
 				branches: conflict.records.flatMap((id) => {
 					const record = this.projection.views.get(id)?.record;
-					return record ? [searchDto({ record, score: 0, expanded: false }, this.projection, "", 160)] : [];
+					return record
+						? [
+								searchDto(
+									{ record, score: 0, expanded: false },
+									this.projection,
+									"",
+									160,
+									false,
+									this.verification.record(record),
+								),
+							]
+						: [];
 				}),
 			};
 			if (!fits([...conflicts, dto], warnings)) {
@@ -393,9 +427,27 @@ export class JournalQueryService {
 			),
 			...this.indexWarnings,
 			...this.teamWarnings,
+			...this.verification.warnings,
+			...verificationWarnings(this.verification, this.records),
 			...this.projection.cycles.map((cycle) => `relation cycle: ${cycle.join(" -> ")}`),
 		];
 	}
+}
+
+function loadVerification(options: JournalQueryServiceOptions): VerificationProjection {
+	const manifest = readProjectManifest(options.storePath);
+	const trust = manifest && options.agentDir ? readProjectTrust(options.agentDir, manifest.project) : undefined;
+	return new VerificationProjection(manifest, trust);
+}
+
+function verificationWarnings(projection: VerificationProjection, records: readonly JournalRecord[]): string[] {
+	const summary = projection.summarize(records);
+	const concerning = VERIFICATION_STATES.filter(
+		(state) => state !== "unsigned" && state !== "verified" && summary.states[state] > 0,
+	);
+	return concerning.length === 0
+		? []
+		: [`record verification: ${concerning.map((state) => `${summary.states[state]} ${state}`).join(", ")}`];
 }
 
 function loadLifecycle(storePath: string, records: readonly JournalRecord[], localMember: string) {
@@ -427,6 +479,7 @@ function normalizeQuery(input: JournalQuery): Omit<JournalQuery, "cursor"> {
 		"integration",
 		"trust",
 		"label",
+		"verification",
 		"since",
 		"until",
 		"relatedTo",
@@ -457,6 +510,7 @@ function normalizeQuery(input: JournalQuery): Omit<JournalQuery, "cursor"> {
 		"integration",
 		"trust",
 		"label",
+		"verification",
 	] as const) {
 		const values = input[key];
 		if (values === undefined) continue;
@@ -480,6 +534,9 @@ function normalizeQuery(input: JournalQuery): Omit<JournalQuery, "cursor"> {
 		throw new JournalQueryError("trust contains an unsupported value");
 	if (query.label?.some((value) => !RELATION_LABELS.includes(value)))
 		throw new JournalQueryError("label contains an unsupported value");
+	if (query.verification?.some((value) => !VERIFICATION_STATES.includes(value))) {
+		throw new JournalQueryError("verification contains an unsupported value");
+	}
 	for (const key of ["since", "until"] as const) {
 		const value = input[key];
 		if (value === undefined) continue;
@@ -513,6 +570,7 @@ function matchesFilters(
 	record: JournalRecord,
 	query: Omit<JournalQuery, "cursor">,
 	projection: RelationProjection,
+	verification: VerificationState,
 ): boolean {
 	const view = projection.views.get(record.id);
 	if (query.ids && !query.ids.includes(record.id)) return false;
@@ -527,6 +585,7 @@ function matchesFilters(
 	if (query.tag && !query.tag.some((tag) => record.tags.includes(tag))) return false;
 	if (query.trust && (!view || !query.trust.includes(view.trust))) return false;
 	if (query.label && (!view || !query.label.some((label) => view.labels.includes(label)))) return false;
+	if (query.verification && !query.verification.includes(verification)) return false;
 	if (
 		query.path &&
 		!query.path.some((path) => record.paths.some((candidate) => candidate === path || candidate.startsWith(`${path}/`)))
@@ -771,6 +830,7 @@ function searchDto(
 	query: string,
 	snippetChars: number,
 	explain = false,
+	verification: VerificationState = "unsigned",
 ): JournalSearchRecord {
 	const record = ranked.record;
 	const view = projection.views.get(record.id);
@@ -797,6 +857,7 @@ function searchDto(
 			: {}),
 		trust: view?.trust ?? "unknown",
 		labels: view?.labels ?? [],
+		verification,
 		score: roundScore(ranked.score),
 		snippet: snippet(record.body, query, snippetChars),
 		expanded: ranked.expanded,
