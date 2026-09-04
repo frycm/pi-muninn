@@ -153,7 +153,7 @@ export async function runCli(
 						: [
 								`project: ${shared.name} · ${shared.project}`,
 								`journal: ${shared.remote}`,
-								`join: muninn project join ${shared.remote}`,
+								`join: muninn project join ${shellQuote(shared.remote)}`,
 							],
 					err,
 				};
@@ -168,6 +168,7 @@ export async function runCli(
 					remote: parsed.remote,
 					cwd: parsed.path ? resolve(cwd, parsed.path) : cwd,
 					force: parsed.force,
+					...(options.signal ? { signal: options.signal } : {}),
 				});
 				const result = {
 					schema: 1 as const,
@@ -572,6 +573,11 @@ function hasFilters(query: object): boolean {
 	return Object.entries(query).some(([key, value]) => key !== "query" && value !== undefined);
 }
 
+function shellQuote(value: string): string {
+	if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value;
+	return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
 function parseWriteArgs(args: readonly string[]): { text: string; mode: JournalOutputMode } {
 	let mode: JournalOutputMode = "text";
 	const words: string[] = [];
@@ -654,5 +660,5 @@ if (isMain()) {
 	});
 	if (result.out.length > emitted) process.stdout.write(`${result.out.slice(emitted).join("\n")}\n`);
 	if (result.err.length > 0) process.stderr.write(`${result.err.join("\n")}\n`);
-	process.exit(result.code);
+	process.exitCode = result.code;
 }

@@ -22,6 +22,8 @@ describe("journal remote safety", () => {
 		expect(isUsableRemote("https://token@example.com/journal.git")).toBe(false);
 		expect(isUsableRemote("https://user:secret@example.com/journal.git")).toBe(false);
 		expect(isUsableRemote("ssh://git:secret@example.com/journal.git")).toBe(false);
+		expect(isUsableRemote("https://example.com/journal.git?access_token=secret-value")).toBe(false);
+		expect(isUsableRemote("ssh://git@example.com/journal.git#credential")).toBe(false);
 		expect(isUsableRemote("https://example.com/journal.git\nmalice")).toBe(false);
 	});
 });

@@ -170,14 +170,15 @@ export function isUsableRemote(url: string): boolean {
 	if (/^https?:\/\//i.test(trimmed)) {
 		try {
 			const parsed = new URL(trimmed);
-			if (parsed.username !== "" || parsed.password !== "") return false;
+			if (parsed.username !== "" || parsed.password !== "" || parsed.search !== "" || parsed.hash !== "") return false;
 		} catch {
 			return false;
 		}
 	}
 	if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
 		try {
-			if (new URL(trimmed).password !== "") return false;
+			const parsed = new URL(trimmed);
+			if (parsed.password !== "" || parsed.search !== "" || parsed.hash !== "") return false;
 		} catch {
 			return false;
 		}

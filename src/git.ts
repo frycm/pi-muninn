@@ -20,6 +20,7 @@ import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
+import { isUsableRemote } from "./settings.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -116,9 +117,7 @@ function assertName(kind: string, value: string): void {
  * way to run a program.
  */
 function assertRemoteUrl(url: string): void {
-	if (url.trim() === "" || url.startsWith("-") || /^ext::/i.test(url)) {
-		throw new Error(`refusing to use "${url}" as a git remote`);
-	}
+	if (!isUsableRemote(url)) throw new Error("refusing to use an unsafe git remote");
 }
 
 function assertReadablePath(path: string): void {

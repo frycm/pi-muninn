@@ -21,6 +21,7 @@ import {
 import { userInfo } from "node:os";
 import { isAbsolute, normalize } from "node:path";
 import { isMemberId, isProjectId, newMemberId } from "../ids.ts";
+import { containsSecret, containsUnsafeDisplayCharacters } from "../redact.ts";
 import { withStoreLock } from "../store/lock.ts";
 import { projectRegistryPath, projectsRootPath } from "../store/paths.ts";
 
@@ -70,6 +71,16 @@ function requiredString(value: unknown, at: string): string {
 	return value;
 }
 
+function displayName(value: unknown, at: string): string {
+	const name = requiredString(value, at);
+	if (name.length > 200) throw new Error(`${at} must be at most 200 characters`);
+	if (containsUnsafeDisplayCharacters(name)) {
+		throw new Error(`${at} must not contain control or direction-changing characters`);
+	}
+	if (containsSecret(name)) throw new Error(`${at} appears to contain a secret`);
+	return name;
+}
+
 function absolutePath(value: unknown, at: string): string {
 	const path = requiredString(value, at);
 	if (!isAbsolute(path)) throw new Error(`${at} must be an absolute canonical path`);
@@ -90,7 +101,7 @@ export function parseProjectRegistry(text: string, path = "registry.json"): Proj
 		if (!isMemberId(memberId)) throw new Error("member.id must be a full UUIDv7");
 		const member: MemberIdentity = {
 			id: memberId,
-			name: requiredString(raw.member.name, "member.name"),
+			name: displayName(raw.member.name, "member.name"),
 			createdAt: requiredString(raw.member.createdAt, "member.createdAt"),
 		};
 		if (!Array.isArray(raw.projects)) throw new Error("projects must be an array");
@@ -134,7 +145,7 @@ export function parseProjectRegistry(text: string, path = "registry.json"): Proj
 
 			return {
 				id,
-				name: requiredString(candidate.name, `${at}.name`),
+				name: displayName(candidate.name, `${at}.name`),
 				createdAt: requiredString(candidate.createdAt, `${at}.createdAt`),
 				locations,
 			};

@@ -91,6 +91,18 @@ describe("muninn project-journal CLI", () => {
 		expect((await runCli(["project", "remote"], cwd)).code).toBe(1);
 	});
 
+	it("never echoes credential-bearing remotes and shell-quotes share commands", async () => {
+		await note("Create a journal for sharing.");
+		const credential = "https://example.test/journal.git?access_token=very-secret-value";
+		const rejected = await runCli(["project", "remote", credential], cwd);
+		expect(rejected.code).toBe(1);
+		expect(rejected.err.join("\n")).not.toContain("very-secret-value");
+		const spaced = join(root, "journal remote.git");
+		expect((await runCli(["project", "remote", spaced], cwd)).code).toBe(0);
+		const shared = await runCli(["project", "share"], cwd);
+		expect(shared.out.join("\n")).toContain(`join: muninn project join '${spaced}'`);
+	});
+
 	it("declares and lists local member and host lifecycle state", async () => {
 		await note("Create a team journal.");
 		const host = loadHostIdentity(agentDir);

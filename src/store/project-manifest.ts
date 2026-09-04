@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isHostId, isMemberId, isProjectId, isTeamEventId } from "../ids.ts";
+import { containsSecret, containsUnsafeDisplayCharacters } from "../redact.ts";
 import { isUsableRemote } from "../settings.ts";
 
 export const PROJECT_MANIFEST_SCHEMA = 1 as const;
@@ -61,6 +62,10 @@ function nonempty(value: unknown, at: string): string {
 function bounded(value: unknown, at: string, max: number): string {
 	const text = nonempty(value, at);
 	if (text.length > max) throw new Error(`${at} must be at most ${max} characters`);
+	if (containsUnsafeDisplayCharacters(text)) {
+		throw new Error(`${at} must not contain control or direction-changing characters`);
+	}
+	if (containsSecret(text)) throw new Error(`${at} appears to contain a secret`);
 	return text;
 }
 
@@ -82,7 +87,7 @@ function members(value: unknown): ProjectManifestMember[] {
 		const member = candidate as Record<string, unknown>;
 		const id = nonempty(member.id, `members[${index}].id`);
 		if (!isMemberId(id)) throw new Error(`members[${index}].id must be a member UUIDv7`);
-		return { id, name: nonempty(member.name, `members[${index}].name`) };
+		return { id, name: bounded(member.name, `members[${index}].name`, 200) };
 	});
 }
 
@@ -98,7 +103,7 @@ function hosts(value: unknown): ProjectManifestHost[] {
 		const member = nonempty(host.member, `hosts[${index}].member`);
 		if (!isHostId(id)) throw new Error(`hosts[${index}].id must be a host UUIDv7`);
 		if (!isMemberId(member)) throw new Error(`hosts[${index}].member must be a member UUIDv7`);
-		return { id, name: nonempty(host.name, `hosts[${index}].name`), member };
+		return { id, name: bounded(host.name, `hosts[${index}].name`, 200), member };
 	});
 }
 
@@ -209,7 +214,7 @@ export function parseProjectManifest(text: string, path = "project.json"): Proje
 		return {
 			schema: PROJECT_MANIFEST_SCHEMA,
 			project,
-			name: nonempty(raw.name, "name"),
+			name: bounded(raw.name, "name", 200),
 			created_at: createdAt,
 			remote: raw.remote as string | null,
 			members: parsedMembers,
@@ -305,7 +310,7 @@ export function writeProjectManifest(storePath: string, manifest: ProjectManifes
 export function setProjectRemote(storePath: string, remote: string | null): ProjectManifest {
 	const manifest = readProjectManifest(storePath);
 	if (!manifest) throw new Error(`muninn: no project.json at ${storePath}`);
-	if (remote !== null && !isUsableRemote(remote)) throw new Error(`muninn: refusing unsafe journal remote ${remote}`);
+	if (remote !== null && !isUsableRemote(remote)) throw new Error("muninn: refusing unsafe journal remote");
 	const updated = { ...manifest, remote };
 	return writeProjectManifest(storePath, updated);
 }

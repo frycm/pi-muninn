@@ -70,6 +70,17 @@ describe("toArgv — the allow-list is the promise", () => {
 		expect(() => toArgv({ kind: "clone", url: "ext::sh -c exploit" })).toThrow(/refusing/);
 	});
 
+	it("refuses credential-bearing remotes without echoing them", () => {
+		const remote = "https://token@example.com/team/journal.git";
+		try {
+			toArgv({ kind: "clone", url: remote });
+			expect.unreachable("credential-bearing remote should be rejected");
+		} catch (error) {
+			expect(String(error)).toContain("unsafe git remote");
+			expect(String(error)).not.toContain("token@");
+		}
+	});
+
 	it("refuses an empty add", () => {
 		expect(() => toArgv({ kind: "add", paths: [] })).toThrow(/at least one path/);
 	});

@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { newHostId, newMemberId, newProjectId } from "../../src/ids.ts";
 import { joinProjectJournal } from "../../src/project/onboarding.ts";
-import { readProjectRegistry } from "../../src/project/registry.ts";
+import { createProjectRegistry, readProjectRegistry } from "../../src/project/registry.ts";
 import { linkLogicalProject } from "../../src/project/resolver.ts";
 import { ensureStore } from "../../src/store/init.ts";
 import { projectRegistryPath, projectStorePath } from "../../src/store/paths.ts";
@@ -114,13 +114,90 @@ describe("project journal onboarding", () => {
 
 	it("rejects unsafe URLs before invoking Git", async () => {
 		const local = actor("local");
+		const credential = "https://token@example.com/team/journal.git";
 		await expect(
 			joinProjectJournal({
 				agentDir: join(root, "target-agent"),
 				cwd: root,
 				host: local.host,
-				remote: "https://token@example.com/team/journal.git",
+				remote: credential,
 			}),
 		).rejects.toThrow(/unsafe|credentials/);
+		try {
+			await joinProjectJournal({
+				agentDir: join(root, "target-agent"),
+				cwd: root,
+				host: local.host,
+				remote: credential,
+			});
+		} catch (error) {
+			expect(String(error)).not.toContain("token@");
+		}
+	});
+
+	it("cancels clone without publishing a registry, destination, or staged clone", async () => {
+		const agentDir = join(root, "target-agent");
+		const local = actor("local");
+		await expect(
+			joinProjectJournal({ agentDir, cwd: root, host: local.host, remote, signal: AbortSignal.abort() }),
+		).rejects.toThrow();
+		expect(existsSync(projectRegistryPath(agentDir))).toBe(false);
+		expect(existsSync(projectStorePath(agentDir, project))).toBe(false);
+		expect(readdirSync(join(agentDir, "muninn-projects")).filter((name) => name.startsWith(".join-"))).toEqual([]);
+	});
+
+	it("cleans a private clone left at the pre-install crash boundary", async () => {
+		const agentDir = join(root, "target-agent");
+		const projects = join(agentDir, "muninn-projects");
+		const abandoned = join(projects, ".join-abandoned");
+		mkdirSync(abandoned, { recursive: true });
+		writeFileSync(join(abandoned, "partial"), "untrusted bytes");
+		const joined = await joinProjectJournal({ agentDir, cwd: root, host: actor("local").host, remote });
+		expect(joined.project.id).toBe(project);
+		expect(existsSync(abandoned)).toBe(false);
+	});
+
+	it("does not adopt an unregistered destination without a recovery marker", async () => {
+		const agentDir = join(root, "target-agent");
+		const projects = join(agentDir, "muninn-projects");
+		const destination = projectStorePath(agentDir, project);
+		mkdirSync(projects, { recursive: true });
+		await rawGit(projects, ["clone", "--quiet", remote, destination]);
+
+		await expect(joinProjectJournal({ agentDir, cwd: root, host: actor("local").host, remote })).rejects.toThrow(
+			/not this registered local journal/,
+		);
+		expect(existsSync(destination)).toBe(true);
+		expect(existsSync(projectRegistryPath(agentDir))).toBe(false);
+	});
+
+	it("finishes an installed journal left before registry publication", async () => {
+		const agentDir = join(root, "target-agent");
+		const projects = join(agentDir, "muninn-projects");
+		const destination = projectStorePath(agentDir, project);
+		const local = actor("local");
+		const stagedRegistry = createProjectRegistry();
+		mkdirSync(projects, { recursive: true });
+		await rawGit(projects, ["clone", "--quiet", remote, destination]);
+		await ensureStore(destination, {
+			host: local.host,
+			project: {
+				id: project,
+				name: "shared",
+				member: stagedRegistry.member,
+				createdAt: "2026-09-04T00:00:00.000Z",
+			},
+		});
+		const recovery = join(projects, `.join-recovery-${project}.json`);
+		writeFileSync(
+			recovery,
+			`${JSON.stringify({ schema: 1, project, remote, registry: stagedRegistry }, null, "\t")}\n`,
+		);
+
+		const joined = await joinProjectJournal({ agentDir, cwd: root, host: local.host, remote });
+		expect(joined.storeCreated).toBe(false);
+		expect(joined.project.member.id).toBe(stagedRegistry.member.id);
+		expect(readProjectRegistry(agentDir)?.projects.map((item) => item.id)).toContain(project);
+		expect(existsSync(recovery)).toBe(false);
 	});
 });

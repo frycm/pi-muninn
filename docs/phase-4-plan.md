@@ -1,5 +1,9 @@
 # Phase 4 — team operations and governance
 
+**Status: complete.** The six slices below are implemented. The acceptance suite runs on
+Ubuntu and macOS in CI; the journal remains plain Git/JSONL with advisory, unsigned
+lifecycle state.
+
 *Outcome: a person can safely share, join, inspect and maintain a distributed project
 journal without hand-editing its Git repository, and can explicitly settle competing
 corrections without erasing history.*
@@ -16,7 +20,7 @@ Phase 4 includes:
 
 - one-command share and join workflows over an explicit journal remote;
 - a stable human and JSON roster of members, hosts and their declared lifecycle state;
-- attended, append-only lifecycle declarations for the local member and its hosts;
+- direct-user shell lifecycle declarations for the local member and its hosts;
 - a complete correction-conflict inbox;
 - explicit resolution records that supersede every branch the user reviewed;
 - a read-only doctor covering registry, manifest, Git, shard ownership and index health;
@@ -70,7 +74,9 @@ remote is configured rather than guessing from the code repository.
 temporary directory below the agent-owned projects root, validates `project.json`, rejects
 unexpected tracked paths, scans all journal shards, verifies member/host ownership, and only
 then installs the store and registry mapping. `--force` may move an existing *code-location
-mapping* after validation; it never overwrites a journal directory.
+mapping* after validation; it never overwrites a journal directory. A durable local marker
+allows a later invocation to revalidate and finish the narrow crash window between the
+validated store rename and registry publication.
 
 The machine-readable result includes the project/member/host IDs, destination, remote and
 whether a mapping or store was created. Secrets embedded in credential-bearing URLs are
@@ -159,14 +165,14 @@ Manifest reconciliation is field-aware:
 
 Each numbered slice is one reviewable commit. Tests for a slice land with that slice.
 
-### Commit 0 — contract and roadmap
+### Commit 0 — contract and roadmap (implemented)
 
 - Freeze the scope, non-goals, trust language and commands in this document.
 - Link the Phase 4 plan from the README and operations guide.
 
 Done when later implementation choices can be judged against explicit invariants.
 
-### Commit 1 — safe share and join
+### Commit 1 — safe share and join (implemented)
 
 - Add share output and a validated temporary-clone join transaction.
 - Add the minimal allow-listed Git inspection/clone operations.
@@ -181,7 +187,7 @@ failure; concurrent join.
 Done when a fresh machine joins a two-member fixture with one command and a failed join is
 observably a no-op.
 
-### Commit 2 — roster and lifecycle declarations
+### Commit 2 — roster and lifecycle declarations (implemented)
 
 - Add canonical lifecycle event parsing, merge and projection.
 - Add local-authority mutation functions and Git commits.
@@ -196,7 +202,7 @@ parity.
 Done when two clones exchange lifecycle declarations and still return every historical
 record with the same advisory state.
 
-### Commit 3 — conflict inbox and explicit resolution
+### Commit 3 — conflict inbox and explicit resolution (implemented)
 
 - Project active conflicts after superseded branches are removed.
 - Expose a bounded conflict DTO from the canonical query service.
@@ -209,7 +215,7 @@ resolutions; missing target; no-conflict no-op; output bounds; local/teammate la
 Done when a user can drain the conflict inbox without any timestamp silently selecting
 truth.
 
-### Commit 4 — doctor and operational recovery
+### Commit 4 — doctor and operational recovery (implemented)
 
 - Implement read-only checks with stable codes/severity.
 - Cover registry/store/manifest/Git/shards/events/relations/index boundaries.
@@ -222,10 +228,10 @@ remote mismatch; JSON stdout cleanliness; proof that doctor writes no bytes.
 Done when a team member can distinguish repairable local state, expected advisory warnings
 and sync-blocking corruption without inspecting implementation files.
 
-### Commit 5 — release hardening
+### Commit 5 — release hardening (implemented)
 
 - Run real multi-clone acceptance on Linux/macOS path semantics.
-- Add cancellation and crash-boundary coverage for join.
+- Add cancellation and both pre-install cleanup and post-install recovery coverage for join.
 - Audit output bounds, URL redaction and hostile manifest/event text.
 - Update README, format and operations docs from target language to implemented language.
 - Remove any temporary Phase 4 compatibility paths.

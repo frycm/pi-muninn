@@ -85,6 +85,20 @@ describe("team lifecycle manifest", () => {
 			parseProjectManifest(JSON.stringify({ ...manifest, team_events: [{ ...second, member: newMemberId() }] })),
 		).toThrow(/unknown member|self-declared/);
 	});
+
+	it("rejects terminal controls, direction changes, and secrets in synchronized metadata", () => {
+		const manifest = readProjectManifest(store) as ProjectManifest;
+		for (const name of ["host\u001b[2J", "member\u202Etxt", "token=abcdefghijklmnopqrstuvwx"]) {
+			expect(() =>
+				parseProjectManifest(
+					JSON.stringify({
+						...manifest,
+						team_events: [event("member-renamed", "2026-09-02T00:00:00.000Z", { name })],
+					}),
+				),
+			).toThrow(/control|direction|secret/);
+		}
+	});
 });
 
 describe("team lifecycle declarations", () => {

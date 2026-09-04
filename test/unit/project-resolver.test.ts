@@ -203,6 +203,16 @@ describe("project registry safety", () => {
 		expect(readFileSync(path, "utf-8")).toBe("{ not json\n");
 	});
 
+	it("refuses terminal controls and credential-shaped project names before writing the registry", async () => {
+		const repository = await makeRepository("hostile-name");
+		for (const name of ["project\u001b[2J", "project\u202Etxt", "token=abcdefghijklmnopqrstuvwx"]) {
+			await expect(linkLogicalProject({ agentDir, cwd: repository, hostId, name })).rejects.toThrow(
+				/control|direction|secret/,
+			);
+			expect(existsSync(projectRegistryPath(agentDir))).toBe(false);
+		}
+	});
+
 	it("serializes concurrent updates without losing projects or minting two IDs for one root", async () => {
 		const one = join(root, "one");
 		const two = join(root, "two");

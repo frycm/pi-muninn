@@ -447,11 +447,12 @@ equivalence remains the correctness gate at every size.
 
 ### Phase 4 — team operations and governance
 
-Phase 4 starts after basic multi-clone distribution, writer ownership and trust display. It
-improves onboarding beyond the manual clone flow, adds attended member/host lifecycle and
-conflict-review workflows, and may add signed identity or revocation if real team use shows a
-need. It does not introduce an authoritative shared summary. Optional transcript exchange is
-a separate encrypted capability with explicit policy.
+Phase 4 is complete: it added validated onboarding, shell-only lifecycle declarations,
+read-only attended roster/conflict views, explicit conflict resolution and operational
+doctor diagnostics. It did not introduce an authoritative shared summary. Signed identity
+or enforceable revocation is deferred to an optional Phase 7, contingent on evidence from
+real team use and an explicit key-recovery design. Optional transcript exchange remains a
+separate encrypted capability with explicit policy.
 
 ### Phase 5 — retrieval quality and scale
 

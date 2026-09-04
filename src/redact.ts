@@ -237,3 +237,17 @@ export function redact(text: string): RedactionResult {
 export function containsSecret(text: string): boolean {
 	return redact(text).hits.length > 0;
 }
+
+/** Controls, invisible direction marks, and bidi overrides are unsafe in terminal-facing metadata. */
+export function containsUnsafeDisplayCharacters(text: string): boolean {
+	return [...text].some((character) => {
+		const point = character.codePointAt(0) as number;
+		return (
+			point < 0x20 ||
+			(point >= 0x7f && point <= 0x9f) ||
+			(point >= 0x200b && point <= 0x200f) ||
+			(point >= 0x202a && point <= 0x202e) ||
+			(point >= 0x2060 && point <= 0x206f)
+		);
+	});
+}

@@ -127,6 +127,7 @@ describe("muninn doctor", () => {
 		}
 		const result = await diagnoseProject({ agentDir, cwd });
 		expect(check(result, "remote.consistent")?.status).toBe("error");
+		expect(check(result, "remote.consistent")?.message).toBe("manifest remote differs from Git origin");
 		expect(check(result, "journal.valid")?.status).toBe("ok");
 		expect(check(result, "lifecycle.consistent")?.status).toBe("warning");
 		expect(check(result, "relations.consistent")?.status).toBe("warning");

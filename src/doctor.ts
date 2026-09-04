@@ -212,7 +212,7 @@ async function checkRemote(
 		add(
 			"remote.consistent",
 			"warning",
-			`Git origin ${origin} is ignored because the manifest remote is unset`,
+			"Git origin is ignored because the manifest remote is unset",
 			"set it with `muninn project remote URL` or remove origin",
 		);
 	} else if (!origin) {
@@ -226,7 +226,7 @@ async function checkRemote(
 		add(
 			"remote.consistent",
 			"error",
-			`manifest remote ${manifest.remote} differs from Git origin ${origin}`,
+			"manifest remote differs from Git origin",
 			"verify the intended journal before syncing",
 		);
 	} else add("remote.consistent", "ok", "manifest remote and Git origin agree");

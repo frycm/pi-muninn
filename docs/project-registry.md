@@ -48,7 +48,8 @@ The current registry schema is:
 
 Member and project IDs are full UUIDv7 values. Locations are canonical absolute paths. A
 location may become stale after a rename; paths are aliases and never replace the project
-UUID as identity.
+UUID as identity. Display names are bounded and reject credential-shaped text, terminal
+controls and direction-changing characters before registry bytes are written.
 
 Registry read-modify-write operations use one cross-process lock. A changed file is written
 with owner-only permissions to a new file, flushed, atomically renamed and followed by a
@@ -111,7 +112,11 @@ muninn project join JOURNAL-URL [PATH] [--force] [--json]
   path as team identity.
 - `join` validates an untrusted temporary clone before installing the UUID store and mapping
   the selected code checkout. `--force` may replace an existing checkout mapping but never
-  an existing store directory.
+  an existing store directory. Cancellation and validation failures publish neither a
+  registry mapping nor a destination store; a later join cleans abandoned private staging
+  clones. If the process stops after the validated store rename but before registry
+  publication, an agent-local recovery marker lets a later join revalidate and finish only
+  that same project/remote/member transaction.
 
 To reconnect a renamed repository, retain the UUID printed by `unlink` or obtain it with
 `show`, then run:
