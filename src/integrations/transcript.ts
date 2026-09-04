@@ -598,7 +598,7 @@ export async function importTranscript(options: ImportTranscriptOptions): Promis
 				kind: "transcript-import",
 				project: header.project,
 				record: header.record,
-				path: destination,
+				path: existing.path,
 				bytes: header.bytes,
 				sha256: header.sha256,
 				replayed: true,
@@ -606,12 +606,13 @@ export async function importTranscript(options: ImportTranscriptOptions): Promis
 		}
 		installPayloadNoClobber(plaintext, payloadOffset, destination);
 		chmodSync(destination, 0o600);
+		const installed = realpathSync(destination);
 		return {
 			schema: 1,
 			kind: "transcript-import",
 			project: header.project,
 			record: header.record,
-			path: destination,
+			path: installed,
 			bytes: header.bytes,
 			sha256: header.sha256,
 			replayed: false,
