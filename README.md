@@ -12,7 +12,7 @@ The design is local-first and composable: append-only JSONL, Git synchronization
 retrieval and no hosted service in the storage or search path.
 
 > [!IMPORTANT]
-> Phases 3 through 5 are implemented; Phase 6 is next. Linked worktrees and team clones
+> Phases 3 through 5 are implemented; Phase 6 integration work is in progress. Linked worktrees and team clones
 > share one sharded JSONL project journal with validated onboarding, advisory lifecycle
 > declarations, explicit conflict resolution and read-only diagnostics. Automatic capture,
 > model tools, attended commands and Unix interfaces all use the same canonical service.
@@ -26,7 +26,9 @@ The implemented identity and registry contract is
 [docs/project-registry.md](docs/project-registry.md). Team onboarding, migration and recovery
 are covered by [docs/operations.md](docs/operations.md). The implemented Phase 4 contract is
 [docs/phase-4-plan.md](docs/phase-4-plan.md). Retrieval evaluation, explanation and scale are
-implemented in [docs/phase-5-plan.md](docs/phase-5-plan.md).
+implemented in [docs/phase-5-plan.md](docs/phase-5-plan.md). Optional external producers,
+sandbox evidence and encrypted transcript exchange are specified in
+[docs/phase-6-plan.md](docs/phase-6-plan.md).
 
 ## Why a project journal
 
@@ -392,9 +394,11 @@ See the [Phase 5 plan](docs/phase-5-plan.md).
 
 ### Phase 6 — integrations
 
-Next: add optional remote-session and sandbox integrations where the core journal contract is not
-enough, including explicit encrypted transcript exchange if teams need it. Integrations must
-not make the plain-file local workflow secondary.
+In progress: add optional, idempotent evidence producers for remote-session and sandbox
+systems where the core journal contract is not enough, plus explicit `age`-encrypted
+transcript exchange. Normal RPC-hosted pi sessions already use the ordinary journal path;
+integrations must not make the plain-file local workflow secondary. See the
+[Phase 6 plan](docs/phase-6-plan.md).
 
 ### Phase 7 — optional cryptographic governance
 
