@@ -1,6 +1,7 @@
 /** Read-only, structured diagnostics for a logical project journal. */
 import { existsSync } from "node:fs";
 import { GitError, git, gitToplevel, isGitRepository } from "./git.ts";
+import { inspectTranscriptExchange } from "./integrations/transcript.ts";
 import { scanJournal } from "./journal/jsonl.ts";
 import { inspectJournalIndex } from "./journal/query-index.ts";
 import { projectRelations } from "./journal/relations.ts";
@@ -183,6 +184,22 @@ export async function diagnoseProject(options: { agentDir: string; cwd: string }
 			"warning",
 			`${relations.cycles.length} cycle(s), ${relations.missing.length} missing target(s), ${relations.conflicts.length} active conflict(s)`,
 			"run `muninn conflicts` and inspect missing or cyclic relation targets",
+		);
+	}
+
+	const exchange = inspectTranscriptExchange(
+		options.agentDir,
+		project.id,
+		new Map(records.map((record) => [record.id, record])),
+	);
+	if (exchange.problems.length === 0) {
+		add("transcripts.local", "ok", `${exchange.files} imported transcript file(s) are structurally safe`);
+	} else {
+		add(
+			"transcripts.local",
+			"warning",
+			`${exchange.problems.length} local transcript exchange problem(s): ${exchange.problems[0]}`,
+			"inspect the local exchange cache and re-import affected encrypted bundles",
 		);
 	}
 

@@ -37,6 +37,7 @@ const ARRAY_FILTERS = new Map<string, keyof JournalQuery>([
 	["path", "path"],
 	["tag", "tag"],
 	["status", "status"],
+	["integration", "integration"],
 	["trust", "trust"],
 	["label", "label"],
 ]);
@@ -177,10 +178,15 @@ export function renderRead(id: string, result: JournalReadResult, mode: JournalO
 			`${record.id} · ${record.at} · ${record.type}/${record.source}`,
 			record.body,
 			`member ${record.member} · host ${record.host}`,
+			...(record.integration
+				? [
+						`integration ${record.integration.provider}/${record.integration.kind}/${record.integration.event} · ${record.integration.external_id}`,
+					]
+				: []),
 			...(record.git?.branch ? [`branch ${record.git.branch}`] : []),
 			...(record.session
 				? [
-						`session ${record.session.file}${record.session.last ? `#${record.session.last}` : ""}${transcripts.get(record.id)?.available ? "" : " (transcript unavailable locally)"}`,
+						`session ${record.session.file}${record.session.last ? `#${record.session.last}` : ""}${transcripts.get(record.id)?.availability === "exchange" ? " (imported transcript available locally)" : transcripts.get(record.id)?.available ? "" : " (transcript unavailable locally)"}`,
 					]
 				: []),
 			...record.relations.map((relation) => `${relation.type} ${relation.target}`),
@@ -212,7 +218,8 @@ export function renderConflicts(result: JournalConflictsResult, mode: JournalOut
 
 function formatSearchRecord(record: JournalSearchRecord): string {
 	const labels = record.labels.length > 0 ? ` · ${record.labels.join(",")}` : "";
-	return `${record.at} · ${record.id} · ${record.type}/${record.source} · ${record.trust}${labels} · ${record.snippet}`;
+	const integration = record.integration ? ` · ${record.integration.provider}/${record.integration.event}` : "";
+	return `${record.at} · ${record.id} · ${record.type}/${record.source}${integration} · ${record.trust}${labels} · ${record.snippet}`;
 }
 
 function formatExplanation(explanation: NonNullable<JournalSearchRecord["explanation"]>): string {

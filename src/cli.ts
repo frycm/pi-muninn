@@ -1,11 +1,19 @@
 #!/usr/bin/env node
 /** `muninn` — direct human and Unix access to one logical project journal. */
-import { realpathSync } from "node:fs";
+import { closeSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveAgentDir } from "./agent-dir.ts";
 import { commitJournal } from "./capture/commit.ts";
 import { diagnoseProject, renderDoctor } from "./doctor.ts";
+import { EnclaveAuditError, enclaveAuditObservation } from "./integrations/enclave.ts";
+import {
+	INTEGRATION_INPUT_MAX_BYTES,
+	IntegrationInputError,
+	integrationObservationRecord,
+	parseIntegrationInput,
+} from "./integrations/protocol.ts";
+import { type AgeRunner, exportTranscript, importTranscript } from "./integrations/transcript.ts";
 import {
 	evaluateJournal,
 	JournalEvaluationError,
@@ -31,7 +39,12 @@ import { discoverLegacyStoreCandidates, inventoryLegacyStores, migrateMarkdownSt
 import { collectGitProvenance } from "./journal/provenance.ts";
 import { JournalQueryError, JournalQueryService } from "./journal/query.ts";
 import type { NewJournalRecord } from "./journal/record.ts";
-import { appendAuthorizedJournalRecord, appendUserRelation, resolveUserConflict } from "./journal/writer.ts";
+import {
+	appendAuthorizedJournalRecord,
+	appendIntegrationObservation,
+	appendUserRelation,
+	resolveUserConflict,
+} from "./journal/writer.ts";
 import { runProjectCommand } from "./project/command.ts";
 import { joinProjectJournal, projectShare } from "./project/onboarding.ts";
 import { type ResolvedProject, resolveLogicalProject } from "./project/resolver.ts";
@@ -55,6 +68,10 @@ const USAGE = [
 	"  muninn annotate ID TEXT [--json]",
 	"  muninn conflicts [--json|--jsonl]",
 	"  muninn resolve TARGET TEXT [--json]",
+	"  muninn ingest FILE|- [--json]",
+	"  muninn integrate enclave AUDIT.jsonl [--json]",
+	"  muninn transcript export ID BUNDLE.age --recipient RECIPIENT [--json]",
+	"  muninn transcript import BUNDLE.age --identity KEY.txt [--json]",
 	"  muninn path",
 	"  muninn project link|show|unlink|remote [URL|--remove]",
 	"  muninn project share [PATH] [--json]",
@@ -71,7 +88,7 @@ const USAGE = [
 	"  muninn doctor [--json]",
 	"  muninn evaluate JUDGMENTS.jsonl [--json]",
 	"",
-	"Filters: --id --type --source --member --host --branch --path --tag --status --trust --label",
+	"Filters: --id --type --source --member --host --branch --path --tag --status --integration --trust --label",
 	"         --since --until --related-to --limit --cursor",
 	"",
 	"Exit 0: success; 1: no match/store or operation failure; 2: invalid input; 3: transcript unavailable.",
@@ -88,6 +105,10 @@ export interface CliRunOptions {
 	/** Receives lines immediately; useful for `tail --follow`. */
 	emit?: (line: string) => void;
 	pollMs?: number;
+	/** Pre-read stdin for an integration host; omitted uses fd 0 with the same hard bound. */
+	stdin?: string;
+	/** Dependency injection for transcript exchange tests and embedding hosts. */
+	ageRunner?: AgeRunner;
 }
 
 interface ProjectContext {
@@ -119,6 +140,7 @@ async function projectContext(
 		service: new JournalQueryService({
 			storePath: project.storePath,
 			localMember: project.member.id,
+			agentDir,
 			mode,
 			forceReindex,
 			transcriptRoots: [join(agentDir, "sessions")],
@@ -245,6 +267,124 @@ export async function runCli(
 			const host = loadHostIdentity(agentDir);
 			const result = await runProjectCommand(args, { agentDir, cwd, hostId: host.id });
 			return { code: result.code, out: result.out, err: result.err };
+		}
+		if (command === "ingest") {
+			const parsed = parseIngestArgs(args);
+			const text =
+				parsed.path === "-"
+					? (options.stdin ?? readBoundedFd(0))
+					: readBoundedIntegrationFile(resolve(cwd, parsed.path));
+			const observations = parseIntegrationInput(text);
+			const context = await projectContext(cwd, true);
+			const git = await collectGitProvenance(cwd);
+			const records = [];
+			for (const observation of observations) {
+				const record = integrationObservationRecord(observation);
+				const written = await appendIntegrationObservation(
+					{ ...record, ...(git ? { git } : {}) },
+					{
+						storePath: context.project.storePath,
+						project: context.project.id,
+						member: context.project.member.id,
+						host: context.host.id,
+					},
+				);
+				records.push({
+					id: written.id,
+					replayed: written.replayed,
+					provider: observation.integration.provider,
+					external_id: observation.integration.external_id,
+				});
+			}
+			const result = {
+				schema: 1 as const,
+				kind: "integration-ingest" as const,
+				received: records.length,
+				appended: records.filter((record) => !record.replayed).length,
+				replayed: records.filter((record) => record.replayed).length,
+				records,
+			};
+			return {
+				code: 0,
+				out: [
+					parsed.json
+						? JSON.stringify(result)
+						: `muninn: ingested ${result.appended} integration observation(s); ${result.replayed} replay(s)`,
+				],
+				err,
+			};
+		}
+		if (command === "integrate") {
+			const parsed = parseIntegrateArgs(args);
+			const observation = enclaveAuditObservation(resolve(cwd, parsed.path));
+			const context = await projectContext(cwd, true);
+			const git = await collectGitProvenance(cwd);
+			const written = await appendIntegrationObservation(
+				{ ...integrationObservationRecord(observation), ...(git ? { git } : {}) },
+				{
+					storePath: context.project.storePath,
+					project: context.project.id,
+					member: context.project.member.id,
+					host: context.host.id,
+				},
+			);
+			const result = {
+				schema: 1 as const,
+				kind: "pi-enclave-audit-import" as const,
+				id: written.id,
+				replayed: written.replayed,
+				integration: observation.integration,
+			};
+			return {
+				code: 0,
+				out: [
+					parsed.json
+						? JSON.stringify(result)
+						: `muninn: ${written.replayed ? "already imported" : "imported"} verified pi-enclave audit as ${written.id}`,
+				],
+				err,
+			};
+		}
+		if (command === "transcript") {
+			const parsed = parseTranscriptArgs(args);
+			const context = await projectContext(cwd, false);
+			if (parsed.action === "export") {
+				const record = context.service.read(parsed.id, 0, 1)?.records.find((candidate) => candidate.id === parsed.id);
+				if (!record) return { code: 1, out, err: [`muninn: no journal record has id ${parsed.id}`] };
+				const result = await exportTranscript({
+					record,
+					transcriptRoots: [join(context.agentDir, "sessions")],
+					output: resolve(cwd, parsed.output),
+					recipients: parsed.recipients,
+					...(options.ageRunner ? { runAge: options.ageRunner } : {}),
+				});
+				return {
+					code: 0,
+					out: [
+						parsed.json
+							? JSON.stringify(result)
+							: `muninn: encrypted transcript for ${result.record} to ${result.output}`,
+					],
+					err,
+				};
+			}
+			const result = await importTranscript({
+				agentDir: context.agentDir,
+				project: context.project.id,
+				input: resolve(cwd, parsed.input),
+				identity: resolve(cwd, parsed.identity),
+				findRecord: (id) => context.service.read(id, 0, 1)?.records.find((candidate) => candidate.id === id),
+				...(options.ageRunner ? { runAge: options.ageRunner } : {}),
+			});
+			return {
+				code: 0,
+				out: [
+					parsed.json
+						? JSON.stringify(result)
+						: `muninn: ${result.replayed ? "already imported" : "imported"} transcript for ${result.record}`,
+				],
+				err,
+			};
 		}
 		if (command === "path") {
 			if (args.length > 0) throw new JournalArgumentError("path takes no arguments");
@@ -506,7 +646,9 @@ export async function runCli(
 		const message = error instanceof Error ? error.message : String(error);
 		const code =
 			error instanceof JournalArgumentError ||
+			error instanceof EnclaveAuditError ||
 			error instanceof JournalEvaluationError ||
+			error instanceof IntegrationInputError ||
 			error instanceof JournalQueryError
 				? 2
 				: 1;
@@ -525,6 +667,105 @@ function parseEvaluationArgs(args: readonly string[]): { path: string; json: boo
 	}
 	if (!path) throw new JournalArgumentError("evaluate needs a judgment file");
 	return { path, json };
+}
+
+function parseIngestArgs(args: readonly string[]): { path: string; json: boolean } {
+	let path: string | undefined;
+	let json = false;
+	for (const arg of args) {
+		if (arg === "--json") json = true;
+		else if (arg.startsWith("--")) throw new JournalArgumentError(`unknown ingest option ${arg}`);
+		else if (path) throw new JournalArgumentError("ingest takes one file or - for stdin");
+		else path = arg;
+	}
+	if (!path) throw new JournalArgumentError("ingest needs a file or - for stdin");
+	return { path, json };
+}
+
+function parseIntegrateArgs(args: readonly string[]): { path: string; json: boolean } {
+	const integration = args[0];
+	if (integration !== "enclave") {
+		throw new JournalArgumentError(
+			integration ? `unknown integration ${integration}` : "integrate needs an integration",
+		);
+	}
+	const parsed = parseIngestArgs(args.slice(1));
+	if (parsed.path === "-") throw new JournalArgumentError("integrate enclave needs an audit file path");
+	return parsed;
+}
+
+type TranscriptArgs =
+	| { action: "export"; id: string; output: string; recipients: string[]; json: boolean }
+	| { action: "import"; input: string; identity: string; json: boolean };
+
+function parseTranscriptArgs(args: readonly string[]): TranscriptArgs {
+	const action = args[0];
+	if (action !== "export" && action !== "import") {
+		throw new JournalArgumentError(
+			action ? `unknown transcript command ${action}` : "transcript needs export or import",
+		);
+	}
+	const positional: string[] = [];
+	const recipients: string[] = [];
+	let identity: string | undefined;
+	let json = false;
+	for (let index = 1; index < args.length; index++) {
+		const arg = args[index] as string;
+		if (arg === "--json") json = true;
+		else if (arg === "--recipient") {
+			const value = args[++index];
+			if (!value) throw new JournalArgumentError("--recipient needs an age recipient");
+			recipients.push(value);
+		} else if (arg === "--identity") {
+			const value = args[++index];
+			if (!value) throw new JournalArgumentError("--identity needs an age identity file");
+			if (identity) throw new JournalArgumentError("transcript import accepts one --identity file");
+			identity = value;
+		} else if (arg.startsWith("--")) throw new JournalArgumentError(`unknown transcript option ${arg}`);
+		else positional.push(arg);
+	}
+	if (action === "export") {
+		if (identity) throw new JournalArgumentError("transcript export does not accept --identity");
+		if (positional.length !== 2)
+			throw new JournalArgumentError("transcript export needs a record ID and output bundle");
+		if (recipients.length === 0) throw new JournalArgumentError("transcript export needs at least one --recipient");
+		return { action, id: positional[0] as string, output: positional[1] as string, recipients, json };
+	}
+	if (recipients.length > 0) throw new JournalArgumentError("transcript import does not accept --recipient");
+	if (positional.length !== 1 || !identity) {
+		throw new JournalArgumentError("transcript import needs one bundle and --identity file");
+	}
+	return { action, input: positional[0] as string, identity, json };
+}
+
+function readBoundedIntegrationFile(path: string): string {
+	const stat = lstatSync(path);
+	if (!stat.isFile() || stat.isSymbolicLink()) throw new IntegrationInputError("input must be a regular file");
+	if (stat.size > INTEGRATION_INPUT_MAX_BYTES) {
+		throw new IntegrationInputError(`input exceeds ${INTEGRATION_INPUT_MAX_BYTES} bytes`);
+	}
+	const fd = openSync(path, "r");
+	try {
+		return readBoundedFd(fd);
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function readBoundedFd(fd: number): string {
+	const chunks: Buffer[] = [];
+	let bytes = 0;
+	while (true) {
+		const chunk = Buffer.alloc(Math.min(64 * 1024, INTEGRATION_INPUT_MAX_BYTES + 1 - bytes));
+		const count = readSync(fd, chunk, 0, chunk.length, null);
+		if (count === 0) break;
+		chunks.push(chunk.subarray(0, count));
+		bytes += count;
+		if (bytes > INTEGRATION_INPUT_MAX_BYTES) {
+			throw new IntegrationInputError(`input exceeds ${INTEGRATION_INPUT_MAX_BYTES} bytes`);
+		}
+	}
+	return Buffer.concat(chunks).toString("utf-8");
 }
 
 function parseProjectShareArgs(args: readonly string[]): { path?: string; json: boolean } {

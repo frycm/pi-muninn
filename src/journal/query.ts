@@ -1,7 +1,6 @@
 /** Canonical journal scan, filters, relation-aware ranking and stable DTOs. */
 import { createHash } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { locateTranscript } from "../integrations/transcript.ts";
 import { readProjectManifest } from "../store/project-manifest.ts";
 import { lifecycleWarnings, projectTeamRoster } from "../team/lifecycle.ts";
 import { type JournalScanProblem, scanJournal } from "./jsonl.ts";
@@ -44,6 +43,7 @@ export interface JournalQuery {
 	path?: string[];
 	tag?: string[];
 	status?: JournalStatus[];
+	integration?: string[];
 	trust?: JournalTrust[];
 	label?: RelationLabel[];
 	since?: string;
@@ -100,6 +100,7 @@ export interface JournalSearchRecord {
 	tags: string[];
 	paths: string[];
 	relations: JournalRecord["relations"];
+	integration?: Pick<NonNullable<JournalRecord["integration"]>, "provider" | "kind" | "event">;
 	trust: string;
 	labels: string[];
 	score: number;
@@ -125,6 +126,8 @@ export interface JournalReadResult {
 		record: string;
 		file: string;
 		available: boolean;
+		availability: "original" | "exchange" | "missing";
+		local_file?: string;
 		first?: string;
 		last?: string;
 	}>;
@@ -168,6 +171,8 @@ export interface JournalQueryServiceOptions {
 	snippetChars?: number;
 	/** Canonical local directories in which transcript pointers may be checked. */
 	transcriptRoots?: string[];
+	/** User-owned root containing local imported transcript exchange copies. */
+	agentDir?: string;
 	currentGit?: { branch?: string | null; head?: string | null; paths?: string[] };
 }
 
@@ -179,28 +184,6 @@ const MAX_FILTER_VALUES = 50;
 const MAX_FILTER_CHARS = 512;
 const MAX_QUERY_SHAPE_CHARS = 32 * 1024;
 const MAX_QUERY_TERMS = 64;
-
-function inside(root: string, path: string): boolean {
-	const fromRoot = relative(root, path);
-	return fromRoot === "" || (!isAbsolute(fromRoot) && fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`));
-}
-
-function transcriptAvailable(file: string, roots: readonly string[]): boolean {
-	if (!isAbsolute(file)) return false;
-	const candidate = resolve(file);
-	for (const configuredRoot of roots) {
-		const root = resolve(configuredRoot);
-		// Do not probe arbitrary paths from synchronized teammate records.
-		if (!inside(root, candidate) || !existsSync(candidate)) continue;
-		try {
-			const canonicalRoot = existsSync(root) ? realpathSync(root) : root;
-			if (inside(canonicalRoot, realpathSync(candidate))) return true;
-		} catch {
-			// A disappearing or unreadable transcript is simply unavailable locally.
-		}
-	}
-	return false;
-}
 
 export class JournalQueryService {
 	private readonly options: JournalQueryServiceOptions;
@@ -344,19 +327,19 @@ export class JournalQueryService {
 		const records = neighborhood.records.map((view) => view.record);
 		return {
 			records,
-			transcripts: records.flatMap((record) =>
-				record.session
-					? [
-							{
-								record: record.id,
-								file: record.session.file,
-								available: transcriptAvailable(record.session.file, this.options.transcriptRoots ?? []),
-								...(record.session.first ? { first: record.session.first } : {}),
-								...(record.session.last ? { last: record.session.last } : {}),
-							},
-						]
-					: [],
-			),
+			transcripts: records.flatMap((record) => {
+				if (!record.session) return [];
+				const location = locateTranscript(record, this.options.transcriptRoots ?? [], this.options.agentDir);
+				return [
+					{
+						record: record.id,
+						file: record.session.file,
+						...location,
+						...(record.session.first ? { first: record.session.first } : {}),
+						...(record.session.last ? { last: record.session.last } : {}),
+					},
+				];
+			}),
 			warnings: this.warnings(),
 			truncated: neighborhood.truncated,
 		};
@@ -441,6 +424,7 @@ function normalizeQuery(input: JournalQuery): Omit<JournalQuery, "cursor"> {
 		"path",
 		"tag",
 		"status",
+		"integration",
 		"trust",
 		"label",
 		"since",
@@ -470,6 +454,7 @@ function normalizeQuery(input: JournalQuery): Omit<JournalQuery, "cursor"> {
 		"path",
 		"tag",
 		"status",
+		"integration",
 		"trust",
 		"label",
 	] as const) {
@@ -537,6 +522,8 @@ function matchesFilters(
 	if (query.host && !query.host.includes(record.host)) return false;
 	if (query.branch && (!record.git?.branch || !query.branch.includes(record.git.branch))) return false;
 	if (query.status && (!record.status || !query.status.includes(record.status))) return false;
+	if (query.integration && (!record.integration || !query.integration.includes(record.integration.provider)))
+		return false;
 	if (query.tag && !query.tag.some((tag) => record.tags.includes(tag))) return false;
 	if (query.trust && (!view || !query.trust.includes(view.trust))) return false;
 	if (query.label && (!view || !query.label.some((label) => view.labels.includes(label)))) return false;
@@ -799,6 +786,15 @@ function searchDto(
 		tags: record.tags,
 		paths: record.paths,
 		relations: record.relations,
+		...(record.integration
+			? {
+					integration: {
+						provider: record.integration.provider,
+						kind: record.integration.kind,
+						event: record.integration.event,
+					},
+				}
+			: {}),
 		trust: view?.trust ?? "unknown",
 		labels: view?.labels ?? [],
 		score: roundScore(ranked.score),

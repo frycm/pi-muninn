@@ -109,6 +109,54 @@ describe("journal record schema", () => {
 			),
 		).toThrow(/maximum/);
 	});
+
+	it("validates, canonically serializes, and redacts integration provenance", () => {
+		const record = buildJournalRecord(
+			{
+				type: "checkpoint",
+				source: "external",
+				channel: "hook",
+				body: "Sandbox checkpoint",
+				integration: {
+					provider: "pi-enclave",
+					kind: "sandbox-audit",
+					event: "audit-checkpoint",
+					external_id: "session-7:42",
+					observed_at: "2026-09-04T12:00:00.000Z",
+					metadata: { records: 42, safe: true, credential: "token=abcdefghijklmnopqrstuvwxyz123456" },
+				},
+			},
+			identity(),
+		);
+		expect(record.integration).toMatchObject({
+			provider: "pi-enclave",
+			kind: "sandbox-audit",
+			event: "audit-checkpoint",
+			external_id: "session-7:42",
+		});
+		expect(record.integration?.metadata.credential).not.toContain("abcdefghijklmnopqrstuvwxyz123456");
+		expect(record.redacted).toBe(true);
+		expect(parseJournalLine(serializeJournalRecord(record).trimEnd()).record).toEqual(record);
+		expect(() =>
+			buildJournalRecord(
+				{
+					type: "note",
+					source: "external",
+					channel: "hook",
+					body: "bad",
+					integration: {
+						provider: "Not Valid",
+						kind: "event",
+						event: "seen",
+						external_id: "1",
+						observed_at: "2026-09-04T12:00:00.000Z",
+						metadata: {},
+					},
+				},
+				identity(),
+			),
+		).toThrow(/integration identifier/);
+	});
 });
 
 describe("JSONL append and scan", () => {

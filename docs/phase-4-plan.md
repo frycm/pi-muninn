@@ -251,9 +251,9 @@ oracle and lifecycle never hides history by default. See
 
 ### Phase 6 — integrations
 
-External importers use the same writer authority and can supply external observations, not
-user corrections or governance events. Automation may run doctor and sync, but mutation
-requires explicit credentials and policy.
+Phase 6 is complete. External importers use the same writer authority and supply bounded,
+idempotent external observations—not user corrections or governance events. Its sandbox
+adapter, producer contract and transcript exchange remain optional.
 
 ### Phase 7 — optional cryptographic governance
 

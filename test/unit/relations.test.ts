@@ -8,6 +8,7 @@ import { buildJournalRecord, type JournalRecord } from "../../src/journal/record
 import { correctionRank, projectRelations, relationNeighborhood } from "../../src/journal/relations.ts";
 import {
 	appendAuthorizedJournalRecord,
+	appendIntegrationObservation,
 	appendUserRelation,
 	JournalAuthorityError,
 	resolveUserConflict,
@@ -128,6 +129,39 @@ describe("journal write authority", () => {
 			),
 		).rejects.toThrow(/cannot relate to itself/);
 		expect(scanJournal(path).records).toEqual([]);
+	});
+
+	it("accepts only external integration records and makes retries idempotent", async () => {
+		const path = store();
+		const ids = identity();
+		const record = {
+			type: "checkpoint" as const,
+			source: "external" as const,
+			channel: "rpc" as const,
+			body: "Remote session completed.",
+			integration: {
+				provider: "pi-huginn",
+				kind: "remote-session",
+				event: "completed",
+				external_id: "remote-session-1:revision-3",
+				observed_at: "2026-09-04T12:00:00.000Z",
+				metadata: { revision: 3 },
+			},
+		};
+		const first = await appendIntegrationObservation(record, { storePath: path, ...ids });
+		const replay = await appendIntegrationObservation(record, { storePath: path, ...ids });
+		expect(first.replayed).toBe(false);
+		expect(replay).toMatchObject({ id: first.id, replayed: true });
+		expect(scanJournal(path).records).toHaveLength(1);
+		await expect(
+			appendIntegrationObservation({ ...record, body: "changed" }, { storePath: path, ...ids }),
+		).rejects.toThrow(/reused with different content/);
+		await expect(
+			appendAuthorizedJournalRecord({ authority: "integration", record }, { storePath: path, ...ids }),
+		).rejects.toThrow(/idempotent integration writer/);
+		await expect(
+			appendIntegrationObservation({ ...record, source: "agent" }, { storePath: path, ...ids }),
+		).rejects.toThrow(/source: external/);
 	});
 });
 

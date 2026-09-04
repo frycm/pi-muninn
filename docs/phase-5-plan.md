@@ -205,9 +205,12 @@ Phase 6 can consume stable journal/query APIs without knowing the index implemen
 
 ### Phase 6 — integrations
 
-Remote-session and sandbox integrations use the stable query DTO, projected filters and
-explanations. External importers may add provenance-rich observations through existing
-writer authority, but cannot bypass explicit retrieval or introduce a second search store.
+Phase 6 is complete. Remote-session and sandbox integrations use the stable query DTO,
+projected filters and explanations. External importers add bounded provenance-rich
+observations through dedicated writer authority, but cannot bypass explicit retrieval or
+introduce a second search store. The producer, sandbox-summary and encrypted
+transcript-exchange contract is in the
+[Phase 6 plan](phase-6-plan.md).
 
 ### Phase 7 — optional cryptographic governance
 

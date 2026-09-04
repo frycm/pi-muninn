@@ -10,6 +10,8 @@ export const RECORD_SOURCES = ["user", "agent", "tool", "external", "mixed"] as 
 export const RECORD_CHANNELS = ["tui", "rpc", "sdk", "hook", "cli", "unknown"] as const;
 export const RECORD_STATUSES = ["completed", "partial", "failed", "cancelled", "unknown"] as const;
 export const RELATION_TYPES = ["corrects", "supersedes", "annotates"] as const;
+export const MAX_INTEGRATION_METADATA_FIELDS = 32;
+export const MAX_INTEGRATION_METADATA_BYTES = 8 * 1024;
 
 export type JournalRecordType = (typeof RECORD_TYPES)[number];
 export type JournalSource = (typeof RECORD_SOURCES)[number];
@@ -43,6 +45,18 @@ export interface JournalLegacyOrigin {
 	fields?: Record<string, unknown>;
 }
 
+export type JournalIntegrationMetadataValue = string | number | boolean | null;
+
+/** Attributable provenance supplied by an optional external integration. */
+export interface JournalIntegration {
+	provider: string;
+	kind: string;
+	event: string;
+	external_id: string;
+	observed_at: string;
+	metadata: Record<string, JournalIntegrationMetadataValue>;
+}
+
 export interface JournalRecord {
 	schema: typeof JOURNAL_SCHEMA;
 	id: string;
@@ -63,6 +77,7 @@ export interface JournalRecord {
 	relations: JournalRelation[];
 	session?: JournalSessionPointer;
 	git?: JournalGitProvenance;
+	integration?: JournalIntegration;
 	legacy?: JournalLegacyOrigin;
 	redacted?: true;
 }
@@ -81,6 +96,7 @@ export interface NewJournalRecord {
 	relations?: JournalRelation[];
 	session?: JournalSessionPointer;
 	git?: JournalGitProvenance;
+	integration?: JournalIntegration;
 	legacy?: JournalLegacyOrigin;
 	/** Preserved only by trusted import paths; ordinary writers cannot choose it. */
 	redacted?: true;
@@ -114,6 +130,7 @@ const KNOWN_KEYS = new Set([
 	"relations",
 	"session",
 	"git",
+	"integration",
 	"legacy",
 	"redacted",
 ]);
@@ -219,6 +236,55 @@ function parseLegacy(value: unknown): JournalLegacyOrigin {
 	return parsed;
 }
 
+const INTEGRATION_NAME = /^[a-z0-9][a-z0-9._-]*$/;
+const INTEGRATION_METADATA_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+function boundedIntegrationName(value: unknown, at: string): string {
+	const parsed = string(value, at);
+	if (parsed.length > 64 || !INTEGRATION_NAME.test(parsed)) {
+		throw new Error(`${at} must be a lowercase integration identifier of at most 64 characters`);
+	}
+	return parsed;
+}
+
+function parseIntegration(value: unknown): JournalIntegration {
+	const integration = object(value, "integration");
+	const allowed = new Set(["provider", "kind", "event", "external_id", "observed_at", "metadata"]);
+	if (Object.keys(integration).some((key) => !allowed.has(key))) throw new Error("integration has unknown fields");
+	const externalId = string(integration.external_id, "integration.external_id");
+	if (externalId.length > 512) throw new Error("integration.external_id must be at most 512 characters");
+	const observedAt = string(integration.observed_at, "integration.observed_at");
+	if (!RFC3339_MILLIS.test(observedAt) || Number.isNaN(Date.parse(observedAt))) {
+		throw new Error("integration.observed_at must be a UTC RFC 3339 timestamp with millisecond precision");
+	}
+	const rawMetadata = object(integration.metadata, "integration.metadata");
+	const entries = Object.entries(rawMetadata);
+	if (entries.length > MAX_INTEGRATION_METADATA_FIELDS) {
+		throw new Error(`integration.metadata must have at most ${MAX_INTEGRATION_METADATA_FIELDS} fields`);
+	}
+	const metadata: Record<string, JournalIntegrationMetadataValue> = {};
+	for (const [key, candidate] of entries) {
+		if (key.length > 64 || !INTEGRATION_METADATA_KEY.test(key)) {
+			throw new Error("integration.metadata keys must be identifiers of at most 64 characters");
+		}
+		if (candidate === null || typeof candidate === "boolean") metadata[key] = candidate;
+		else if (typeof candidate === "number" && Number.isFinite(candidate)) metadata[key] = candidate;
+		else if (typeof candidate === "string" && candidate.length <= 512) metadata[key] = candidate;
+		else throw new Error(`integration.metadata.${key} must be a bounded JSON scalar`);
+	}
+	if (Buffer.byteLength(JSON.stringify(metadata), "utf-8") > MAX_INTEGRATION_METADATA_BYTES) {
+		throw new Error(`integration.metadata must be at most ${MAX_INTEGRATION_METADATA_BYTES} bytes`);
+	}
+	return {
+		provider: boundedIntegrationName(integration.provider, "integration.provider"),
+		kind: boundedIntegrationName(integration.kind, "integration.kind"),
+		event: boundedIntegrationName(integration.event, "integration.event"),
+		external_id: externalId,
+		observed_at: observedAt,
+		metadata,
+	};
+}
+
 export interface ParsedJournalRecord {
 	record: JournalRecord;
 	/** Unknown top-level fields from a newer compatible writer. */
@@ -267,6 +333,7 @@ export function parseJournalRecord(value: unknown): ParsedJournalRecord {
 	if (cue) record.cue = cue;
 	if (raw.session !== undefined) record.session = parseSession(raw.session);
 	if (raw.git !== undefined) record.git = parseGit(raw.git);
+	if (raw.integration !== undefined) record.integration = parseIntegration(raw.integration);
 	if (raw.legacy !== undefined) record.legacy = parseLegacy(raw.legacy);
 	if (raw.redacted !== undefined) {
 		if (raw.redacted !== true) throw new Error("redacted must be true when present");
@@ -288,12 +355,35 @@ function scrub(input: NewJournalRecord): NewJournalRecord & { redacted?: true } 
 	const body = redact(input.body);
 	const cue = input.cue === undefined ? undefined : redact(input.cue);
 	const tags = (input.tags ?? []).map((tag) => redact(tag));
-	const hits = body.hits.length + (cue?.hits.length ?? 0) + tags.reduce((sum, tag) => sum + tag.hits.length, 0);
+	let integrationMetadata: Record<string, JournalIntegrationMetadataValue> | undefined;
+	let integrationHits = 0;
+	if (input.integration) {
+		integrationMetadata = {};
+		for (const [key, value] of Object.entries(input.integration.metadata)) {
+			if (typeof value !== "string") {
+				integrationMetadata[key] = value;
+				continue;
+			}
+			const redacted = redact(value);
+			integrationMetadata[key] = redacted.text;
+			integrationHits += redacted.hits.length;
+		}
+	}
+	const hits =
+		body.hits.length + (cue?.hits.length ?? 0) + tags.reduce((sum, tag) => sum + tag.hits.length, 0) + integrationHits;
 	return {
 		...input,
 		body: body.text,
 		...(cue ? { cue: cue.text } : {}),
 		tags: tags.map((tag) => tag.text),
+		...(input.integration && integrationMetadata
+			? {
+					integration: {
+						...input.integration,
+						metadata: integrationMetadata,
+					},
+				}
+			: {}),
 		...(hits > 0 || input.redacted ? { redacted: true } : {}),
 	};
 }
@@ -326,6 +416,7 @@ export function buildJournalRecord(input: NewJournalRecord, options: BuildJourna
 		relations: clean.relations ?? [],
 		...(clean.session ? { session: clean.session } : {}),
 		...(clean.git ? { git: clean.git } : {}),
+		...(clean.integration ? { integration: clean.integration } : {}),
 		...(clean.legacy ? { legacy: clean.legacy } : {}),
 		...(clean.redacted ? { redacted: true } : {}),
 	});
@@ -354,6 +445,7 @@ export function serializeJournalRecord(record: JournalRecord): string {
 		relations: valid.relations,
 		...(valid.session ? { session: valid.session } : {}),
 		...(valid.git ? { git: valid.git } : {}),
+		...(valid.integration ? { integration: valid.integration } : {}),
 		...(valid.legacy ? { legacy: valid.legacy } : {}),
 		...(valid.redacted ? { redacted: true } : {}),
 	};

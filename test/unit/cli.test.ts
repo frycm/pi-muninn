@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -197,6 +198,81 @@ describe("muninn project-journal CLI", () => {
 		expect(JSON.parse(shown.out[0] as string).records[0].body).toContain("staging");
 	});
 
+	it("ingests bounded process observations from files or stdin idempotently", async () => {
+		const observation = {
+			schema: 1,
+			type: "checkpoint",
+			channel: "rpc",
+			status: "completed",
+			body: "Remote rollout completed.",
+			tags: ["remote"],
+			paths: ["deploy/rollout.yaml"],
+			integration: {
+				provider: "pi-huginn",
+				kind: "remote-session",
+				event: "completed",
+				external_id: "remote-7:revision-2",
+				observed_at: "2026-09-04T12:00:00.000Z",
+				metadata: { revision: 2 },
+			},
+		};
+		const input = join(root, "observation.json");
+		writeFileSync(input, JSON.stringify(observation));
+		const first = await runCli(["ingest", input, "--json"], cwd);
+		expect(JSON.parse(first.out[0] as string)).toMatchObject({ appended: 1, replayed: 0 });
+		const replay = await runCli(["ingest", "-", "--json"], cwd, { stdin: JSON.stringify(observation) });
+		expect(JSON.parse(replay.out[0] as string)).toMatchObject({ appended: 0, replayed: 1 });
+		const searched = await runCli(["search", "--integration", "pi-huginn", "--json"], cwd);
+		expect(JSON.parse(searched.out[0] as string).records).toEqual([
+			expect.objectContaining({
+				integration: { provider: "pi-huginn", kind: "remote-session", event: "completed" },
+			}),
+		]);
+		const before = JSON.parse((await runCli(["status", "--json"], cwd)).out[0] as string).records;
+		const invalid = await runCli(["ingest", "-", "--json"], cwd, {
+			stdin: `${JSON.stringify({ ...observation, integration: { ...observation.integration, external_id: "new" } })}\n{"bad":true}\n`,
+		});
+		expect(invalid.code).toBe(2);
+		expect(JSON.parse((await runCli(["status", "--json"], cwd)).out[0] as string).records).toBe(before);
+	});
+
+	it("imports only a verified aggregate from a pi-enclave audit", async () => {
+		const genesis = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+		const first = JSON.stringify({
+			backend: "srt",
+			seq: 1,
+			ts: "2026-09-04T12:00:00.000Z",
+			kind: "session_start",
+			sessionId: "session-cli",
+			prevHash: genesis,
+		});
+		const second = JSON.stringify({
+			outcome: "deny",
+			commands: ["sensitive command is intentionally not copied"],
+			seq: 2,
+			ts: "2026-09-04T12:00:01.000Z",
+			kind: "decision",
+			sessionId: "session-cli",
+			prevHash: `sha256:${createHash("sha256").update(first).digest("hex")}`,
+		});
+		const path = join(root, "enclave.jsonl");
+		writeFileSync(path, `${first}\n${second}\n`, { mode: 0o600 });
+		const imported = await runCli(["integrate", "enclave", path, "--json"], cwd);
+		expect(imported.code).toBe(0);
+		expect(JSON.parse(imported.out[0] as string)).toMatchObject({
+			kind: "pi-enclave-audit-import",
+			replayed: false,
+			integration: { provider: "pi-enclave", metadata: { denied: 1, chain: "verified" } },
+		});
+		const replay = await runCli(["integrate", "enclave", path, "--json"], cwd);
+		expect(JSON.parse(replay.out[0] as string).replayed).toBe(true);
+		const selected = JSON.parse(
+			(await runCli(["search", "--integration", "pi-enclave", "--json"], cwd)).out[0] as string,
+		).records;
+		expect(selected).toHaveLength(1);
+		expect(JSON.stringify(selected)).not.toContain("sensitive command");
+	});
+
 	it("emits one independently parseable object per JSONL record", async () => {
 		const first = await note("First deployment fact.");
 		const second = await note("Second deployment fact.");
@@ -246,6 +322,61 @@ describe("muninn project-journal CLI", () => {
 		const shown = await runCli(["show", written.id, "--json"], cwd);
 		expect(shown.code).toBe(3);
 		expect(JSON.parse(shown.out[0] as string).transcripts[0]).toMatchObject({ available: false });
+	});
+
+	it("exports and imports one encrypted transcript through the CLI", async () => {
+		await note("Create the project journal.");
+		const registry = readProjectRegistry(agentDir);
+		const project = registry?.projects[0];
+		const host = loadHostIdentity(agentDir);
+		const sessions = join(agentDir, "sessions");
+		mkdirSync(sessions, { recursive: true });
+		const transcript = join(sessions, "cli-session.jsonl");
+		const transcriptText = `${JSON.stringify({ type: "session", id: "cli" })}\n${JSON.stringify({ type: "message", text: "private" })}\n`;
+		writeFileSync(transcript, transcriptText, { mode: 0o600 });
+		const written = await appendAuthorizedJournalRecord(
+			{
+				authority: "headless-user",
+				record: {
+					type: "note",
+					source: "user",
+					channel: "cli",
+					body: "Exchange this transcript.",
+					session: { file: transcript },
+				},
+			},
+			{
+				storePath: join(agentDir, "muninn-projects", project?.id as string),
+				project: project?.id as string,
+				member: registry?.member.id as string,
+				host: host.id,
+			},
+		);
+		const fakeAge = async (args: readonly string[]) => {
+			const output = args[args.indexOf("--output") + 1] as string;
+			const input = args.at(-1) as string;
+			writeFileSync(output, Buffer.from(readFileSync(input).map((byte) => byte ^ 0x5a)), { mode: 0o600 });
+		};
+		const identity = join(root, "age-key.txt");
+		const bundle = join(root, "session.age");
+		writeFileSync(identity, "fixture", { mode: 0o600 });
+		const exported = await runCli(
+			["transcript", "export", written.id, bundle, "--recipient", "age1fixture", "--json"],
+			cwd,
+			{ ageRunner: fakeAge },
+		);
+		expect(JSON.parse(exported.out[0] as string)).toMatchObject({ kind: "transcript-export", record: written.id });
+		rmSync(transcript);
+		const imported = await runCli(["transcript", "import", bundle, "--identity", identity, "--json"], cwd, {
+			ageRunner: fakeAge,
+		});
+		expect(JSON.parse(imported.out[0] as string)).toMatchObject({ kind: "transcript-import", record: written.id });
+		const shown = await runCli(["show", written.id, "--json"], cwd);
+		expect(shown.code).toBe(0);
+		expect(JSON.parse(shown.out[0] as string).transcripts[0]).toMatchObject({
+			availability: "exchange",
+			available: true,
+		});
 	});
 
 	it("appends a correction without modifying its target and reads the relation chain", async () => {

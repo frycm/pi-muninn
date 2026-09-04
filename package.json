@@ -5,6 +5,10 @@
 	"type": "module",
 	"license": "MIT",
 	"main": "./src/index.ts",
+	"exports": {
+		".": "./src/index.ts",
+		"./integration": "./src/integrations/protocol.ts"
+	},
 	"bin": {
 		"muninn": "./src/cli.ts"
 	},
