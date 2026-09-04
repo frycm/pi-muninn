@@ -248,6 +248,8 @@ describe("project manifest reconciliation", () => {
 			members: [{ id: memberOne.id, name: memberOne.name }],
 			hosts: [{ id: hostOne.id, name: hostOne.name, member: memberOne.id }],
 			team_events: [],
+			signing_keys: [],
+			key_events: [],
 		};
 		const teammate = {
 			...base,

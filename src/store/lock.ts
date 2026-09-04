@@ -18,7 +18,16 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
 
-export type LockOperation = "append" | "commit" | "init" | "sync" | "migrate" | "registry" | "onboarding" | "team";
+export type LockOperation =
+	| "append"
+	| "commit"
+	| "init"
+	| "sync"
+	| "migrate"
+	| "registry"
+	| "onboarding"
+	| "team"
+	| "governance";
 
 /**
  * How long a held lock may go without an mtime refresh before another process
@@ -34,6 +43,7 @@ const STALE_MS: Record<LockOperation, number> = {
 	registry: 30_000,
 	onboarding: 120_000,
 	team: 60_000,
+	governance: 60_000,
 };
 
 /** Total time spent retrying before giving up, per the plan's 5 s budget. */

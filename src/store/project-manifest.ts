@@ -1,11 +1,20 @@
 /** Durable identity, writer ownership and team metadata for a project journal. */
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+	parseSignatureEnvelope,
+	parseSigningKeyDescriptors,
+	parseSigningKeyEvents,
+	type SignatureEnvelope,
+	type SigningKeyDescriptor,
+	type SigningKeyEvent,
+} from "../governance/keys.ts";
 import { isHostId, isMemberId, isProjectId, isTeamEventId } from "../ids.ts";
 import { containsSecret, containsUnsafeDisplayCharacters } from "../redact.ts";
 import { isUsableRemote } from "../settings.ts";
 
 export const PROJECT_MANIFEST_SCHEMA = 1 as const;
+export const SIGNED_PROJECT_MANIFEST_SCHEMA = 2 as const;
 const RFC3339_MILLIS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 export interface ProjectManifestMember {
@@ -37,10 +46,11 @@ export interface ProjectTeamEvent {
 	host?: string;
 	name?: string;
 	reason?: string;
+	signature?: SignatureEnvelope;
 }
 
 export interface ProjectManifest {
-	schema: typeof PROJECT_MANIFEST_SCHEMA;
+	schema: typeof PROJECT_MANIFEST_SCHEMA | typeof SIGNED_PROJECT_MANIFEST_SCHEMA;
 	project: string;
 	name: string;
 	created_at: string;
@@ -48,6 +58,8 @@ export interface ProjectManifest {
 	members: ProjectManifestMember[];
 	hosts: ProjectManifestHost[];
 	team_events: ProjectTeamEvent[];
+	signing_keys: SigningKeyDescriptor[];
+	key_events: SigningKeyEvent[];
 }
 
 export function projectManifestPath(storePath: string): string {
@@ -127,7 +139,18 @@ function teamEvents(value: unknown): ProjectTeamEvent[] {
 		const event = candidate as Record<string, unknown>;
 		const kind = nonempty(event.kind, `${at}.kind`) as TeamEventKind;
 		if (!TEAM_EVENT_KINDS.has(kind)) throw new Error(`${at}.kind is not supported`);
-		const allowed = new Set(["id", "at", "kind", "member", "actor_member", "actor_host", "host", "name", "reason"]);
+		const allowed = new Set([
+			"id",
+			"at",
+			"kind",
+			"member",
+			"actor_member",
+			"actor_host",
+			"host",
+			"name",
+			"reason",
+			"signature",
+		]);
 		for (const key of Object.keys(event)) if (!allowed.has(key)) throw new Error(`${at}.${key} is not supported`);
 		const id = nonempty(event.id, `${at}.id`);
 		const member = nonempty(event.member, `${at}.member`);
@@ -141,6 +164,8 @@ function teamEvents(value: unknown): ProjectTeamEvent[] {
 		if (host !== undefined && !isHostId(host)) throw new Error(`${at}.host must be a host UUIDv7`);
 		const name = event.name === undefined ? undefined : bounded(event.name, `${at}.name`, 200);
 		const reason = event.reason === undefined ? undefined : bounded(event.reason, `${at}.reason`, 2_000);
+		const signature =
+			event.signature === undefined ? undefined : parseSignatureEnvelope(event.signature, `${at}.signature`);
 		const hostEvent = kind.startsWith("host-");
 		const rename = kind.endsWith("-renamed");
 		if (hostEvent !== (host !== undefined))
@@ -156,6 +181,7 @@ function teamEvents(value: unknown): ProjectTeamEvent[] {
 			...(host ? { host } : {}),
 			...(name ? { name } : {}),
 			...(reason ? { reason } : {}),
+			...(signature ? { signature } : {}),
 		};
 	});
 	const found = new Map<string, ProjectTeamEvent>();
@@ -185,7 +211,10 @@ export function parseProjectManifest(text: string, path = "project.json"): Proje
 	try {
 		const raw = JSON.parse(text) as Record<string, unknown>;
 		if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("root must be an object");
-		if (raw.schema !== PROJECT_MANIFEST_SCHEMA) throw new Error(`schema must be ${PROJECT_MANIFEST_SCHEMA}`);
+		if (raw.schema !== PROJECT_MANIFEST_SCHEMA && raw.schema !== SIGNED_PROJECT_MANIFEST_SCHEMA) {
+			throw new Error(`schema must be ${PROJECT_MANIFEST_SCHEMA} or ${SIGNED_PROJECT_MANIFEST_SCHEMA}`);
+		}
+		const schema = raw.schema;
 		const project = nonempty(raw.project, "project");
 		if (!isProjectId(project)) throw new Error("project must be a full UUIDv7");
 		const createdAt = timestamp(raw.created_at, "created_at");
@@ -194,6 +223,16 @@ export function parseProjectManifest(text: string, path = "project.json"): Proje
 		const parsedMembers = uniqueById(members(raw.members), "member");
 		const parsedHosts = uniqueById(hosts(raw.hosts), "host");
 		const parsedEvents = teamEvents(raw.team_events);
+		if (
+			schema === PROJECT_MANIFEST_SCHEMA &&
+			((Array.isArray(raw.signing_keys) && raw.signing_keys.length > 0) ||
+				(Array.isArray(raw.key_events) && raw.key_events.length > 0) ||
+				parsedEvents.some((event) => event.signature))
+		) {
+			throw new Error(`cryptographic fields require schema ${SIGNED_PROJECT_MANIFEST_SCHEMA}`);
+		}
+		const parsedKeys = parseSigningKeyDescriptors(raw.signing_keys ?? []);
+		const parsedKeyEvents = parseSigningKeyEvents(raw.key_events ?? [], parsedKeys);
 		for (const host of parsedHosts) {
 			if (!parsedMembers.some((member) => member.id === host.member)) {
 				throw new Error(`host ${host.id} names unknown member ${host.member}`);
@@ -212,7 +251,7 @@ export function parseProjectManifest(text: string, path = "project.json"): Proje
 			}
 		}
 		return {
-			schema: PROJECT_MANIFEST_SCHEMA,
+			schema,
 			project,
 			name: bounded(raw.name, "name", 200),
 			created_at: createdAt,
@@ -220,6 +259,8 @@ export function parseProjectManifest(text: string, path = "project.json"): Proje
 			members: parsedMembers,
 			hosts: parsedHosts,
 			team_events: parsedEvents,
+			signing_keys: parsedKeys,
+			key_events: parsedKeyEvents,
 		};
 	} catch (error) {
 		throw new Error(
@@ -229,7 +270,21 @@ export function parseProjectManifest(text: string, path = "project.json"): Proje
 }
 
 export function formatProjectManifest(manifest: ProjectManifest): string {
-	return `${JSON.stringify(parseProjectManifest(JSON.stringify(manifest)), null, "\t")}\n`;
+	const parsed = parseProjectManifest(JSON.stringify(manifest));
+	const canonical = {
+		schema: parsed.schema,
+		project: parsed.project,
+		name: parsed.name,
+		created_at: parsed.created_at,
+		remote: parsed.remote,
+		members: parsed.members,
+		hosts: parsed.hosts,
+		team_events: parsed.team_events,
+		...(parsed.schema === SIGNED_PROJECT_MANIFEST_SCHEMA
+			? { signing_keys: parsed.signing_keys, key_events: parsed.key_events }
+			: {}),
+	};
+	return `${JSON.stringify(canonical, null, "\t")}\n`;
 }
 
 export function readProjectManifest(storePath: string): ProjectManifest | undefined {
@@ -265,6 +320,8 @@ export function ensureProjectManifest(
 		members: [],
 		hosts: [],
 		team_events: [],
+		signing_keys: [],
+		key_events: [],
 	};
 	const before = formatProjectManifest(manifest);
 	if (project.member) manifest.members = uniqueById([...manifest.members, project.member], "member");
@@ -288,7 +345,10 @@ export function mergeProjectManifests(left: ProjectManifest, right: ProjectManif
 	}
 	return parseProjectManifest(
 		JSON.stringify({
-			schema: PROJECT_MANIFEST_SCHEMA,
+			schema:
+				left.schema === SIGNED_PROJECT_MANIFEST_SCHEMA || right.schema === SIGNED_PROJECT_MANIFEST_SCHEMA
+					? SIGNED_PROJECT_MANIFEST_SCHEMA
+					: PROJECT_MANIFEST_SCHEMA,
 			project: left.project,
 			name: left.name === right.name ? left.name : [left.name, right.name].sort()[0],
 			created_at: [left.created_at, right.created_at].sort()[0],
@@ -296,6 +356,20 @@ export function mergeProjectManifests(left: ProjectManifest, right: ProjectManif
 			members: [...left.members, ...right.members],
 			hosts: [...left.hosts, ...right.hosts],
 			team_events: [...left.team_events, ...right.team_events],
+			signing_keys: [...left.signing_keys, ...right.signing_keys],
+			key_events: [...left.key_events, ...right.key_events],
+		}),
+	);
+}
+
+/** Upgrade on the first explicit cryptographic action; ordinary stores stay schema 1. */
+export function withProjectSigningKey(manifest: ProjectManifest, key: SigningKeyDescriptor): ProjectManifest {
+	return parseProjectManifest(
+		JSON.stringify({
+			...manifest,
+			schema: SIGNED_PROJECT_MANIFEST_SCHEMA,
+			signing_keys: [...manifest.signing_keys, key],
+			key_events: manifest.key_events,
 		}),
 	);
 }

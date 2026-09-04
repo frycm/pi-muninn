@@ -172,6 +172,18 @@ export function isTeamEventId(value: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Cryptographic governance events
+// ---------------------------------------------------------------------------
+
+export function newKeyEventId(): string {
+	return `g-${uuidv7()}`;
+}
+
+export function isKeyEventId(value: string): boolean {
+	return value.startsWith("g-") && UUID_V7.test(value.slice(2));
+}
+
+// ---------------------------------------------------------------------------
 // Display
 // ---------------------------------------------------------------------------
 
