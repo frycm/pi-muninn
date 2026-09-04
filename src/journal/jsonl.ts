@@ -13,6 +13,7 @@ import {
 	writeSync,
 } from "node:fs";
 import { join, relative } from "node:path";
+import type { SigningMaterial } from "../governance/keys.ts";
 import { isHostId, isMemberId } from "../ids.ts";
 import { withStoreLock } from "../store/lock.ts";
 import {
@@ -30,6 +31,8 @@ export interface AppendJournalOptions extends JournalRecordIdentity {
 	now?: Date;
 	id?: string;
 	lockTimeoutMs?: number;
+	/** Optional only so legacy/plain stores retain byte-for-byte behavior. */
+	signing?: SigningMaterial;
 }
 
 export interface AppendJournalResult {

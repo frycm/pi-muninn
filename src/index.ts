@@ -30,6 +30,7 @@ import {
 	taskFromSessionFile,
 } from "./capture/session-state.ts";
 import { type CommandOutput, type CommandRuntime, runMuninnCommand } from "./commands/muninn.ts";
+import { readEnrolledSigningIdentity } from "./governance/identity.ts";
 import { collectIntegrationEntries, integrationObservationRecord } from "./integrations/protocol.ts";
 import type { AppendJournalResult } from "./journal/jsonl.ts";
 import { collectGitProvenance } from "./journal/provenance.ts";
@@ -143,6 +144,12 @@ export default function (pi: ExtensionAPI): void {
 	const captureTargetPath = (current: SessionContext): string | undefined =>
 		current.scopes.active.find((scope) => scope.scope === current.scopes.captureTarget)?.path;
 
+	const signingOptions = (current: SessionContext, storePath: string) => {
+		if (!current.project) return {};
+		const signing = readEnrolledSigningIdentity(getAgentDir(), storePath, current.project.member.id);
+		return signing ? { signing } : {};
+	};
+
 	const afterJournalAppend = (
 		currentState: MuninnSessionState,
 		storePath: string,
@@ -208,6 +215,7 @@ export default function (pi: ExtensionAPI): void {
 					member: project.member.id,
 					host: current.host.id,
 					lockTimeoutMs: BACKGROUND_LOCK_TIMEOUT_MS,
+					...signingOptions(current, storePath),
 				});
 				if (!written.replayed) afterJournalAppend(currentState, storePath, written);
 			});
@@ -241,6 +249,7 @@ export default function (pi: ExtensionAPI): void {
 					project: current.project.id,
 					member: current.project.member.id,
 					host: current.host.id,
+					...signingOptions(current, projectScope.path),
 				},
 			);
 			if (currentState) afterJournalAppend(currentState, projectScope.path, written);
@@ -307,6 +316,7 @@ export default function (pi: ExtensionAPI): void {
 						project: current.project.id,
 						member: current.project.member.id,
 						host: current.host.id,
+						...signingOptions(current, projectScope.path),
 					},
 				);
 				if (currentState) afterJournalAppend(currentState, projectScope.path, written);
@@ -337,6 +347,7 @@ export default function (pi: ExtensionAPI): void {
 					project: current.project.id,
 					member: current.project.member.id,
 					host: current.host.id,
+					...signingOptions(current, projectScope.path),
 					...(currentState ? { task: currentState.task } : {}),
 					...(currentState?.continues ? { continues: currentState.continues } : {}),
 					...(pointer ? { session: pointer } : {}),
@@ -479,6 +490,7 @@ export default function (pi: ExtensionAPI): void {
 					member: projectIdentity.member.id,
 					host: current.host.id,
 					lockTimeoutMs: BACKGROUND_LOCK_TIMEOUT_MS,
+					...signingOptions(current, storePath),
 				},
 			);
 			afterJournalAppend(currentState, storePath, result);
@@ -568,6 +580,7 @@ export default function (pi: ExtensionAPI): void {
 					member: projectIdentity.member.id,
 					host: current.host.id,
 					lockTimeoutMs: BACKGROUND_LOCK_TIMEOUT_MS,
+					...signingOptions(current, storePath),
 				},
 			);
 			afterJournalAppend(currentState, storePath, written);

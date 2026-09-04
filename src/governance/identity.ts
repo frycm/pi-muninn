@@ -16,6 +16,7 @@ import {
 import { dirname } from "node:path";
 import { isMemberId } from "../ids.ts";
 import { signingIdentityPath } from "../store/paths.ts";
+import { type ProjectManifest, readProjectManifest } from "../store/project-manifest.ts";
 import { privateKeyObject, SIGNING_ALGORITHM, type SigningMaterial, signingKeyId, signingTimestamp } from "./keys.ts";
 
 export const SIGNING_IDENTITY_SCHEMA = 1 as const;
@@ -116,6 +117,33 @@ export function readSigningIdentity(agentDir: string, expectedMember?: string): 
 		if (error instanceof SigningIdentityError) throw error;
 		throw new SigningIdentityError(`cannot read ${path} (${error instanceof Error ? error.message : String(error)})`);
 	}
+}
+
+/** Require an explicitly supplied private identity to match a synchronized descriptor. */
+export function assertSigningIdentityEnrolled(
+	manifest: ProjectManifest,
+	identity: SigningMaterial,
+	member: string,
+): void {
+	if (identity.member !== member) throw new SigningIdentityError(`key ${identity.id} belongs to another member`);
+	const descriptor = manifest.signing_keys.find((candidate) => candidate.id === identity.id);
+	if (!descriptor || descriptor.member !== member || descriptor.public_key !== identity.public_key) {
+		throw new SigningIdentityError(`key ${identity.id} is not enrolled for member ${member} in this project`);
+	}
+}
+
+/** Read the local key only for a project that has explicitly enrolled it. */
+export function readEnrolledSigningIdentity(
+	agentDir: string,
+	storePath: string,
+	member: string,
+): LocalSigningIdentity | undefined {
+	const identity = readSigningIdentity(agentDir, member);
+	if (!identity) return undefined;
+	const manifest = readProjectManifest(storePath);
+	if (!manifest) return undefined;
+	const descriptor = manifest.signing_keys.find((candidate) => candidate.id === identity.id);
+	return descriptor?.member === member && descriptor.public_key === identity.public_key ? identity : undefined;
 }
 
 function writeNewIdentity(path: string, identity: LocalSigningIdentity): void {

@@ -8,6 +8,10 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AGENT_DIR_ENV, CONFIG_DIR, resolveAgentDir } from "../../src/agent-dir.ts";
 import { runCli } from "../../src/cli.ts";
+import { initializeSigningIdentity } from "../../src/governance/identity.ts";
+import { enrollProjectSigningKey } from "../../src/governance/registry.ts";
+import { scanJournal } from "../../src/journal/jsonl.ts";
+import { verifyJournalRecordSignature } from "../../src/journal/record.ts";
 import { appendAuthorizedJournalRecord } from "../../src/journal/writer.ts";
 import { readProjectRegistry } from "../../src/project/registry.ts";
 import { loadHostIdentity } from "../../src/store/host.ts";
@@ -52,6 +56,27 @@ describe("resolveAgentDir", () => {
 });
 
 describe("muninn project-journal CLI", () => {
+	it("signs new CLI records once the local member key is explicitly enrolled", async () => {
+		await note("Create the unsigned journal.");
+		const registry = readProjectRegistry(agentDir);
+		const project = registry?.projects[0];
+		if (!registry || !project) throw new Error("project fixture was not created");
+		const host = loadHostIdentity(agentDir);
+		const storePath = join(agentDir, "muninn-projects", project.id);
+		const signing = initializeSigningIdentity(agentDir, registry.member.id).identity;
+		await enrollProjectSigningKey({
+			storePath,
+			project: project.id,
+			member: registry.member.id,
+			host,
+			identity: signing,
+		});
+		await note("This record is signed.");
+		const record = scanJournal(storePath).records.find((item) => item.record.body === "This record is signed.")?.record;
+		expect(record?.signature).toMatchObject({ key: signing.id });
+		expect(record && verifyJournalRecordSignature(record, signing.public_key)).toBe(true);
+	});
+
 	it("prints the new surface and rejects unknown commands", async () => {
 		const help = await runCli(["help"], cwd);
 		expect(help.code).toBe(0);

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { resolveAgentDir } from "./agent-dir.ts";
 import { commitJournal } from "./capture/commit.ts";
 import { diagnoseProject, renderDoctor } from "./doctor.ts";
+import { readEnrolledSigningIdentity } from "./governance/identity.ts";
 import { EnclaveAuditError, enclaveAuditObservation } from "./integrations/enclave.ts";
 import {
 	INTEGRATION_INPUT_MAX_BYTES,
@@ -116,6 +117,11 @@ interface ProjectContext {
 	host: HostIdentity;
 	project: ResolvedProject;
 	service: JournalQueryService;
+}
+
+function signingOptions(context: ProjectContext) {
+	const signing = readEnrolledSigningIdentity(context.agentDir, context.project.storePath, context.project.member.id);
+	return signing ? { signing } : {};
 }
 
 async function projectContext(
@@ -287,6 +293,7 @@ export async function runCli(
 						project: context.project.id,
 						member: context.project.member.id,
 						host: context.host.id,
+						...signingOptions(context),
 					},
 				);
 				records.push({
@@ -326,6 +333,7 @@ export async function runCli(
 					project: context.project.id,
 					member: context.project.member.id,
 					host: context.host.id,
+					...signingOptions(context),
 				},
 			);
 			const result = {
@@ -419,6 +427,7 @@ export async function runCli(
 				actorHost: context.host.id,
 				actorHostName: context.host.name,
 				kind,
+				...signingOptions(context),
 				...(parsed.host ? { host: parsed.host } : {}),
 				...(parsed.name ? { name: parsed.name } : {}),
 				...(parsed.reason ? { reason: parsed.reason } : {}),
@@ -510,6 +519,7 @@ export async function runCli(
 					project: context.project.id,
 					member: context.project.member.id,
 					host: context.host.id,
+					...signingOptions(context),
 				},
 			);
 			return { code: 0, out: renderAppend(written.record, parsed.mode), err };
@@ -530,6 +540,7 @@ export async function runCli(
 				project: context.project.id,
 				member: context.project.member.id,
 				host: context.host.id,
+				...signingOptions(context),
 			});
 			return { code: 0, out: renderAppend(written.record, parsed.mode), err };
 		}
@@ -546,6 +557,7 @@ export async function runCli(
 				project: context.project.id,
 				member: context.project.member.id,
 				host: context.host.id,
+				...signingOptions(context),
 				...(git ? { git } : {}),
 			});
 			if (resolved.status === "missing") {

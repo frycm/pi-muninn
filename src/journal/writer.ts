@@ -1,7 +1,9 @@
 /** One authority boundary for every non-migration project-journal write. */
 import { relative } from "node:path";
+import { assertSigningIdentityEnrolled } from "../governance/identity.ts";
 import { isEntryId, newEntryId } from "../ids.ts";
 import { withStoreLock } from "../store/lock.ts";
+import { readProjectManifest } from "../store/project-manifest.ts";
 import {
 	type AppendJournalOptions,
 	type AppendJournalResult,
@@ -16,7 +18,7 @@ import type {
 	JournalSessionPointer,
 	NewJournalRecord,
 } from "./record.ts";
-import { buildJournalRecord, serializeJournalRecord } from "./record.ts";
+import { buildJournalRecord, journalRecordSigningPayload, serializeJournalRecord } from "./record.ts";
 import { projectRelations } from "./relations.ts";
 
 export type JournalWriterAuthority = "attended-user" | "headless-user" | "model" | "automatic" | "integration";
@@ -93,6 +95,14 @@ export interface AppendIntegrationResult extends AppendJournalResult {
 	replayed: boolean;
 }
 
+function assertSigningEnrollment(options: AppendJournalOptions): void {
+	if (!options.signing) return;
+	const manifest = readProjectManifest(options.storePath);
+	if (!manifest) throw new JournalAuthorityError(`cannot sign without project.json`);
+	if (manifest.project !== options.project) throw new JournalAuthorityError(`cannot sign for another project`);
+	assertSigningIdentityEnrolled(manifest, options.signing, options.member);
+}
+
 /**
  * Append one external observation exactly once per provider/external ID.
  *
@@ -104,6 +114,7 @@ export async function appendIntegrationObservation(
 	options: Omit<AppendJournalOptions, "id" | "now">,
 ): Promise<AppendIntegrationResult> {
 	assertAuthority({ authority: "integration", record }, newEntryId());
+	assertSigningEnrollment(options);
 	const integration = record.integration as NonNullable<NewJournalRecord["integration"]>;
 	return withStoreLock(options.storePath, "append", { host: options.host }, () => {
 		const scan = scanJournal(options.storePath);
@@ -143,7 +154,7 @@ export async function appendIntegrationObservation(
 				id: existing.id,
 				now: new Date(existing.at),
 			});
-			if (serializeJournalRecord(candidate) !== serializeJournalRecord(existing)) {
+			if (!journalRecordSigningPayload(candidate).equals(journalRecordSigningPayload(existing))) {
 				throw new JournalAuthorityError(
 					`integration key ${integration.provider}/${integration.external_id} was reused with different content`,
 				);
@@ -175,6 +186,7 @@ export async function appendAuthorizedJournalRecord(
 	}
 	const id = options.id ?? newEntryId();
 	assertAuthority(write, id);
+	assertSigningEnrollment(options);
 	return appendJournalRecord(write.record, { ...options, id });
 }
 
@@ -228,6 +240,7 @@ export interface ResolveConflictOptions extends Omit<UserRelationWriteOptions, "
 export async function resolveUserConflict(options: ResolveConflictOptions): Promise<ResolveConflictResult> {
 	if (!isEntryId(options.target)) throw new JournalAuthorityError(`${options.target} is not a journal record id`);
 	if (options.text.trim() === "") throw new JournalAuthorityError("resolution text cannot be empty");
+	assertSigningEnrollment(options);
 	return withStoreLock(options.storePath, "append", { host: options.host }, () => {
 		const scan = scanJournal(options.storePath);
 		if (scan.problems.length > 0) {

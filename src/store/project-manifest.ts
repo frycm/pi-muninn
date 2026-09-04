@@ -195,6 +195,13 @@ function teamEvents(value: unknown): ProjectTeamEvent[] {
 	return [...found.values()].sort((left, right) => left.at.localeCompare(right.at) || left.id.localeCompare(right.id));
 }
 
+/** Parse one lifecycle event using the same canonical contract as project.json. */
+export function parseProjectTeamEvent(value: unknown): ProjectTeamEvent {
+	const parsed = teamEvents([value]);
+	if (!parsed[0]) throw new Error("team event is missing");
+	return parsed[0];
+}
+
 function uniqueById<T extends { id: string }>(items: T[], kind: string): T[] {
 	const found = new Map<string, T>();
 	for (const item of items) {
