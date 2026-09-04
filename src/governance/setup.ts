@@ -1,7 +1,12 @@
 /** Explicit cryptographic bootstrap; never called by ordinary startup or writes. */
 import type { HostIdentity } from "../store/host.ts";
 import { type ProjectManifest, readProjectManifest } from "../store/project-manifest.ts";
-import { initializeSigningIdentity, type PublicSigningIdentity, publicSigningIdentity } from "./identity.ts";
+import {
+	initializeSigningIdentity,
+	type PublicSigningIdentity,
+	publicSigningIdentity,
+	readSigningIdentity,
+} from "./identity.ts";
 import { enrollProjectSigningKey } from "./registry.ts";
 import { pinProjectSigningKey } from "./trust.ts";
 
@@ -22,6 +27,15 @@ export async function initializeProjectCryptography(options: {
 	member: string;
 	host: HostIdentity;
 }): Promise<InitializeProjectCryptographyResult> {
+	const before = readProjectManifest(options.storePath);
+	if (!before) throw new Error(`muninn: no project.json at ${options.storePath}`);
+	const existing = readSigningIdentity(options.agentDir, options.member);
+	if (
+		before.signing_keys.some((key) => key.member === options.member) &&
+		(!existing || !before.signing_keys.some((key) => key.id === existing.id))
+	) {
+		throw new Error("muninn: this member already has signing history; use `muninn crypto recover`");
+	}
 	const initialized = initializeSigningIdentity(options.agentDir, options.member);
 	const enrollment = await enrollProjectSigningKey({
 		storePath: options.storePath,

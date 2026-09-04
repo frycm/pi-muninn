@@ -10,6 +10,7 @@ import {
 	mkdirSync,
 	openSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -180,6 +181,34 @@ function writeNewIdentity(path: string, identity: LocalSigningIdentity): void {
 	}
 }
 
+function replaceIdentity(path: string, identity: LocalSigningIdentity): void {
+	const root = dirname(path);
+	const valid = parseSigningIdentity(JSON.stringify(identity), path);
+	const temporary = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+	let fd: number | undefined;
+	try {
+		fd = openSync(temporary, "wx", 0o600);
+		writeFileSync(fd, `${JSON.stringify(valid, null, "\t")}\n`, "utf-8");
+		fsyncSync(fd);
+		closeSync(fd);
+		fd = undefined;
+		renameSync(temporary, path);
+		try {
+			const directory = openSync(root, "r");
+			try {
+				fsyncSync(directory);
+			} finally {
+				closeSync(directory);
+			}
+		} catch {
+			// Windows and some filesystems do not permit fsync on a directory.
+		}
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+		rmSync(temporary, { force: true });
+	}
+}
+
 /** Explicit and idempotent initialization; ordinary Muninn startup never calls this. */
 export function initializeSigningIdentity(
 	agentDir: string,
@@ -211,4 +240,32 @@ export function publicSigningIdentity(identity: LocalSigningIdentity): PublicSig
 /** Generates material in memory for a signed rotation; it does not write anything. */
 export function generateSigningIdentity(member: string, now: Date = new Date()): LocalSigningIdentity {
 	return generate(member, now);
+}
+
+/** Install already-generated recovery material without overwriting a concurrently created key. */
+export function installSigningIdentity(agentDir: string, identity: LocalSigningIdentity): LocalSigningIdentity {
+	const existing = readSigningIdentity(agentDir, identity.member);
+	if (existing) throw new SigningIdentityError(`refusing to replace existing key ${existing.id} during recovery`);
+	const path = signingIdentityPath(agentDir);
+	writeNewIdentity(path, parseSigningIdentity(JSON.stringify(identity), path));
+	const installed = readSigningIdentity(agentDir, identity.member);
+	if (!installed || installed.id !== identity.id) {
+		throw new SigningIdentityError(`another signing identity won the recovery race`);
+	}
+	return installed;
+}
+
+/** Compare-and-swap the local identity only after its successor is durable in project.json. */
+export function replaceSigningIdentity(
+	agentDir: string,
+	expectedKey: string,
+	successor: LocalSigningIdentity,
+): LocalSigningIdentity {
+	const current = readSigningIdentity(agentDir, successor.member);
+	if (!current) throw new SigningIdentityError(`cannot rotate because no local signing identity exists`);
+	if (current.id !== expectedKey) throw new SigningIdentityError(`local key changed while rotation was in progress`);
+	replaceIdentity(signingIdentityPath(agentDir), successor);
+	const installed = readSigningIdentity(agentDir, successor.member);
+	if (!installed || installed.id !== successor.id) throw new SigningIdentityError(`failed to install rotated key`);
+	return installed;
 }

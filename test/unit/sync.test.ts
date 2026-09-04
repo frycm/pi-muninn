@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resetCommitDebounce } from "../../src/capture/commit.ts";
+import { setVerificationPolicy } from "../../src/governance/trust.ts";
 import { newHostId, newMemberId, newProjectId } from "../../src/ids.ts";
 import { appendJournalRecord } from "../../src/journal/jsonl.ts";
 import { JournalQueryService } from "../../src/journal/query.ts";
@@ -222,6 +223,38 @@ describe("project journal sync", () => {
 		});
 		expect(expired.problem).toContain("ran out of time");
 		expect(expired.stoppedAt).toBe("fetch");
+	});
+
+	it("stops a synchronized policy violation before the first push", async () => {
+		const agentDir = join(root, "agent");
+		await ensureStore(one, options(hostOne, memberOne));
+		await appendJournalRecord(
+			{ type: "note", source: "user", channel: "cli", body: "unsigned after cutoff" },
+			{
+				storePath: one,
+				project,
+				member: memberOne.id,
+				host: hostOne.id,
+				now: new Date("2026-09-04T13:00:00.000Z"),
+			},
+		);
+		await setVerificationPolicy({
+			agentDir,
+			project,
+			host: hostOne.id,
+			mode: "require",
+			requiredAfter: "2026-09-04T12:00:00.000Z",
+		});
+		const result = await sync({
+			storePath: one,
+			agentDir,
+			hostId: hostOne.id,
+			hostName: hostOne.name,
+			remote,
+		});
+		expect(result).toMatchObject({ stoppedAt: "push", pushed: false });
+		expect(result.problem).toContain("local verification policy");
+		expect(await git(remote, ["branch", "--list", "main"])).toBe("");
 	});
 
 	it("reports lock contention and non-repositories instead of throwing", async () => {

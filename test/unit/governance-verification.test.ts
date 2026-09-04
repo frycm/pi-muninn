@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,6 +10,7 @@ import {
 	parseProjectTrust,
 	pinProjectSigningKey,
 	readProjectTrust,
+	setVerificationPolicy,
 } from "../../src/governance/trust.ts";
 import { VerificationProjection } from "../../src/governance/verification.ts";
 import { newHostId, newKeyEventId, newMemberId, newProjectId, newTeamEventId } from "../../src/ids.ts";
@@ -220,6 +221,27 @@ describe("local trust and query interfaces", () => {
 		chmodSync(projectTrustPath(agentDir, projectManifest.project), 0o666);
 		expect(() => readProjectTrust(agentDir, projectManifest.project)).toThrow(/writable by group or others/);
 		expect(formatProjectTrust(pinned.trust)).not.toContain("private");
+	});
+
+	it("refuses to overwrite malformed local trust state", async () => {
+		const agentDir = root();
+		const member = newMemberId();
+		const host = newHostId();
+		const signing = generateSigningIdentity(member);
+		const projectManifest = withProjectSigningKey(manifest(member, host), createSigningKeyDescriptor(signing));
+		await pinProjectSigningKey({
+			agentDir,
+			manifest: projectManifest,
+			member,
+			key: signing.id,
+			host,
+		});
+		const path = projectTrustPath(agentDir, projectManifest.project);
+		writeFileSync(path, "{broken\n", { mode: 0o600 });
+		await expect(
+			setVerificationPolicy({ agentDir, project: projectManifest.project, host, mode: "require" }),
+		).rejects.toThrow(/trust.*invalid/);
+		expect(readFileSync(path, "utf-8")).toBe("{broken\n");
 	});
 
 	it("keeps scan/index verification filters equal and does not change ranking", async () => {

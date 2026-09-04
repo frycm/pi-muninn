@@ -104,6 +104,22 @@ export class VerificationProjection {
 		return this.keyState(descriptor.id, record.at, this.acceptedKeyEvents);
 	}
 
+	key(key: string, at: string): VerificationState {
+		const descriptor = this.keys.get(key);
+		if (!descriptor) return "unknown-key";
+		if (at < descriptor.created_at) return "invalid";
+		if (!this.trustedKeys.has(key)) return "untrusted";
+		return this.keyState(key, at, this.acceptedKeyEvents);
+	}
+
+	keyEvent(event: SigningKeyEvent): VerificationState {
+		const actor = this.keys.get(event.actor_key);
+		if (!actor || actor.member !== event.member || event.at < actor.created_at) return "invalid";
+		if (!this.trustedKeys.has(actor.id)) return "untrusted";
+		if (this.acceptedKeyEvents.some((candidate) => candidate.id === event.id)) return "verified";
+		return this.keyState(actor.id, event.at, this.acceptedKeyEvents);
+	}
+
 	teamEvent(event: ProjectTeamEvent): VerificationState {
 		if (!event.signature) return "unsigned";
 		const descriptor = this.keys.get(event.signature.key);

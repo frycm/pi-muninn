@@ -12,7 +12,7 @@ import { readSigningIdentity } from "../../src/governance/identity.ts";
 import { appendAuthorizedJournalRecord } from "../../src/journal/writer.ts";
 import { readProjectRegistry } from "../../src/project/registry.ts";
 import { loadHostIdentity } from "../../src/store/host.ts";
-import { projectTrustPath } from "../../src/store/paths.ts";
+import { projectTrustPath, signingIdentityPath } from "../../src/store/paths.ts";
 
 const execFileAsync = promisify(execFile);
 const CLI = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
@@ -93,6 +93,54 @@ describe("muninn project-journal CLI", () => {
 		expect(JSON.parse(searched.out[0] as string).records).toEqual([
 			expect.objectContaining({ verification: "verified" }),
 		]);
+	});
+
+	it("operates trust, rotation, recovery, compromise, and prospective policy explicitly", async () => {
+		await note("Create the journal.");
+		const registry = readProjectRegistry(agentDir);
+		const project = registry?.projects[0];
+		if (!registry || !project) throw new Error("project fixture was not created");
+		expect((await runCli(["crypto", "init"], cwd)).code).toBe(0);
+		const initial = readSigningIdentity(agentDir, registry.member.id);
+		if (!initial) throw new Error("initial signing key was not created");
+
+		const rotated = await runCli(["crypto", "rotate", "--json"], cwd);
+		expect(rotated.code).toBe(0);
+		const successor = readSigningIdentity(agentDir, registry.member.id);
+		if (!successor) throw new Error("rotated signing key was not created");
+		expect(successor.id).not.toBe(initial.id);
+		expect(JSON.parse(rotated.out[0] as string)).toMatchObject({
+			kind: "key-rotation",
+			previous: initial.id,
+			key: { key: successor.id },
+		});
+
+		const required = await runCli(["crypto", "policy", "require", "--from", "2020-01-01T00:00:00.000Z", "--json"], cwd);
+		expect(JSON.parse(required.out[0] as string)).toMatchObject({
+			kind: "verification-policy",
+			policy: { mode: "require", required_after: "2020-01-01T00:00:00.000Z" },
+		});
+		expect((await runCli(["crypto", "distrust", successor.id], cwd)).code).toBe(0);
+		expect((await runCli(["note", "Refused while locally distrusted."], cwd)).err.join("\n")).toContain(
+			"policy refused",
+		);
+		expect((await runCli(["crypto", "trust", registry.member.id, successor.id], cwd)).code).toBe(0);
+		expect((await runCli(["note", "Accepted after explicit trust."], cwd)).code).toBe(0);
+
+		rmSync(signingIdentityPath(agentDir));
+		const recovered = await runCli(["crypto", "recover", "--json"], cwd);
+		expect(recovered.code).toBe(0);
+		const recovery = readSigningIdentity(agentDir, registry.member.id);
+		if (!recovery) throw new Error("recovery signing key was not created");
+		expect(recovery.id).not.toBe(successor.id);
+		expect(
+			(await runCli(["crypto", "compromise", initial.id, "--effective", initial.created_at, "--json"], cwd)).code,
+		).toBe(0);
+		const status = JSON.parse((await runCli(["crypto", "status", "--json"], cwd)).out[0] as string);
+		expect(status).toMatchObject({ identity: { state: "enrolled", key: recovery.id }, policy: { mode: "require" } });
+		expect(status.key_events.total).toBe(2);
+		expect((await runCli(["crypto", "compromise", recovery.id], cwd)).code).toBe(2);
+		expect((await runCli(["crypto", "policy", "require", "--compromised-history", "maybe"], cwd)).code).toBe(2);
 	});
 
 	it("prints the new surface and rejects unknown commands", async () => {

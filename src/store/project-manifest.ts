@@ -381,6 +381,17 @@ export function withProjectSigningKey(manifest: ProjectManifest, key: SigningKey
 	);
 }
 
+/** Add one immutable, signed key-lifecycle declaration. */
+export function withProjectKeyEvent(manifest: ProjectManifest, event: SigningKeyEvent): ProjectManifest {
+	return parseProjectManifest(
+		JSON.stringify({
+			...manifest,
+			schema: SIGNED_PROJECT_MANIFEST_SCHEMA,
+			key_events: [...manifest.key_events, event],
+		}),
+	);
+}
+
 /** Replace a manifest atomically after full canonical validation. */
 export function writeProjectManifest(storePath: string, manifest: ProjectManifest): ProjectManifest {
 	const canonical = parseProjectManifest(JSON.stringify(manifest));

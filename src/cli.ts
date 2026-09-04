@@ -7,8 +7,15 @@ import { resolveAgentDir } from "./agent-dir.ts";
 import { commitJournal } from "./capture/commit.ts";
 import { diagnoseProject, renderDoctor } from "./doctor.ts";
 import { publicSigningIdentity, readEnrolledSigningIdentity, readSigningIdentity } from "./governance/identity.ts";
+import { declareProjectKeyEvent, recoverProjectSigningKey, rotateProjectSigningKey } from "./governance/operations.ts";
 import { initializeProjectCryptography } from "./governance/setup.ts";
 import { cryptographicStatus, renderCryptographicStatus } from "./governance/status.ts";
+import {
+	type CompromisedHistoryPolicy,
+	distrustProjectSigningKey,
+	pinProjectSigningKey,
+	setVerificationPolicy,
+} from "./governance/trust.ts";
 import { EnclaveAuditError, enclaveAuditObservation } from "./integrations/enclave.ts";
 import {
 	INTEGRATION_INPUT_MAX_BYTES,
@@ -56,7 +63,7 @@ import { ensureStore, projectStoreIdentity, storeIdentity } from "./store/init.t
 import { storeExistsAt } from "./store/paths.ts";
 import { readProjectManifest, setProjectRemote } from "./store/project-manifest.ts";
 import { describeSync, sync } from "./sync/sync.ts";
-import { declareTeamEvent, projectTeamRoster, renderTeamRoster } from "./team/lifecycle.ts";
+import { declareTeamEvent, locallyGovernedTeamRoster, renderTeamRoster } from "./team/lifecycle.ts";
 import { MUNINN_VERSION } from "./version.ts";
 
 const USAGE = [
@@ -84,7 +91,11 @@ const USAGE = [
 	"  muninn team rename-host HOST-ID NAME [--reason TEXT] [--json]",
 	"  muninn team retire-host|restore-host HOST-ID [--reason TEXT] [--json]",
 	"  muninn team leave|return [--reason TEXT] [--json]",
-	"  muninn crypto init|public|status [--json]",
+	"  muninn crypto init|public|status|rotate|recover [--json]",
+	"  muninn crypto trust MEMBER KEY [--json]",
+	"  muninn crypto distrust|revoke KEY [--reason TEXT] [--json]",
+	"  muninn crypto compromise KEY --effective RFC3339 [--reason TEXT] [--json]",
+	"  muninn crypto policy observe|require [--from now|RFC3339] [--compromised-history retain|reject] [--json]",
 	"  muninn migrate [--dry-run] [--json]",
 	"  muninn reindex [--json]",
 	"  muninn status [--json]",
@@ -124,7 +135,7 @@ interface ProjectContext {
 
 function signingOptions(context: ProjectContext) {
 	const signing = readEnrolledSigningIdentity(context.agentDir, context.project.storePath, context.project.member.id);
-	return signing ? { signing } : {};
+	return { agentDir: context.agentDir, ...(signing ? { signing } : {}) };
 }
 
 async function projectContext(
@@ -319,13 +330,115 @@ export async function runCli(
 			}
 			const manifest = readProjectManifest(context.project.storePath);
 			if (!manifest) throw new Error("muninn: project journal has no project.json");
-			const result = cryptographicStatus({
+			if (parsed.action === "status") {
+				const result = cryptographicStatus({
+					agentDir: context.agentDir,
+					storePath: context.project.storePath,
+					manifest,
+					member: context.project.member.id,
+				});
+				return { code: 0, out: parsed.json ? [JSON.stringify(result)] : renderCryptographicStatus(result), err };
+			}
+			if (parsed.action === "rotate" || parsed.action === "recover") {
+				const operation = {
+					agentDir: context.agentDir,
+					storePath: context.project.storePath,
+					project: context.project.id,
+					member: context.project.member.id,
+					host: context.host,
+				};
+				const result =
+					parsed.action === "rotate"
+						? await rotateProjectSigningKey(operation)
+						: await recoverProjectSigningKey(operation);
+				return {
+					code: 0,
+					out: parsed.json
+						? [JSON.stringify(result)]
+						: [
+								`muninn: ${parsed.action === "rotate" ? "rotated" : "recovered"} signing key ${result.key.key}`,
+								`public key: ${result.key.public_key}`,
+							],
+					err,
+				};
+			}
+			if (parsed.action === "trust") {
+				const changed = await pinProjectSigningKey({
+					agentDir: context.agentDir,
+					manifest,
+					member: parsed.member,
+					key: parsed.key,
+					host: context.host.id,
+				});
+				const result = {
+					schema: 1,
+					kind: "key-trust",
+					member: parsed.member,
+					key: parsed.key,
+					changed: changed.changed,
+				};
+				return {
+					code: 0,
+					out: [parsed.json ? JSON.stringify(result) : `muninn: trusted ${parsed.key} for ${parsed.member}`],
+					err,
+				};
+			}
+			if (parsed.action === "distrust") {
+				const changed = await distrustProjectSigningKey({
+					agentDir: context.agentDir,
+					manifest,
+					key: parsed.key,
+					host: context.host.id,
+					...(parsed.reason ? { reason: parsed.reason } : {}),
+				});
+				const result = { schema: 1, kind: "key-distrust", key: parsed.key, changed: changed.changed };
+				return {
+					code: 0,
+					out: [parsed.json ? JSON.stringify(result) : `muninn: distrusted ${parsed.key}`],
+					err,
+				};
+			}
+			if (parsed.action === "revoke" || parsed.action === "compromise") {
+				const result = await declareProjectKeyEvent({
+					agentDir: context.agentDir,
+					storePath: context.project.storePath,
+					project: context.project.id,
+					member: context.project.member.id,
+					host: context.host,
+					kind: parsed.action === "revoke" ? "key-revoked" : "key-compromised",
+					key: parsed.key,
+					...(parsed.action === "compromise" ? { effectiveAt: parsed.effective } : {}),
+					...(parsed.reason ? { reason: parsed.reason } : {}),
+				});
+				return {
+					code: 0,
+					out: [
+						parsed.json
+							? JSON.stringify(result)
+							: `muninn: declared ${result.event.kind} for ${result.event.key} · ${result.event.id}`,
+					],
+					err,
+				};
+			}
+			if (parsed.action !== "policy") throw new Error(`muninn: unsupported crypto action ${parsed.action}`);
+			const changed = await setVerificationPolicy({
 				agentDir: context.agentDir,
-				storePath: context.project.storePath,
-				manifest,
-				member: context.project.member.id,
+				project: context.project.id,
+				host: context.host.id,
+				mode: parsed.mode,
+				...(parsed.from ? { requiredAfter: parsed.from === "now" ? new Date().toISOString() : parsed.from } : {}),
+				...(parsed.compromisedHistory ? { compromisedHistory: parsed.compromisedHistory } : {}),
 			});
-			return { code: 0, out: parsed.json ? [JSON.stringify(result)] : renderCryptographicStatus(result), err };
+			const result = { schema: 1, kind: "verification-policy", changed: changed.changed, policy: changed.trust.policy };
+			return {
+				code: 0,
+				out: [
+					parsed.json
+						? JSON.stringify(result)
+						: `muninn: verification policy ${result.policy.mode}${result.policy.required_after ? ` from ${result.policy.required_after}` : ""}`,
+				],
+				err,
+			};
 		}
 		if (command === "ingest") {
 			const parsed = parseIngestArgs(args);
@@ -458,7 +571,12 @@ export async function runCli(
 			const manifest = readProjectManifest(context.project.storePath);
 			if (!manifest) throw new Error("muninn: project journal has no project.json");
 			if (parsed.action === "list") {
-				const roster = projectTeamRoster(manifest, context.project.member.id, context.host.id);
+				const roster = locallyGovernedTeamRoster(
+					manifest,
+					context.agentDir,
+					context.project.member.id,
+					context.host.id,
+				);
 				return { code: 0, out: parsed.json ? [JSON.stringify(roster)] : renderTeamRoster(roster), err };
 			}
 			const kind =
@@ -694,6 +812,7 @@ export async function runCli(
 			const context = await projectContext(cwd, false);
 			const result = await sync({
 				storePath: context.project.storePath,
+				agentDir: context.agentDir,
 				hostId: context.host.id,
 				hostName: context.host.name,
 				remote: readProjectManifest(context.project.storePath)?.remote ?? null,
@@ -721,15 +840,92 @@ export async function runCli(
 	}
 }
 
-function parseCryptoArgs(args: readonly string[]): { action: "init" | "public" | "status"; json: boolean } {
+type CryptoArgs =
+	| { action: "init" | "public" | "status" | "rotate" | "recover"; json: boolean }
+	| { action: "trust"; member: string; key: string; json: boolean }
+	| { action: "distrust" | "revoke"; key: string; reason?: string; json: boolean }
+	| { action: "compromise"; key: string; effective: string; reason?: string; json: boolean }
+	| {
+			action: "policy";
+			mode: "observe" | "require";
+			from?: string;
+			compromisedHistory?: CompromisedHistoryPolicy;
+			json: boolean;
+	  };
+
+function parseCryptoArgs(args: readonly string[]): CryptoArgs {
 	const action = args[0];
-	if (action !== "init" && action !== "public" && action !== "status") {
-		throw new JournalArgumentError(
-			action ? `unknown crypto command ${action}` : "crypto needs init, public, or status",
-		);
+	if (action === "init" || action === "public" || action === "status" || action === "rotate" || action === "recover") {
+		const flags = parseSimpleFlags(args.slice(1), ["json"]);
+		return { action, json: flags.has("json") };
 	}
-	const flags = parseSimpleFlags(args.slice(1), ["json"]);
-	return { action, json: flags.has("json") };
+	if (action === "trust") {
+		const positional: string[] = [];
+		let json = false;
+		for (const arg of args.slice(1)) {
+			if (arg === "--json") json = true;
+			else if (arg.startsWith("--")) throw new JournalArgumentError(`unknown crypto trust option ${arg}`);
+			else positional.push(arg);
+		}
+		if (positional.length !== 2) throw new JournalArgumentError("crypto trust needs MEMBER and KEY");
+		return { action, member: positional[0] as string, key: positional[1] as string, json };
+	}
+	if (action === "distrust" || action === "revoke" || action === "compromise") {
+		let key: string | undefined;
+		let reason: string | undefined;
+		let effective: string | undefined;
+		let json = false;
+		for (let index = 1; index < args.length; index++) {
+			const arg = args[index] as string;
+			if (arg === "--json") json = true;
+			else if (arg === "--reason" || arg === "--effective") {
+				const value = args[++index];
+				if (!value) throw new JournalArgumentError(`${arg} needs a value`);
+				if (arg === "--reason") reason = value;
+				else effective = value;
+			} else if (arg.startsWith("--")) throw new JournalArgumentError(`unknown crypto ${action} option ${arg}`);
+			else if (key) throw new JournalArgumentError(`crypto ${action} takes one KEY`);
+			else key = arg;
+		}
+		if (!key) throw new JournalArgumentError(`crypto ${action} needs KEY`);
+		if (action === "compromise") {
+			if (!effective) throw new JournalArgumentError("crypto compromise needs --effective RFC3339");
+			return { action, key, effective, ...(reason ? { reason } : {}), json };
+		}
+		if (effective) throw new JournalArgumentError(`crypto ${action} does not accept --effective`);
+		return { action, key, ...(reason ? { reason } : {}), json };
+	}
+	if (action === "policy") {
+		const mode = args[1];
+		if (mode !== "observe" && mode !== "require") {
+			throw new JournalArgumentError("crypto policy needs observe or require");
+		}
+		let from: string | undefined;
+		let compromisedHistory: CompromisedHistoryPolicy | undefined;
+		let json = false;
+		for (let index = 2; index < args.length; index++) {
+			const arg = args[index] as string;
+			if (arg === "--json") json = true;
+			else if (arg === "--from" || arg === "--compromised-history") {
+				const value = args[++index];
+				if (!value) throw new JournalArgumentError(`${arg} needs a value`);
+				if (arg === "--from") from = value;
+				else if (value === "retain" || value === "reject") compromisedHistory = value;
+				else throw new JournalArgumentError("--compromised-history must be retain or reject");
+			} else throw new JournalArgumentError(`unknown crypto policy option ${arg}`);
+		}
+		if (mode === "observe" && from) throw new JournalArgumentError("observe policy does not accept --from");
+		return {
+			action,
+			mode,
+			...(from ? { from } : {}),
+			...(compromisedHistory ? { compromisedHistory } : {}),
+			json,
+		};
+	}
+	throw new JournalArgumentError(
+		action ? `unknown crypto command ${action}` : "crypto needs init, public, status, trust, or a governance action",
+	);
 }
 
 function parseEvaluationArgs(args: readonly string[]): { path: string; json: boolean } {

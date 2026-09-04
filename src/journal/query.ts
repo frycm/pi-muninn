@@ -207,7 +207,7 @@ export class JournalQueryService {
 		const scan = scanJournal(options.storePath);
 		this.records = scan.records.map((item) => item.record);
 		this.problems = scan.problems;
-		const lifecycle = loadLifecycle(options.storePath, this.records, options.localMember);
+		const lifecycle = loadLifecycle(options, this.records);
 		this.projection = projectRelations(this.records, options.localMember, lifecycle);
 		this.teamWarnings = lifecycle.warnings;
 		this.verification = loadVerification(options);
@@ -234,7 +234,7 @@ export class JournalQueryService {
 		if (at >= 0) this.records[at] = record;
 		else this.records.push(record);
 		this.records.sort(byTimeThenId);
-		const lifecycle = loadLifecycle(this.options.storePath, this.records, this.options.localMember);
+		const lifecycle = loadLifecycle(this.options, this.records);
 		this.projection = projectRelations(this.records, this.options.localMember, lifecycle);
 		this.teamWarnings = lifecycle.warnings;
 		this.verification = loadVerification(this.options);
@@ -246,7 +246,7 @@ export class JournalQueryService {
 		const scan = scanJournal(this.options.storePath);
 		this.records = scan.records.map((item) => item.record);
 		this.problems = scan.problems;
-		const lifecycle = loadLifecycle(this.options.storePath, this.records, this.options.localMember);
+		const lifecycle = loadLifecycle(this.options, this.records);
 		this.projection = projectRelations(this.records, this.options.localMember, lifecycle);
 		this.teamWarnings = lifecycle.warnings;
 		this.verification = loadVerification(this.options);
@@ -450,15 +450,17 @@ function verificationWarnings(projection: VerificationProjection, records: reado
 		: [`record verification: ${concerning.map((state) => `${summary.states[state]} ${state}`).join(", ")}`];
 }
 
-function loadLifecycle(storePath: string, records: readonly JournalRecord[], localMember: string) {
-	const manifest = readProjectManifest(storePath);
+function loadLifecycle(options: JournalQueryServiceOptions, records: readonly JournalRecord[]) {
+	const manifest = readProjectManifest(options.storePath);
 	if (!manifest)
 		return { retiredMembers: new Set<string>(), retiredHosts: new Set<string>(), warnings: [] as string[] };
-	const roster = projectTeamRoster(manifest, localMember);
+	const trust = options.agentDir ? readProjectTrust(options.agentDir, manifest.project) : undefined;
+	const governance = trust ? { trust, projection: new VerificationProjection(manifest, trust) } : undefined;
+	const roster = projectTeamRoster(manifest, options.localMember, undefined, governance);
 	return {
 		retiredMembers: new Set(roster.members.filter((member) => member.state === "retired").map((member) => member.id)),
 		retiredHosts: new Set(roster.hosts.filter((host) => host.state === "retired").map((host) => host.id)),
-		warnings: lifecycleWarnings(manifest, records),
+		warnings: lifecycleWarnings(manifest, records, governance),
 	};
 }
 

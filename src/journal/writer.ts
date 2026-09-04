@@ -1,6 +1,8 @@
 /** One authority boundary for every non-migration project-journal write. */
 import { relative } from "node:path";
+import { assertRecordPolicy } from "../governance/enforcement.ts";
 import { assertSigningIdentityEnrolled } from "../governance/identity.ts";
+import { readProjectTrust } from "../governance/trust.ts";
 import { isEntryId, newEntryId } from "../ids.ts";
 import { withStoreLock } from "../store/lock.ts";
 import { readProjectManifest } from "../store/project-manifest.ts";
@@ -103,6 +105,22 @@ function assertSigningEnrollment(options: AppendJournalOptions): void {
 	assertSigningIdentityEnrolled(manifest, options.signing, options.member);
 }
 
+function governedOptions(options: AppendJournalOptions): AppendJournalOptions {
+	const agentDir = options.agentDir;
+	if (!agentDir) return options;
+	return {
+		...options,
+		validateRecord(record) {
+			options.validateRecord?.(record);
+			const manifest = readProjectManifest(options.storePath);
+			if (!manifest || manifest.project !== options.project) {
+				throw new JournalAuthorityError("cannot enforce policy without this project's manifest");
+			}
+			assertRecordPolicy(record, manifest, readProjectTrust(agentDir, options.project));
+		},
+	};
+}
+
 /**
  * Append one external observation exactly once per provider/external ID.
  *
@@ -168,10 +186,13 @@ export async function appendIntegrationObservation(
 				replayed: true,
 			};
 		}
-		const written = appendJournalRecordLocked(record, {
-			...options,
-			now: new Date(integration.observed_at),
-		});
+		const written = appendJournalRecordLocked(
+			record,
+			governedOptions({
+				...options,
+				now: new Date(integration.observed_at),
+			}),
+		);
 		return { ...written, replayed: false };
 	});
 }
@@ -187,7 +208,7 @@ export async function appendAuthorizedJournalRecord(
 	const id = options.id ?? newEntryId();
 	assertAuthority(write, id);
 	assertSigningEnrollment(options);
-	return appendJournalRecord(write.record, { ...options, id });
+	return appendJournalRecord(write.record, governedOptions({ ...options, id }));
 }
 
 export interface UserRelationWriteOptions extends Omit<AppendJournalOptions, "id"> {
@@ -270,7 +291,7 @@ export async function resolveUserConflict(options: ResolveConflictOptions): Prom
 			...(options.git ? { git: options.git } : {}),
 		};
 		assertAuthority({ authority: options.authority, record }, id);
-		const written = appendJournalRecordLocked(record, { ...options, id });
+		const written = appendJournalRecordLocked(record, governedOptions({ ...options, id }));
 		return { status: "resolved", branches: conflict.records, written };
 	});
 }

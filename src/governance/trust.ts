@@ -222,6 +222,24 @@ function writeProjectTrust(agentDir: string, trust: ProjectTrust): void {
 	}
 }
 
+async function editProjectTrust(
+	agentDir: string,
+	project: string,
+	host: string,
+	edit: (trust: ProjectTrust) => ProjectTrust,
+): Promise<{ trust: ProjectTrust; changed: boolean }> {
+	const root = trustRootPath(agentDir);
+	mkdirSync(root, { recursive: true, mode: 0o700 });
+	chmodSync(root, 0o700);
+	return withStoreLock(root, "governance", { host }, () => {
+		const before = readProjectTrust(agentDir, project);
+		const after = parseProjectTrust(JSON.stringify(edit(before)), project);
+		if (formatProjectTrust(after) === formatProjectTrust(before)) return { trust: before, changed: false };
+		writeProjectTrust(agentDir, after);
+		return { trust: after, changed: true };
+	});
+}
+
 export async function pinProjectSigningKey(options: {
 	agentDir: string;
 	manifest: ProjectManifest;
@@ -234,27 +252,63 @@ export async function pinProjectSigningKey(options: {
 		(candidate) => candidate.id === options.key && candidate.member === options.member,
 	);
 	if (!descriptor) throw new Error(`muninn: signing key ${options.key} is not enrolled for member ${options.member}`);
-	const root = trustRootPath(options.agentDir);
-	mkdirSync(root, { recursive: true, mode: 0o700 });
-	chmodSync(root, 0o700);
-	return withStoreLock(root, "governance", { host: options.host }, () => {
-		const trust = readProjectTrust(options.agentDir, options.manifest.project);
+	return editProjectTrust(options.agentDir, options.manifest.project, options.host, (trust) => {
 		const prior = trust.pins.find((pin) => pin.key === options.key);
-		if (prior) {
-			if (prior.member !== options.member) throw new Error(`muninn: local pin collision for ${options.key}`);
-			return { trust, changed: false };
-		}
-		const updated = parseProjectTrust(
-			JSON.stringify({
-				...trust,
-				pins: [
-					...trust.pins,
-					{ member: options.member, key: options.key, pinned_at: (options.now ?? new Date()).toISOString() },
-				],
-			}),
-			options.manifest.project,
-		);
-		writeProjectTrust(options.agentDir, updated);
-		return { trust: updated, changed: true };
+		if (prior && prior.member !== options.member) throw new Error(`muninn: local pin collision for ${options.key}`);
+		return {
+			...trust,
+			pins: prior
+				? trust.pins
+				: [
+						...trust.pins,
+						{ member: options.member, key: options.key, pinned_at: (options.now ?? new Date()).toISOString() },
+					],
+			distrust: trust.distrust.filter((entry) => entry.key !== options.key),
+		};
 	});
+}
+
+export async function distrustProjectSigningKey(options: {
+	agentDir: string;
+	manifest: ProjectManifest;
+	key: string;
+	host: string;
+	reason?: string;
+	now?: Date;
+}): Promise<{ trust: ProjectTrust; changed: boolean }> {
+	if (!options.manifest.signing_keys.some((candidate) => candidate.id === options.key)) {
+		throw new Error(`muninn: signing key ${options.key} is not enrolled in this project`);
+	}
+	return editProjectTrust(options.agentDir, options.manifest.project, options.host, (trust) => ({
+		...trust,
+		distrust: [
+			...trust.distrust.filter((entry) => entry.key !== options.key),
+			{
+				key: options.key,
+				distrusted_at: (options.now ?? new Date()).toISOString(),
+				...(options.reason ? { reason: options.reason } : {}),
+			},
+		],
+	}));
+}
+
+export async function setVerificationPolicy(options: {
+	agentDir: string;
+	project: string;
+	host: string;
+	mode: VerificationMode;
+	requiredAfter?: string;
+	compromisedHistory?: CompromisedHistoryPolicy;
+}): Promise<{ trust: ProjectTrust; changed: boolean }> {
+	return editProjectTrust(options.agentDir, options.project, options.host, (trust) => ({
+		...trust,
+		policy: {
+			mode: options.mode,
+			required_after:
+				options.mode === "observe"
+					? null
+					: signingTimestamp(options.requiredAfter ?? new Date().toISOString(), "required_after"),
+			compromised_history: options.compromisedHistory ?? trust.policy.compromised_history,
+		},
+	}));
 }

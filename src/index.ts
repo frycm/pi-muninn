@@ -42,7 +42,7 @@ import { formatStatus, formatStatusLine, formatWarning } from "./status.ts";
 import { storeIdentity } from "./store/init.ts";
 import { readProjectManifest } from "./store/project-manifest.ts";
 import { describeSync, type SyncResult, sync } from "./sync/sync.ts";
-import { projectTeamRoster, renderTeamRoster } from "./team/lifecycle.ts";
+import { locallyGovernedTeamRoster, renderTeamRoster } from "./team/lifecycle.ts";
 import { journalContextTool } from "./tools/journal-context.ts";
 import { journalNoteTool } from "./tools/journal-note.ts";
 import { journalReadTool } from "./tools/journal-read.ts";
@@ -145,9 +145,9 @@ export default function (pi: ExtensionAPI): void {
 		current.scopes.active.find((scope) => scope.scope === current.scopes.captureTarget)?.path;
 
 	const signingOptions = (current: SessionContext, storePath: string) => {
-		if (!current.project) return {};
+		if (!current.project) return { agentDir: getAgentDir() };
 		const signing = readEnrolledSigningIdentity(getAgentDir(), storePath, current.project.member.id);
-		return signing ? { signing } : {};
+		return { agentDir: getAgentDir(), ...(signing ? { signing } : {}) };
 	};
 
 	const afterJournalAppend = (
@@ -287,7 +287,9 @@ export default function (pi: ExtensionAPI): void {
 		if (!current.project) return "muninn: no logical project is linked for this session";
 		const manifest = readProjectManifest(current.project.storePath);
 		if (!manifest) return "muninn: project journal has no project.json";
-		return renderTeamRoster(projectTeamRoster(manifest, current.project.member.id, current.host.id)).join("\n");
+		return renderTeamRoster(
+			locallyGovernedTeamRoster(manifest, getAgentDir(), current.project.member.id, current.host.id),
+		).join("\n");
 	};
 
 	pi.registerCommand("muninn", {
@@ -637,6 +639,7 @@ export default function (pi: ExtensionAPI): void {
 			if (!scope.exists) continue;
 			const result = await sync({
 				storePath: scope.path,
+				agentDir: getAgentDir(),
 				hostId: current.host.id,
 				hostName: current.host.name,
 				remote: readProjectManifest(scope.path)?.remote ?? null,
