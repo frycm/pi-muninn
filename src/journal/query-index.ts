@@ -18,12 +18,48 @@ export interface OpenJournalIndexResult {
 	warnings: string[];
 }
 
+export interface JournalIndexInspection {
+	present: boolean;
+	readable: boolean;
+	exact: boolean;
+	problem?: string;
+}
+
 export function journalIndexPath(storePath: string): string {
 	return join(storePath, ".index", "journal-v1.json");
 }
 
 export function tokenizeJournalText(text: string): string[] {
 	return [...new Set((text.toLowerCase().match(/[\p{L}\p{N}_-]+/gu) ?? []).filter(Boolean))];
+}
+
+/** Inspect the disposable index without repairing, creating, or rewriting it. */
+export function inspectJournalIndex(storePath: string, records: readonly JournalRecord[]): JournalIndexInspection {
+	const path = journalIndexPath(storePath);
+	if (!existsSync(path)) return { present: false, readable: false, exact: false, problem: "index is missing" };
+	try {
+		const raw = JSON.parse(readFileSync(path, "utf-8")) as PersistedIndex;
+		if (raw.schema !== INDEX_SCHEMA || typeof raw.records !== "object" || raw.records === null) {
+			throw new Error("unsupported index schema");
+		}
+		JournalLexicalIndex.fromJSON(raw);
+		const expected = new Map(records.map((record) => [record.id, recordHash(record)]));
+		const actual = Object.entries(raw.records);
+		const exact = actual.length === expected.size && actual.every(([id, indexed]) => expected.get(id) === indexed.hash);
+		return {
+			present: true,
+			readable: true,
+			exact,
+			...(exact ? {} : { problem: "index records or hashes differ from the canonical journal" }),
+		};
+	} catch (error) {
+		return {
+			present: true,
+			readable: false,
+			exact: false,
+			problem: error instanceof Error ? error.message : String(error),
+		};
+	}
 }
 
 function searchable(record: JournalRecord): string {
@@ -80,10 +116,16 @@ export class JournalLexicalIndex {
 		return { index, kind: changed ? "incremental" : "loaded", warnings };
 	}
 
-	private static fromJSON(data: PersistedIndex): JournalLexicalIndex {
+	static fromJSON(data: PersistedIndex): JournalLexicalIndex {
 		const index = new JournalLexicalIndex();
 		for (const [id, stored] of Object.entries(data.records)) {
-			if (typeof stored.hash !== "string" || !Array.isArray(stored.terms))
+			if (
+				typeof stored !== "object" ||
+				stored === null ||
+				typeof stored.hash !== "string" ||
+				!Array.isArray(stored.terms) ||
+				stored.terms.some((term) => typeof term !== "string")
+			)
 				throw new Error(`invalid index record ${id}`);
 			index.records.set(id, { hash: stored.hash, terms: stored.terms });
 			index.addPostings(id, stored.terms);

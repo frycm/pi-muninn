@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,6 +60,18 @@ describe("muninn project-journal CLI", () => {
 		const unknown = await runCli(["frobnicate"], cwd);
 		expect(unknown.code).toBe(2);
 		expect(unknown.err.join("\n")).toContain('unknown command "frobnicate"');
+	});
+
+	it("emits a clean machine-readable doctor report without initializing a fresh agent", async () => {
+		const fresh = await runCli(["doctor", "--json"], cwd);
+		expect(fresh).toMatchObject({ code: 1, err: [] });
+		expect(JSON.parse(fresh.out[0] as string)).toMatchObject({ schema: 1, kind: "doctor" });
+		expect(existsSync(join(agentDir, "muninn", "host.json"))).toBe(false);
+		await note("Create a healthy journal.");
+		await runCli(["reindex"], cwd);
+		const healthy = await runCli(["doctor", "--json"], cwd);
+		expect(healthy.code).toBe(0);
+		expect(JSON.parse(healthy.out[0] as string).summary.errors).toBe(0);
 	});
 
 	it("links, shows, and unlinks a logical project", async () => {

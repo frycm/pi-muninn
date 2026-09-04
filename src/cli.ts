@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveAgentDir } from "./agent-dir.ts";
 import { commitJournal } from "./capture/commit.ts";
+import { diagnoseProject, renderDoctor } from "./doctor.ts";
 import {
 	collectSearchRecords,
 	JournalArgumentError,
@@ -61,6 +62,7 @@ const USAGE = [
 	"  muninn reindex [--json]",
 	"  muninn status [--json]",
 	"  muninn sync [--no-push]",
+	"  muninn doctor [--json]",
 	"",
 	"Filters: --id --type --source --member --host --branch --path --tag --status",
 	"         --since --until --related-to --limit --cursor",
@@ -130,6 +132,15 @@ export async function runCli(
 	try {
 		if (command === "help" || command === "--help" || command === "-h") return { code: 0, out: [USAGE], err };
 		if (command === "version" || command === "--version") return { code: 0, out: [MUNINN_VERSION], err };
+		if (command === "doctor") {
+			const flags = parseSimpleFlags(args, ["json"]);
+			const result = await diagnoseProject({ agentDir: resolveAgentDir(), cwd });
+			return {
+				code: result.summary.errors > 0 ? 1 : 0,
+				out: flags.has("json") ? [JSON.stringify(result)] : renderDoctor(result),
+				err,
+			};
+		}
 		if (command === "project") {
 			if (args[0] === "share") {
 				const parsed = parseProjectShareArgs(args.slice(1));
