@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -233,6 +234,43 @@ describe("muninn project-journal CLI", () => {
 		});
 		expect(invalid.code).toBe(2);
 		expect(JSON.parse((await runCli(["status", "--json"], cwd)).out[0] as string).records).toBe(before);
+	});
+
+	it("imports only a verified aggregate from a pi-enclave audit", async () => {
+		const genesis = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+		const first = JSON.stringify({
+			backend: "srt",
+			seq: 1,
+			ts: "2026-09-04T12:00:00.000Z",
+			kind: "session_start",
+			sessionId: "session-cli",
+			prevHash: genesis,
+		});
+		const second = JSON.stringify({
+			outcome: "deny",
+			commands: ["sensitive command is intentionally not copied"],
+			seq: 2,
+			ts: "2026-09-04T12:00:01.000Z",
+			kind: "decision",
+			sessionId: "session-cli",
+			prevHash: `sha256:${createHash("sha256").update(first).digest("hex")}`,
+		});
+		const path = join(root, "enclave.jsonl");
+		writeFileSync(path, `${first}\n${second}\n`, { mode: 0o600 });
+		const imported = await runCli(["integrate", "enclave", path, "--json"], cwd);
+		expect(imported.code).toBe(0);
+		expect(JSON.parse(imported.out[0] as string)).toMatchObject({
+			kind: "pi-enclave-audit-import",
+			replayed: false,
+			integration: { provider: "pi-enclave", metadata: { denied: 1, chain: "verified" } },
+		});
+		const replay = await runCli(["integrate", "enclave", path, "--json"], cwd);
+		expect(JSON.parse(replay.out[0] as string).replayed).toBe(true);
+		const selected = JSON.parse(
+			(await runCli(["search", "--integration", "pi-enclave", "--json"], cwd)).out[0] as string,
+		).records;
+		expect(selected).toHaveLength(1);
+		expect(JSON.stringify(selected)).not.toContain("sensitive command");
 	});
 
 	it("emits one independently parseable object per JSONL record", async () => {

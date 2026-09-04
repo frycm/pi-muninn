@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { resolveAgentDir } from "./agent-dir.ts";
 import { commitJournal } from "./capture/commit.ts";
 import { diagnoseProject, renderDoctor } from "./doctor.ts";
+import { EnclaveAuditError, enclaveAuditObservation } from "./integrations/enclave.ts";
 import {
 	INTEGRATION_INPUT_MAX_BYTES,
 	IntegrationInputError,
@@ -67,6 +68,7 @@ const USAGE = [
 	"  muninn conflicts [--json|--jsonl]",
 	"  muninn resolve TARGET TEXT [--json]",
 	"  muninn ingest FILE|- [--json]",
+	"  muninn integrate enclave AUDIT.jsonl [--json]",
 	"  muninn path",
 	"  muninn project link|show|unlink|remote [URL|--remove]",
 	"  muninn project share [PATH] [--json]",
@@ -302,6 +304,37 @@ export async function runCli(
 					parsed.json
 						? JSON.stringify(result)
 						: `muninn: ingested ${result.appended} integration observation(s); ${result.replayed} replay(s)`,
+				],
+				err,
+			};
+		}
+		if (command === "integrate") {
+			const parsed = parseIntegrateArgs(args);
+			const observation = enclaveAuditObservation(resolve(cwd, parsed.path));
+			const context = await projectContext(cwd, true);
+			const git = await collectGitProvenance(cwd);
+			const written = await appendIntegrationObservation(
+				{ ...integrationObservationRecord(observation), ...(git ? { git } : {}) },
+				{
+					storePath: context.project.storePath,
+					project: context.project.id,
+					member: context.project.member.id,
+					host: context.host.id,
+				},
+			);
+			const result = {
+				schema: 1 as const,
+				kind: "pi-enclave-audit-import" as const,
+				id: written.id,
+				replayed: written.replayed,
+				integration: observation.integration,
+			};
+			return {
+				code: 0,
+				out: [
+					parsed.json
+						? JSON.stringify(result)
+						: `muninn: ${written.replayed ? "already imported" : "imported"} verified pi-enclave audit as ${written.id}`,
 				],
 				err,
 			};
@@ -566,6 +599,7 @@ export async function runCli(
 		const message = error instanceof Error ? error.message : String(error);
 		const code =
 			error instanceof JournalArgumentError ||
+			error instanceof EnclaveAuditError ||
 			error instanceof JournalEvaluationError ||
 			error instanceof IntegrationInputError ||
 			error instanceof JournalQueryError
@@ -599,6 +633,18 @@ function parseIngestArgs(args: readonly string[]): { path: string; json: boolean
 	}
 	if (!path) throw new JournalArgumentError("ingest needs a file or - for stdin");
 	return { path, json };
+}
+
+function parseIntegrateArgs(args: readonly string[]): { path: string; json: boolean } {
+	const integration = args[0];
+	if (integration !== "enclave") {
+		throw new JournalArgumentError(
+			integration ? `unknown integration ${integration}` : "integrate needs an integration",
+		);
+	}
+	const parsed = parseIngestArgs(args.slice(1));
+	if (parsed.path === "-") throw new JournalArgumentError("integrate enclave needs an audit file path");
+	return parsed;
 }
 
 function readBoundedIntegrationFile(path: string): string {
