@@ -1,6 +1,6 @@
 # Logical project journal format
 
-> **Normative and implemented through Phase 5.** The legacy
+> **Normative and implemented through Phase 6.** The legacy
 > [Markdown journal format](journal-format.md) remains readable only as migration input.
 
 The logical project journal is an append-only, sharded JSONL event stream. It records bounded
@@ -28,6 +28,10 @@ only there. Monthly shards bound scan and diff size without requiring writers to
 
 `project.json`, `migration.json` and journal shards are durable. `.index/`, locks and
 temporary files are derived local state and are not committed.
+
+Imported transcript exchange copies live outside this Git store at
+`<agent-dir>/muninn-transcripts/<project-id>/<record-id>.jsonl`. They are optional,
+user-local evidence and never become canonical journal content.
 
 ## Encoding rules
 
@@ -144,6 +148,7 @@ An outcome record serialized as its actual one-line representation:
 | `cue` | Situation in which this record may be useful. |
 | `session` | Local transcript path and optional first/last entry IDs. |
 | `git` | Worktree, cwd, branch, head commit and dirty flag observed at capture time. |
+| `integration` | Bounded external producer provenance and its idempotency key. |
 | `legacy` | Migration origin and fields not represented directly in schema 1. |
 | `redacted` | `true` when mandatory secret scanning changed free text. |
 
@@ -161,6 +166,26 @@ Writers emit only fields defined by the schema version they claim.
 
 Deterministic fields such as IDs, paths, Git refs, status and transcript pointers are filled
 by code. A summarizing model cannot supply or override them.
+
+### Integration provenance
+
+An optional external observation has `source: "external"` and an `integration` object:
+
+```json
+{"provider":"pi-enclave","kind":"sandbox-audit","event":"audit-checkpoint","external_id":"session-42:8:sha256:...","observed_at":"2026-09-04T12:00:00.000Z","metadata":{"records":8,"violations":0,"chain":"verified"}}
+```
+
+`provider`, `kind` and `event` are lowercase integration identifiers of at most 64
+characters. `external_id` is a non-empty producer identifier of at most 512 characters;
+the pair `(provider, external_id)` is the append-time idempotency key. `observed_at` is UTC
+RFC 3339 with millisecond precision. `metadata` is a flat map of at most 32 bounded string,
+number, boolean or null values and at most 8 KiB when encoded. String metadata passes through
+the same mandatory redaction as other journal text.
+
+An identical replay returns the existing record. Reusing the key for different canonical
+observation content is refused under the store lock. Integration authority cannot create
+corrections, imports, relations or `source: "user"` records. The `integration` query filter
+selects providers explicitly; provenance does not silently alter ranking or trust.
 
 ## Corrections and relations
 
@@ -265,13 +290,15 @@ only when:
 3. the file is available on the current host.
 
 A teammate can search and read the bounded journal record even when its transcript exists
-only on the originating host. The unavailable detail is reported explicitly in
-`journal_read` and `muninn show`; the CLI returns exit code `3` while still emitting the
-record.
+only on the originating host. An explicit `age` import may install a verified local copy
+under the agent directory without changing `session.file`. Read results distinguish
+`original`, `exchange` and `missing`; `muninn show` returns exit code `3` only for `missing`
+while still emitting the record.
 
 ## Git synchronization
 
-Synchronization commits only `project.json`, `migration.json` and journal shards. Per-writer
+Synchronization commits only `project.json`, `migration.json` and journal shards. Integration
+records use those same shards; transcript exchange files never enter this allowlist. Per-writer
 paths make ordinary pulls additive. Manifest reconciliation union-merges member, host and
 team-event additions. Incompatible remotes, identity/event collisions and host-ownership
 violations stop the operation for attended resolution.

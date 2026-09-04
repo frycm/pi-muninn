@@ -133,15 +133,18 @@ describe("capture through a real pi session", () => {
 	}, 60_000);
 
 	it("journals an explicit request, into the capture target", async () => {
+		const before = records();
 		const output = await pi("Always use pnpm in this repo, never npm.");
 		expect(output).toContain("npm install"); // the scripted model replied
 
 		const store = projectStore();
 		const journal = scanJournal(store);
 		expect(journal.problems).toEqual([]);
-		expect(journal.records).toHaveLength(1);
+		expect(journal.records).toHaveLength(before.length + 1);
 
-		const entry = journal.records[0]?.record;
+		const entry = journal.records.find(
+			(candidate) => !before.some((record) => record.id === candidate.record.id),
+		)?.record;
 		expect(entry?.source).toBe("user");
 		expect(entry?.body).toContain("Always use pnpm in this repo, never npm.");
 		expect(entry?.task).toBeDefined();

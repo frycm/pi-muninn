@@ -12,11 +12,11 @@ The design is local-first and composable: append-only JSONL, Git synchronization
 retrieval and no hosted service in the storage or search path.
 
 > [!IMPORTANT]
-> Phases 3 through 5 are implemented; Phase 6 integration work is in progress. Linked worktrees and team clones
-> share one sharded JSONL project journal with validated onboarding, advisory lifecycle
-> declarations, explicit conflict resolution and read-only diagnostics. Automatic capture,
-> model tools, attended commands and Unix interfaces all use the same canonical service.
-> Journal content is never injected into prompts.
+> Phases 3 through 6 are implemented. Linked worktrees, team clones and optional evidence
+> producers share one sharded JSONL project journal with validated onboarding, advisory
+> lifecycle declarations, explicit conflict resolution and read-only diagnostics. Automatic
+> capture, model tools, attended commands and Unix interfaces all use the same canonical
+> service. Journal content is never injected into prompts.
 
 The legacy Markdown migration-input contract is
 [docs/journal-format.md](docs/journal-format.md). The JSONL contract is
@@ -27,7 +27,7 @@ The implemented identity and registry contract is
 are covered by [docs/operations.md](docs/operations.md). The implemented Phase 4 contract is
 [docs/phase-4-plan.md](docs/phase-4-plan.md). Retrieval evaluation, explanation and scale are
 implemented in [docs/phase-5-plan.md](docs/phase-5-plan.md). Optional external producers,
-sandbox evidence and encrypted transcript exchange are specified in
+sandbox evidence and encrypted transcript exchange are implemented under
 [docs/phase-6-plan.md](docs/phase-6-plan.md).
 
 ## Why a project journal
@@ -62,13 +62,17 @@ The repository now includes:
 - explicit model search, read, context and note tools;
 - a user-owned logical-project registry with atomic updates and stable member/project UUIDs;
 - canonical Git common-directory resolution across linked worktrees;
-- automatic user-cue and agent-outcome capture into the same JSONL contract; and
+- automatic user-cue and agent-outcome capture into the same JSONL contract;
 - explicit project remotes, member/host ownership validation and additive multi-clone sync;
 - validated, rollback-safe `project share` and `project join` onboarding;
 - an additive team-event stream with deterministic active/retired roster projection;
-- a bounded active-conflict inbox and explicit append-only resolution records; and
+- a bounded active-conflict inbox and explicit append-only resolution records;
 - a read-only doctor for registry, store, Git, manifest, shard, lifecycle, relation and
-  disposable-index health.
+  disposable-index health;
+- bounded, attributable and idempotent external-observation producers plus a verified
+  `pi-enclave` audit summary adapter; and
+- explicit `age`-encrypted exchange of one selected local transcript, kept outside journal
+  Git and resolved through the ordinary read interface after import.
 
 The project store is now `<agent-dir>/muninn-projects/<project-id>/`. Checkout roots, Git
 common directories and paths are registry aliases or provenance, never durable identity.
@@ -112,6 +116,10 @@ muninn correct ID TEXT [--json]
 muninn annotate ID TEXT [--json]
 muninn conflicts [--json|--jsonl]
 muninn resolve TARGET TEXT [--json]
+muninn ingest FILE|- [--json]
+muninn integrate enclave AUDIT.jsonl [--json]
+muninn transcript export ID BUNDLE.age --recipient RECIPIENT [--json]
+muninn transcript import BUNDLE.age --identity KEY.txt [--json]
 muninn path
 muninn project link [PATH] [--id UUID] [--name NAME] [--force]
 muninn project show [PATH]
@@ -198,6 +206,7 @@ journal_search({
   status?: string[],
   trust?: string[],
   label?: string[],
+  integration?: string[],
   since?: string,
   until?: string,
   relatedTo?: string,
@@ -257,6 +266,10 @@ muninn correct ID TEXT
 muninn annotate ID TEXT
 muninn conflicts [--json|--jsonl]
 muninn resolve TARGET TEXT [--json]
+muninn ingest FILE|- [--json]
+muninn integrate enclave AUDIT.jsonl [--json]
+muninn transcript export ID BUNDLE.age --recipient RECIPIENT [--json]
+muninn transcript import BUNDLE.age --identity KEY.txt [--json]
 muninn path
 muninn project remote [URL|--remove]
 muninn team list [--json]
@@ -270,6 +283,7 @@ Machine-readable output is stable enough for direct composition:
 muninn search "database migration" --json | jq -r '.records[] | [.at, .id, .snippet] | @tsv'
 muninn search "deploy" --trust teammate-user --label conflict --explain --json | jq '.records[] | {id, explanation}'
 muninn sessions --branch feature/auth --json | jq '.sessions[] | select(.status == "failed")'
+muninn search --integration pi-enclave --json | jq '.records[].integration.metadata'
 rg -n '"type":"correction"' "$(muninn path)"/journal
 muninn search "timeout" --json | jq -r '.records[].id' | fzf
 ```
@@ -277,9 +291,9 @@ muninn search "timeout" --json | jq -r '.records[].id' | fzf
 Interactive polish may use a fuzzy finder when available, but raw JSONL and deterministic CLI
 output remain first-class interfaces.
 
-`muninn show` returns exit code `3` when its record is available but the referenced transcript
-is not present on this machine. JSON output still includes the record plus transcript
-availability metadata.
+`muninn show` returns exit code `3` when its record is available but neither the original nor
+an imported transcript is present on this machine. JSON output distinguishes `original`,
+`exchange` and `missing` availability while preserving the record's original pointer.
 
 ### User-authored corrections
 
@@ -316,6 +330,7 @@ The design follows pi's extension model without requiring a core fork:
 - tools provide explicit, bounded model access;
 - slash commands provide an attended user surface;
 - the standalone binary provides automation and Unix composition;
+- versioned custom session entries let another extension request a bounded external append;
 - pi session pointers preserve detailed evidence locally;
 - extension-owned stores and indexes keep project repositories clean.
 
@@ -331,6 +346,8 @@ its sync transport is Git and its canonical query path is deterministic lexical 
   hides them nor revokes Git access.
 - Secrets are redacted before append; records marked as redacted remain visibly so.
 - Full pi transcripts are local evidence and are not synchronized by default.
+- A user may export one selected transcript through `age`; Muninn never puts the encrypted
+  bundle, recipient key or imported plaintext copy in journal Git.
 - A project checkout cannot silently select an arbitrary journal path or sync remote.
 - Search results are data, not prompt instructions, and are bounded before reaching a model.
 
@@ -394,10 +411,10 @@ See the [Phase 5 plan](docs/phase-5-plan.md).
 
 ### Phase 6 — integrations
 
-In progress: add optional, idempotent evidence producers for remote-session and sandbox
-systems where the core journal contract is not enough, plus explicit `age`-encrypted
-transcript exchange. Normal RPC-hosted pi sessions already use the ordinary journal path;
-integrations must not make the plain-file local workflow secondary. See the
+Complete: bounded integration provenance, idempotent file/stdin ingestion, a versioned pi
+custom-entry producer contract, verified aggregate `pi-enclave` audit checkpoints and
+explicit per-record `age` transcript exchange. Normal RPC-hosted pi sessions continue to use
+the ordinary journal path, and every integration remains optional. See the
 [Phase 6 plan](docs/phase-6-plan.md).
 
 ### Phase 7 — optional cryptographic governance
@@ -417,7 +434,7 @@ npm test
 
 The supported baseline is `@earendil-works/pi-coding-agent >=0.84.2 <0.85.0`, Node
 `>=22.19.0`, Git and `proper-lockfile`. Retrieval indexing uses no native or hosted search
-dependency.
+dependency. The `age` executable is required only for explicit transcript export/import.
 
 Sibling projects are [pi-huginn](https://github.com/frycm/pi-huginn) for remote sessions and
 voice, and [pi-enclave](https://github.com/frycm/pi-enclave) for sandbox-first automation.

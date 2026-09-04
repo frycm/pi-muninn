@@ -1,9 +1,21 @@
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { diagnoseProject } from "../../src/doctor.ts";
 import { git } from "../../src/git.ts";
+import { newEntryId } from "../../src/ids.ts";
+import { transcriptExchangePath } from "../../src/integrations/transcript.ts";
 import { journalShardPath } from "../../src/journal/jsonl.ts";
 import { JournalQueryService } from "../../src/journal/query.ts";
 import { journalIndexPath } from "../../src/journal/query-index.ts";
@@ -58,7 +70,7 @@ describe("muninn doctor", () => {
 		const indexBefore = readFileSync(journalIndexPath(project.storePath), "utf-8");
 		const manifestBefore = readFileSync(join(project.storePath, "project.json"), "utf-8");
 		const result = await diagnoseProject({ agentDir, cwd });
-		expect(result.summary).toEqual({ ok: 11, warnings: 0, errors: 0 });
+		expect(result.summary).toEqual({ ok: 12, warnings: 0, errors: 0 });
 		expect(result.checks.map((candidate) => candidate.code)).toEqual([
 			"registry.valid",
 			"project.mapping",
@@ -70,6 +82,7 @@ describe("muninn doctor", () => {
 			"journal.valid",
 			"lifecycle.consistent",
 			"relations.consistent",
+			"transcripts.local",
 			"index.valid",
 		]);
 		expect(readFileSync(journalIndexPath(project.storePath), "utf-8")).toBe(indexBefore);
@@ -94,6 +107,19 @@ describe("muninn doctor", () => {
 		const result = await diagnoseProject({ agentDir, cwd });
 		expect(check(result, "index.valid")?.status).toBe("warning");
 		expect(readFileSync(path, "utf-8")).toBe("{broken");
+	});
+
+	it("reports unsafe or orphaned local transcript exchange copies without changing them", async () => {
+		const path = transcriptExchangePath(agentDir, project.id, newEntryId());
+		mkdirSync(join(agentDir, "muninn-transcripts", project.id), { recursive: true, mode: 0o700 });
+		writeFileSync(path, "{}\n", { mode: 0o600 });
+		chmodSync(path, 0o644);
+		const before = readFileSync(path);
+		const result = await diagnoseProject({ agentDir, cwd });
+		expect(check(result, "transcripts.local")?.status).toBe("warning");
+		expect(check(result, "transcripts.local")?.message).toMatch(/session-backed|group or other/);
+		expect(readFileSync(path)).toEqual(before);
+		expect(statSync(path).mode & 0o777).toBe(0o644);
 	});
 
 	it("separately reports remote, journal, lifecycle, and relation problems", async () => {

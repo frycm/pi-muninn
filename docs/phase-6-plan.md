@@ -1,7 +1,7 @@
 # Phase 6 — optional integrations
 
-**Status: implementation in progress.** The five slices below are separate reviewable
-commits.
+**Status: implemented.** The contract and five implementation slices below are separate
+reviewable commits.
 
 *Outcome: remote session hosts, sandbox extensions and other local tools can contribute
 bounded, attributable evidence to the same project journal, while a person can exchange a
@@ -166,14 +166,14 @@ bundle and recipient public keys through channels appropriate to their own threa
 
 ## Commit sequence
 
-### Commit 0 — contract and roadmap
+### Commit 0 — contract and roadmap (implemented)
 
 - Freeze the external-observation, custom-entry, sandbox-summary and transcript-exchange
   boundaries.
 - Record why normal RPC capture needs no remote-specific storage adapter.
 - Link this plan from the README and Phase 5 handoff.
 
-### Commit 1 — external observation records
+### Commit 1 — external observation records (implemented)
 
 - Add bounded integration provenance to schema-1 records.
 - Add the idempotent external writer authority and shared `integration` filter.
@@ -182,7 +182,7 @@ bundle and recipient public keys through channels appropriate to their own threa
 Tests: malformed provenance; bounds; authority refusal; identical replay; conflicting replay;
 filter/query/tool/CLI parity; older records without integration metadata.
 
-### Commit 2 — producer interfaces
+### Commit 2 — producer interfaces (implemented)
 
 - Add JSON/JSONL file/stdin ingest and stable result DTOs.
 - Export the envelope parser and pi custom-entry helper.
@@ -192,7 +192,7 @@ filter/query/tool/CLI parity; older records without integration metadata.
 Tests: atomic prevalidation; input and batch bounds; resume/fork replay; load-order independence;
 redaction; no implicit retrieval.
 
-### Commit 3 — pi-enclave audit adapter
+### Commit 3 — pi-enclave audit adapter (implemented)
 
 - Verify the complete hash chain and strict audit structure.
 - Append one aggregate, idempotent checkpoint for the verified tail.
@@ -201,7 +201,7 @@ redaction; no implicit retrieval.
 Tests: valid chain; tamper/delete/reorder; torn tail; bounded aggregation; secret/action fields
 absent from journal output.
 
-### Commit 4 — encrypted transcript exchange
+### Commit 4 — encrypted transcript exchange (implemented)
 
 - Package and encrypt one locally available transcript for one or more `age` recipients.
 - Decrypt, validate and atomically install a recipient-local copy.
@@ -210,15 +210,17 @@ absent from journal output.
 Tests: source containment; project/record/hash/length mismatch; wrong identity; no overwrite;
 idempotent import; paths with spaces; no exchange path in Git allowlists.
 
-### Commit 5 — release hardening
+### Commit 5 — release hardening (implemented)
 
 - Exercise ingest, sandbox import and transcript exchange through CLI and acceptance tests.
 - Add integration and exchange checks to diagnostics where useful.
 - Update README, journal format and operations documentation to implemented language.
 - Verify Node/Bun and supported operating systems in CI.
 
-Done when the full suite passes with no optional peer installed, an `age`-compatible fixture
-proves encrypted round-trip behavior, and the plain journal workflow is unchanged.
+The full suite remains runnable with no integration peer or `age` executable installed. A
+transport-independent fixture exercises all envelope failures, while Linux CI installs real
+`age` and `age-keygen` for a command-compatible encrypted round trip. The plain journal
+workflow remains unchanged.
 
 ## Roadmap impact
 

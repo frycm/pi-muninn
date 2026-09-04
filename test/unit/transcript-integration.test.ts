@@ -192,6 +192,17 @@ describe.runIf(hasAge)("real age compatibility", () => {
 			output: bundle,
 			recipients: [recipient],
 		});
+		const wrongIdentity = join(source.agentDir, "wrong identity.txt");
+		execFileSync("age-keygen", ["--output", wrongIdentity]);
+		await expect(
+			importTranscript({
+				agentDir: root(),
+				project: source.record.project,
+				input: bundle,
+				identity: wrongIdentity,
+				findRecord: () => source.record,
+			}),
+		).rejects.toThrow(/age|identity|decrypt/i);
 		const imported = await importTranscript({
 			agentDir: root(),
 			project: source.record.project,

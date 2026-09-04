@@ -4,9 +4,10 @@ Muninn stores one logical project's history in a separate Git repository. The co
 repository remains authoritative; this repository contains immutable JSONL history,
 `project.json` team metadata and an optional migration manifest.
 
-Phase 4's validated onboarding, advisory lifecycle, conflict resolution and diagnostics are
-implemented. The manual team-join procedure below is a recovery path, not the normal setup.
-The design contract is [phase-4-plan.md](phase-4-plan.md).
+Validated onboarding, advisory lifecycle, conflict resolution, diagnostics and optional
+Phase 6 integrations are implemented. The manual team-join procedure below is a recovery
+path, not the normal setup. The integration boundaries are in
+[phase-6-plan.md](phase-6-plan.md).
 
 ## Start a local project journal
 
@@ -112,6 +113,93 @@ muninn search timeout --json | jq -r '.records[] | [.at, .id, .snippet] | @tsv'
 muninn search timeout --json | jq -r '.records[].id' | fzf
 ```
 
+## Ingest external observations
+
+A process integration writes a bounded envelope to a file or stdin. It cannot choose journal
+identity, claim user authority or add correction relations:
+
+```json
+{
+  "schema": 1,
+  "type": "outcome",
+  "channel": "hook",
+  "status": "completed",
+  "body": "Remote deployment finished successfully.",
+  "cue": "when reviewing the remote deployment",
+  "tags": ["deployment"],
+  "paths": ["deploy/service.yaml"],
+  "integration": {
+    "provider": "deployment-agent",
+    "kind": "remote-run",
+    "event": "completed",
+    "external_id": "run-1842",
+    "observed_at": "2026-09-04T12:00:00.000Z",
+    "metadata": {"environment": "staging", "attempt": 1}
+  }
+}
+```
+
+```bash
+muninn ingest observation.json --json | jq
+generate-observations | muninn ingest - --json | jq
+muninn search --integration deployment-agent --json | jq '.records[]'
+```
+
+Input may be one object, a JSON array or JSONL, up to 1 MiB and 100 observations. The entire
+batch is validated before its first append. Replaying identical `(provider, external_id)`
+content returns the existing record; different content under the same key is refused. Text
+and string metadata receive the normal secret redaction.
+
+Another pi extension can import `muninnIntegrationEntry` from `pi-muninn/integration` and
+append its result as a `muninn-integration-v1` custom session entry. Muninn folds those
+requests only at safe lifecycle boundaries and validates them again. Ordinary RPC-hosted pi
+sessions require no special producer: normal capture already records `channel: "rpc"`.
+
+## Import a pi-enclave audit checkpoint
+
+Summarize one complete local `pi-enclave` audit log without copying commands, paths, prompts
+or rule text into the journal:
+
+```bash
+muninn integrate enclave /path/to/audit.jsonl --json | jq
+muninn search --integration pi-enclave --json | jq '.records[].integration'
+```
+
+Muninn verifies the file shape, sequence, timestamp order and exact SHA-256 `prevHash` chain
+before appending one aggregate checkpoint. A torn, mixed-session, reordered or tampered log
+writes nothing. Re-importing the same verified tail is idempotent; a later tail creates a new
+checkpoint. Keep the original audit log under `pi-enclave`'s own retention policy.
+
+## Exchange one transcript with age
+
+Journal records synchronize only transcript pointers. To share detailed evidence, exchange a
+single selected transcript explicitly. The sender needs the recipient's public `age`
+recipient string:
+
+```bash
+muninn transcript export <record-id> evidence.age --recipient age1...
+```
+
+Move `evidence.age` through an appropriate team channel; Muninn does not stage or synchronize
+it. On the recipient machine, with an `age` identity file:
+
+```bash
+chmod 600 identity.txt
+muninn transcript import evidence.age --identity identity.txt --json | jq
+muninn show <record-id> --json | jq '.transcripts'
+```
+
+Import decrypts in a private temporary directory, verifies the project, record, byte length,
+SHA-256 and initial JSONL object, then installs a mode-`0600` copy under
+`<agent-dir>/muninn-transcripts/<project-id>/`. It refuses a different existing copy and an
+identical replay is a no-op. `show` reports that local copy as `availability: "exchange"`
+without changing the sender's original pointer.
+
+The `age` executable is needed only for these two commands. Muninn does not manage recipient
+or identity keys and an encryption key must not be treated as a Phase 7 signing identity.
+Imported copies are local caches: after preserving anything still needed, a user may remove
+one explicitly; the journal record remains and its transcript becomes locally unavailable.
+
 ## Review and resolve correction conflicts
 
 Two active corrections of the same target remain a visible conflict; timestamp order never
@@ -178,15 +266,18 @@ muninn sync --no-push
 Doctor is read-only. Its stable checks distinguish sync-blocking errors from advisory
 warnings and provide a remedy without repairing anything automatically. In particular,
 deleting or moving a corrupt `.index/` remains a separate explicit action followed by
-`muninn reindex`; doctor never takes it on the user's behalf.
+`muninn reindex`; doctor never takes it on the user's behalf. It also checks existing local
+transcript exchange directories for ownership, private permissions, symlinks, size and a
+session-backed record ID, but does not treat an absent exchange cache as a problem.
 
 If two manifests name different remotes, choose the intended URL explicitly with
 `muninn project remote`; Muninn will not guess. If a host UUID appears under another member,
 stop and restore the correct host identity or journal clone before syncing again.
 
 A record may point to a transcript that exists only on its originating machine. Search and
-read still return the record. `journal_read` reports `available: false`; `muninn show` emits
-the record and exits `3`. This is expected team behavior, not journal corruption.
+read still return the record. With no imported copy, `journal_read` reports
+`availability: "missing"`; `muninn show` emits the record and exits `3`. This is expected team
+behavior, not journal corruption.
 
 ## Release performance budgets
 

@@ -464,10 +464,10 @@ oracle.
 
 ### Phase 6 — integrations
 
-Phase 6 connects remote-session and sandbox systems through the stable journal/query APIs.
-Integrations may contribute provenance-rich records or offer authorized remote transcript
-access, but cannot bypass source authority or make the plain-file workflow depend on a
-service.
+Phase 6 is complete. It connects optional remote-session and sandbox producers through the
+stable journal/query APIs, adds a verified aggregate `pi-enclave` adapter and provides
+explicit `age`-encrypted exchange for one selected transcript. Integrations cannot bypass
+source authority or make the plain-file workflow depend on a service.
 
 ## Decisions fixed by this plan
 

@@ -11,6 +11,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	openSync,
+	readdirSync,
 	readSync,
 	realpathSync,
 	rmSync,
@@ -63,6 +64,11 @@ export interface TranscriptLocation {
 	available: boolean;
 	availability: "original" | "exchange" | "missing";
 	local_file?: string;
+}
+
+export interface TranscriptExchangeInspection {
+	files: number;
+	problems: string[];
 }
 
 interface TranscriptBundleHeader {
@@ -175,6 +181,76 @@ export function transcriptExchangePath(agentDir: string, project: string, record
 	if (!isProjectId(project)) throw new TranscriptExchangeError("project is not a valid project ID");
 	if (!isEntryId(record)) throw new TranscriptExchangeError("record is not a valid journal record ID");
 	return join(agentDir, TRANSCRIPT_EXCHANGE_DIR, project, `${record}.jsonl`);
+}
+
+/** Read-only structural diagnostics for one project's optional local exchange cache. */
+export function inspectTranscriptExchange(
+	agentDir: string,
+	project: string,
+	records: ReadonlyMap<string, JournalRecord>,
+): TranscriptExchangeInspection {
+	const problems: string[] = [];
+	let files = 0;
+	const root = join(agentDir, TRANSCRIPT_EXCHANGE_DIR);
+	const projectRoot = join(root, project);
+	if (!existsSync(root)) return { files, problems };
+
+	for (const [path, label] of [
+		[root, "exchange root"],
+		[projectRoot, "project exchange directory"],
+	] as const) {
+		if (!existsSync(path)) return { files, problems };
+		try {
+			const stat = lstatSync(path);
+			if (stat.isSymbolicLink() || !stat.isDirectory()) {
+				problems.push(`${label} is not a real directory: ${path}`);
+				return { files, problems };
+			}
+			const uid = process.getuid?.();
+			if (uid !== undefined && stat.uid !== uid) problems.push(`${label} is not owned by the current user`);
+			if ((stat.mode & 0o077) !== 0) problems.push(`${label} grants group or other access`);
+		} catch (error) {
+			problems.push(`cannot inspect ${label}: ${error instanceof Error ? error.message : String(error)}`);
+			return { files, problems };
+		}
+	}
+
+	let entries: ReturnType<typeof readdirSync>;
+	try {
+		entries = readdirSync(projectRoot, { withFileTypes: true, encoding: "utf-8" });
+	} catch (error) {
+		problems.push(`cannot list project exchange directory: ${error instanceof Error ? error.message : String(error)}`);
+		return { files, problems };
+	}
+	if (entries.length > 10_000) problems.push("project exchange directory exceeds 10000 entries");
+	entries.sort((left, right) => left.name.localeCompare(right.name));
+	for (const entry of entries.slice(0, 10_000)) {
+		const path = join(projectRoot, entry.name);
+		if (!entry.isFile() || entry.isSymbolicLink()) {
+			problems.push(`unexpected non-file exchange entry: ${entry.name}`);
+			continue;
+		}
+		files++;
+		const id = entry.name.endsWith(".jsonl") ? entry.name.slice(0, -6) : "";
+		const record = id && isEntryId(id) ? records.get(id) : undefined;
+		if (!record || record.project !== project || !record.session) {
+			problems.push(`exchange file does not name a session-backed journal record: ${entry.name}`);
+		}
+		try {
+			const stat = lstatSync(path);
+			if (stat.isSymbolicLink() || !stat.isFile()) {
+				problems.push(`exchange entry changed into a non-file: ${entry.name}`);
+				continue;
+			}
+			if ((stat.mode & 0o077) !== 0) problems.push(`exchange file grants group or other access: ${entry.name}`);
+			if (stat.size > TRANSCRIPT_MAX_BYTES) problems.push(`exchange file is oversized: ${entry.name}`);
+		} catch (error) {
+			problems.push(
+				`cannot inspect exchange file ${entry.name}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+	return { files, problems };
 }
 
 /** Prefer original local evidence, then an explicitly imported exchange copy. */
