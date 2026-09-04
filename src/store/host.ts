@@ -7,7 +7,8 @@
  * merge two machines' writes to one file — so the host id is load-bearing, not
  * decorative.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname } from "node:path";
 import { isHostId, newHostId } from "../ids.ts";
@@ -50,16 +51,46 @@ export function loadHostIdentity(agentDir: string): HostIdentity {
 		createdAt: new Date().toISOString(),
 	};
 
-	mkdirSync(dirname(path), { recursive: true });
+	const root = dirname(path);
+	mkdirSync(root, { recursive: true });
+	const temporary = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+	let fd: number | undefined;
+	let published = false;
 	try {
-		// `wx` fails if another session created the file after our read above.
-		writeFileSync(path, `${JSON.stringify(identity, null, "\t")}\n`, { flag: "wx" });
-		return identity;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-		const winner = readHostFile(path);
-		if (winner) return winner;
-		throw new Error(`muninn: ${path} exists but could not be read`);
+		fd = openSync(temporary, "wx", 0o600);
+		writeFileSync(fd, `${JSON.stringify(identity, null, "\t")}\n`, "utf-8");
+		fsyncSync(fd);
+		closeSync(fd);
+		fd = undefined;
+		try {
+			// Publishing the already-complete inode makes first creation atomic:
+			// another process can observe no path or the whole file, never a
+			// partially written winner.
+			linkSync(temporary, path);
+			published = true;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		}
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+		rmSync(temporary, { force: true });
+	}
+	if (published) fsyncDirectory(root);
+	const winner = readHostFile(path);
+	if (winner) return winner;
+	throw new Error(`muninn: ${path} exists but could not be read`);
+}
+
+function fsyncDirectory(path: string): void {
+	try {
+		const directory = openSync(path, "r");
+		try {
+			fsyncSync(directory);
+		} finally {
+			closeSync(directory);
+		}
+	} catch {
+		// Windows and some filesystems do not permit fsync on a directory.
 	}
 }
 
