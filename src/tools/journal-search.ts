@@ -20,6 +20,7 @@ export const JOURNAL_SEARCH_PARAMETERS = Type.Object({
 	path: Type.Optional(Type.Array(Type.String(), { maxItems: 50 })),
 	tag: Type.Optional(Type.Array(Type.String(), { maxItems: 50 })),
 	status: Type.Optional(Type.Array(literalUnion(RECORD_STATUSES), { maxItems: RECORD_STATUSES.length })),
+	integration: Type.Optional(Type.Array(Type.String({ maxLength: 64 }), { maxItems: 50 })),
 	trust: Type.Optional(Type.Array(literalUnion(JOURNAL_TRUST_LABELS), { maxItems: JOURNAL_TRUST_LABELS.length })),
 	label: Type.Optional(Type.Array(literalUnion(RELATION_LABELS), { maxItems: RELATION_LABELS.length })),
 	since: Type.Optional(Type.String()),

@@ -44,6 +44,7 @@ export interface JournalQuery {
 	path?: string[];
 	tag?: string[];
 	status?: JournalStatus[];
+	integration?: string[];
 	trust?: JournalTrust[];
 	label?: RelationLabel[];
 	since?: string;
@@ -100,6 +101,7 @@ export interface JournalSearchRecord {
 	tags: string[];
 	paths: string[];
 	relations: JournalRecord["relations"];
+	integration?: Pick<NonNullable<JournalRecord["integration"]>, "provider" | "kind" | "event">;
 	trust: string;
 	labels: string[];
 	score: number;
@@ -441,6 +443,7 @@ function normalizeQuery(input: JournalQuery): Omit<JournalQuery, "cursor"> {
 		"path",
 		"tag",
 		"status",
+		"integration",
 		"trust",
 		"label",
 		"since",
@@ -470,6 +473,7 @@ function normalizeQuery(input: JournalQuery): Omit<JournalQuery, "cursor"> {
 		"path",
 		"tag",
 		"status",
+		"integration",
 		"trust",
 		"label",
 	] as const) {
@@ -537,6 +541,8 @@ function matchesFilters(
 	if (query.host && !query.host.includes(record.host)) return false;
 	if (query.branch && (!record.git?.branch || !query.branch.includes(record.git.branch))) return false;
 	if (query.status && (!record.status || !query.status.includes(record.status))) return false;
+	if (query.integration && (!record.integration || !query.integration.includes(record.integration.provider)))
+		return false;
 	if (query.tag && !query.tag.some((tag) => record.tags.includes(tag))) return false;
 	if (query.trust && (!view || !query.trust.includes(view.trust))) return false;
 	if (query.label && (!view || !query.label.some((label) => view.labels.includes(label)))) return false;
@@ -799,6 +805,15 @@ function searchDto(
 		tags: record.tags,
 		paths: record.paths,
 		relations: record.relations,
+		...(record.integration
+			? {
+					integration: {
+						provider: record.integration.provider,
+						kind: record.integration.kind,
+						event: record.integration.event,
+					},
+				}
+			: {}),
 		trust: view?.trust ?? "unknown",
 		labels: view?.labels ?? [],
 		score: roundScore(ranked.score),

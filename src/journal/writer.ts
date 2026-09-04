@@ -1,4 +1,5 @@
 /** One authority boundary for every non-migration project-journal write. */
+import { relative } from "node:path";
 import { isEntryId, newEntryId } from "../ids.ts";
 import { withStoreLock } from "../store/lock.ts";
 import {
@@ -15,9 +16,10 @@ import type {
 	JournalSessionPointer,
 	NewJournalRecord,
 } from "./record.ts";
+import { buildJournalRecord, serializeJournalRecord } from "./record.ts";
 import { projectRelations } from "./relations.ts";
 
-export type JournalWriterAuthority = "attended-user" | "headless-user" | "model" | "automatic";
+export type JournalWriterAuthority = "attended-user" | "headless-user" | "model" | "automatic" | "integration";
 
 export interface AuthorizedJournalWrite {
 	authority: JournalWriterAuthority;
@@ -63,6 +65,14 @@ function assertAuthority(write: AuthorizedJournalWrite, id: string): void {
 	if (record.type === "correction" || record.type === "import") {
 		throw new JournalAuthorityError(`${authority} cannot create ${record.type} records`);
 	}
+	if (authority === "integration") {
+		if (record.source !== "external") throw new JournalAuthorityError("integration writes must use source: external");
+		if (!record.integration) throw new JournalAuthorityError("integration writes need integration provenance");
+		if ((record.relations?.length ?? 0) > 0) {
+			throw new JournalAuthorityError("integration writes cannot assign correction meaning");
+		}
+		return;
+	}
 	if (authority === "model") {
 		if (record.source !== "agent" || record.type !== "note") {
 			throw new JournalAuthorityError("model tools may append only source: agent note records");
@@ -79,11 +89,71 @@ function assertAuthority(write: AuthorizedJournalWrite, id: string): void {
 	}
 }
 
+export interface AppendIntegrationResult extends AppendJournalResult {
+	replayed: boolean;
+}
+
+/**
+ * Append one external observation exactly once per provider/external ID.
+ *
+ * The lookup and append share the store lock, so two process integrations
+ * replaying the same delivery cannot race into duplicate journal records.
+ */
+export async function appendIntegrationObservation(
+	record: NewJournalRecord,
+	options: Omit<AppendJournalOptions, "id" | "now">,
+): Promise<AppendIntegrationResult> {
+	assertAuthority({ authority: "integration", record }, newEntryId());
+	const integration = record.integration as NonNullable<NewJournalRecord["integration"]>;
+	return withStoreLock(options.storePath, "append", { host: options.host }, () => {
+		const scan = scanJournal(options.storePath);
+		if (scan.problems.length > 0) {
+			throw new JournalAuthorityError(`cannot ingest into a damaged journal (${scan.problems[0]?.message})`);
+		}
+		const existingItem = scan.records.find(
+			(candidate) =>
+				candidate.record.integration?.provider === integration.provider &&
+				candidate.record.integration.external_id === integration.external_id,
+		);
+		if (existingItem) {
+			const existing = existingItem.record;
+			const candidate = buildJournalRecord(record, {
+				project: existing.project,
+				member: existing.member,
+				host: existing.host,
+				id: existing.id,
+				now: new Date(existing.at),
+			});
+			if (serializeJournalRecord(candidate) !== serializeJournalRecord(existing)) {
+				throw new JournalAuthorityError(
+					`integration key ${integration.provider}/${integration.external_id} was reused with different content`,
+				);
+			}
+			return {
+				id: existing.id,
+				path: existingItem.path,
+				shard: relative(options.storePath, existingItem.path).split("\\").join("/"),
+				record: existing,
+				bytes: Buffer.byteLength(serializeJournalRecord(existing), "utf-8"),
+				replayed: true,
+			};
+		}
+		const written = appendJournalRecordLocked(record, {
+			...options,
+			now: new Date(integration.observed_at),
+		});
+		return { ...written, replayed: false };
+	});
+}
+
 /** Validate authority before bytes are built, redacted or appended. */
 export async function appendAuthorizedJournalRecord(
 	write: AuthorizedJournalWrite,
 	options: AppendJournalOptions,
 ): Promise<AppendJournalResult> {
+	if (write.authority === "integration") {
+		throw new JournalAuthorityError("integration writes must use the idempotent integration writer");
+	}
 	const id = options.id ?? newEntryId();
 	assertAuthority(write, id);
 	return appendJournalRecord(write.record, { ...options, id });

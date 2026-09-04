@@ -125,6 +125,7 @@ describe("journal tool schemas", () => {
 		expect(searchProperties).toHaveProperty("relatedTo");
 		expect(searchProperties).toHaveProperty("trust");
 		expect(searchProperties).toHaveProperty("label");
+		expect(searchProperties).toHaveProperty("integration");
 		expect(searchProperties).toHaveProperty("explain");
 		expect(JSON.parse(JSON.stringify(tools[3]?.parameters)).properties.relations.items.properties.type.const).toBe(
 			"annotates",

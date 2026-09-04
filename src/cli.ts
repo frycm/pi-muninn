@@ -71,7 +71,7 @@ const USAGE = [
 	"  muninn doctor [--json]",
 	"  muninn evaluate JUDGMENTS.jsonl [--json]",
 	"",
-	"Filters: --id --type --source --member --host --branch --path --tag --status --trust --label",
+	"Filters: --id --type --source --member --host --branch --path --tag --status --integration --trust --label",
 	"         --since --until --related-to --limit --cursor",
 	"",
 	"Exit 0: success; 1: no match/store or operation failure; 2: invalid input; 3: transcript unavailable.",

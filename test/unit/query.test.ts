@@ -88,6 +88,14 @@ beforeEach(async () => {
 			body: "Production deploy uses a canary rollout.",
 			tags: ["ops"],
 			paths: ["deploy/canary.yaml"],
+			integration: {
+				provider: "pi-huginn",
+				kind: "remote-session",
+				event: "completed",
+				external_id: "deploy-42",
+				observed_at: "2026-08-03T10:00:00.000Z",
+				metadata: { revision: 4 },
+			},
 		},
 		"2026-08-03T10:00:00.000Z",
 		"teammate",
@@ -228,6 +236,13 @@ describe("canonical journal query", () => {
 	it("applies actor, status, date, Git, path and relation filters with empty text", () => {
 		const query = service();
 		expect(ids(query.query({ source: ["external"] }))).toEqual([records[2]?.id]);
+		expect(ids(query.query({ integration: ["pi-huginn"] }))).toEqual([records[2]?.id]);
+		expect(query.query({ integration: ["pi-huginn"] }).records[0]?.integration).toEqual({
+			provider: "pi-huginn",
+			kind: "remote-session",
+			event: "completed",
+		});
+		expect(query.query({ integration: ["pi-enclave"] }).records).toEqual([]);
 		expect(ids(query.query({ member: [teammateMember], type: ["checkpoint"] }))).toEqual([records[2]?.id]);
 		expect(ids(query.query({ host: [localHost], status: ["completed"] }))).toEqual([records[0]?.id]);
 		expect(ids(query.query({ branch: ["feature/ci"] }))).toEqual([records[1]?.id]);
