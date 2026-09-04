@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -352,6 +352,39 @@ describe("scan/index equivalence", () => {
 			{ ids: [records[1]?.id as string] },
 		];
 		for (const fixture of fixtures) expect(indexed.query(fixture).records).toEqual(scan.query(fixture).records);
+	});
+
+	it("upgrades the legacy schema and produces deterministic schema-2 bytes", () => {
+		const legacy = join(store, ".index", "journal-v1.json");
+		mkdirSync(dirname(legacy), { recursive: true });
+		writeFileSync(legacy, '{"schema":1,"records":{}}\n');
+		const upgraded = service("index").query({ query: "database" });
+		expect(upgraded.warnings).toContain("index rebuilt: legacy index schema");
+		expect(existsSync(legacy)).toBe(false);
+		const first = readFileSync(journalIndexPath(store), "utf-8");
+		expect(JSON.parse(first)).toMatchObject({ schema: 2, analyzer: "unicode-nfkc-lower-v1" });
+		new JournalQueryService({
+			storePath: store,
+			localMember,
+			mode: "index",
+			forceReindex: true,
+		});
+		expect(readFileSync(journalIndexPath(store), "utf-8")).toBe(first);
+	});
+
+	it("repairs tampered terms from canonical records before querying", () => {
+		service("index");
+		const path = journalIndexPath(store);
+		const persisted = JSON.parse(readFileSync(path, "utf-8")) as {
+			records: Record<string, { terms: string[] }>;
+		};
+		const tampered = persisted.records[records[0]?.id as string];
+		expect(tampered).toBeDefined();
+		if (!tampered) throw new Error("fixture index record is missing");
+		tampered.terms = [records[0]?.id as string, "wrong-term"];
+		writeFileSync(path, `${JSON.stringify(persisted)}\n`);
+		expect(ids(service("index").query({ query: "database" }))).toContain(records[0]?.id as string);
+		expect(readFileSync(path, "utf-8")).toContain('"database"');
 	});
 
 	it("rebuilds after index deletion or corruption without changing results", () => {

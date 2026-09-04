@@ -193,11 +193,11 @@ the record and exits `3`. This is expected team behavior, not journal corruption
 The correctness baseline is always a canonical scan. The current release budget on the CI
 reference environment is:
 
-- open, validate and build the disposable index for 10,000 typical records in under 8 s;
-- execute 20 exact lexical queries over that index in under 2 s;
+- open, validate and build the disposable index for 50,000 typical records in under 20 s;
+- execute 50 selective exact, infix or one-edit queries over that index in under 3 s;
 - keep a serialized record at or below 64 KiB;
 - keep a normal query page at or below the configured output budget (128 KiB by default);
 - complete one local append as one locked write plus flush, without a model or network call.
 
-`test/unit/query-perf.test.ts` enforces the 10,000-record open/search budgets. Query/index
+`test/unit/query-perf.test.ts` enforces the 50,000-record open/search budgets. Query/index
 equivalence tests enforce that speed cannot change the canonical record set.

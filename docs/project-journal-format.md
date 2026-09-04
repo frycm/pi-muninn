@@ -237,6 +237,10 @@ Raw records are the source of truth. The canonical reader builds a deterministic
 
 The index is an acceleration of this projection, never an alternative source. Deleting
 `.index/` and scanning the journal must produce the same filtered record set.
+The current local index is schema 2 (`.index/journal-v2.json`), tagged with its text analyzer.
+It stores canonical-record hashes and derived terms; exact, trigram and conservative bigram
+candidate postings are rebuilt in memory. Schema 1, damaged and term-mismatched indexes are discarded
+and regenerated from JSONL. Index bytes are deterministic for the same canonical records.
 
 Human `--json` output wraps records with query metadata but does not alter the record objects:
 
