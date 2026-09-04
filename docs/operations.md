@@ -201,3 +201,14 @@ reference environment is:
 
 `test/unit/query-perf.test.ts` enforces the 50,000-record open/search budgets. Query/index
 equivalence tests enforce that speed cannot change the canonical record set.
+
+The Phase 5 checked-in retrieval corpus has eight development/operations judgments and
+measures Recall@10 `1.0`, MRR@10 `0.9375` and nDCG@10 `0.953866` identically in scan and
+index modes. This is a regression fixture, not evidence broad enough to justify semantic
+retrieval: it is below the 50-real-query experiment gate, while lexical recall is already
+above `0.90`. The release therefore has no embedding model, vector store or hidden retrieval
+service.
+
+The disposable index is currently schema 2. An old schema, invalid analyzer, damaged JSON,
+oversized file or mismatch with canonical record terms causes an explicit local rebuild;
+`muninn doctor` only reports the condition and never repairs it.

@@ -12,7 +12,16 @@ import {
 	normalizeJournalText,
 	tokenizeJournalText,
 } from "./query-index.ts";
-import type { JournalRecord, JournalRecordType, JournalRelationType, JournalSource, JournalStatus } from "./record.ts";
+import {
+	type JournalRecord,
+	type JournalRecordType,
+	type JournalRelationType,
+	type JournalSource,
+	type JournalStatus,
+	RECORD_SOURCES,
+	RECORD_STATUSES,
+	RECORD_TYPES,
+} from "./record.ts";
 import {
 	correctionRank,
 	JOURNAL_TRUST_LABELS,
@@ -166,6 +175,10 @@ const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 const DEFAULT_MAX_CHARS = 128 * 1024;
 const DEFAULT_SNIPPET_CHARS = 280;
+const MAX_FILTER_VALUES = 50;
+const MAX_FILTER_CHARS = 512;
+const MAX_QUERY_SHAPE_CHARS = 32 * 1024;
+const MAX_QUERY_TERMS = 64;
 
 function inside(root: string, path: string): boolean {
 	const fromRoot = relative(root, path);
@@ -251,6 +264,8 @@ export class JournalQueryService {
 	query(input: JournalQuery = {}): JournalQueryResult {
 		const query = normalizeQuery(input);
 		const limit = query.limit ?? DEFAULT_LIMIT;
+		if (input.cursor !== undefined && (typeof input.cursor !== "string" || input.cursor.length > 4096))
+			throw new JournalQueryError("cursor must be a string of at most 4096 characters");
 		const offset = decodeCursor(input.cursor, query);
 		const textual = query.query?.trim() ?? "";
 		const candidates = this.mode === "index" && textual !== "" ? this.index?.candidates(textual) : undefined;
@@ -265,9 +280,17 @@ export class JournalQueryService {
 			this.options.currentGit,
 		);
 		const page = ranked.slice(offset, offset + limit);
-		const records: JournalSearchRecord[] = [];
 		const maxChars = Math.max(1024, this.options.maxChars ?? DEFAULT_MAX_CHARS);
-		let truncated = false;
+		const response: JournalQueryResult = {
+			schema: 1,
+			query,
+			records: [],
+			warnings: [],
+			conflicts: [],
+			truncated: false,
+			mode: this.mode,
+		};
+		let recordTruncated = false;
 		for (const candidate of page) {
 			const dto = searchDto(
 				candidate,
@@ -276,24 +299,42 @@ export class JournalQueryService {
 				this.options.snippetChars ?? DEFAULT_SNIPPET_CHARS,
 				query.explain === true,
 			);
-			if (JSON.stringify(records).length + JSON.stringify(dto).length > maxChars) {
-				truncated = true;
+			const nextRecords = [...response.records, dto];
+			const nextConsumed = offset + nextRecords.length;
+			const nextHasMore = nextConsumed < ranked.length;
+			const candidateResponse: JournalQueryResult = {
+				...response,
+				records: nextRecords,
+				truncated: nextHasMore,
+				...(nextHasMore ? { next_cursor: encodeCursor(nextConsumed, query) } : {}),
+			};
+			if (!queryResultFits(candidateResponse, maxChars)) {
+				recordTruncated = true;
 				break;
 			}
-			records.push(dto);
+			response.records.push(dto);
 		}
-		const consumed = offset + records.length;
+		const consumed = offset + response.records.length;
 		const hasMore = consumed < ranked.length;
-		const response: JournalQueryResult = {
-			schema: 1,
-			query,
-			records,
-			warnings: this.warnings(),
-			conflicts: this.projection.conflicts,
-			truncated: truncated || hasMore,
-			mode: this.mode,
-		};
-		if (hasMore) response.next_cursor = encodeCursor(consumed, query);
+		response.truncated = recordTruncated || hasMore;
+		if (hasMore && response.records.length > 0) response.next_cursor = encodeCursor(consumed, query);
+		for (const conflict of this.projection.conflicts) {
+			if (!queryResultFits({ ...response, conflicts: [...response.conflicts, conflict] }, maxChars)) {
+				response.truncated = true;
+				break;
+			}
+			response.conflicts.push(conflict);
+		}
+		if (response.conflicts.length < this.projection.conflicts.length) response.truncated = true;
+		const warnings = this.warnings();
+		for (const warning of warnings) {
+			if (!queryResultFits({ ...response, warnings: [...response.warnings, warning] }, maxChars)) {
+				response.truncated = true;
+				break;
+			}
+			response.warnings.push(warning);
+		}
+		if (response.warnings.length < warnings.length) response.truncated = true;
 		return response;
 	}
 
@@ -387,9 +428,36 @@ function loadLifecycle(storePath: string, records: readonly JournalRecord[], loc
 }
 
 function normalizeQuery(input: JournalQuery): Omit<JournalQuery, "cursor"> {
+	if (typeof input !== "object" || input === null || Array.isArray(input))
+		throw new JournalQueryError("query must be an object");
+	const allowed = new Set([
+		"query",
+		"ids",
+		"type",
+		"source",
+		"member",
+		"host",
+		"branch",
+		"path",
+		"tag",
+		"status",
+		"trust",
+		"label",
+		"since",
+		"until",
+		"relatedTo",
+		"explain",
+		"limit",
+		"cursor",
+	]);
+	const unknown = Object.keys(input).find((key) => !allowed.has(key));
+	if (unknown) throw new JournalQueryError(`unsupported field ${unknown}`);
 	const query: Omit<JournalQuery, "cursor"> = {};
 	if (input.query !== undefined) {
+		if (typeof input.query !== "string") throw new JournalQueryError("query text must be a string");
 		if (input.query.length > 4096) throw new JournalQueryError("query text exceeds 4096 characters");
+		if (tokenizeJournalText(input.query).length > MAX_QUERY_TERMS)
+			throw new JournalQueryError(`query text exceeds ${MAX_QUERY_TERMS} distinct terms`);
 		query.query = input.query;
 	}
 	for (const key of [
@@ -406,8 +474,23 @@ function normalizeQuery(input: JournalQuery): Omit<JournalQuery, "cursor"> {
 		"label",
 	] as const) {
 		const values = input[key];
-		if (values !== undefined) (query as Record<string, unknown>)[key] = [...new Set(values)].sort();
+		if (values === undefined) continue;
+		const max = key === "ids" ? 100 : MAX_FILTER_VALUES;
+		if (!Array.isArray(values) || values.length < 1 || values.length > max)
+			throw new JournalQueryError(`${key} must contain 1 to ${max} values`);
+		const invalid = values.find(
+			(value) => typeof value !== "string" || value.length < 1 || value.length > MAX_FILTER_CHARS,
+		);
+		if (invalid !== undefined)
+			throw new JournalQueryError(`${key} values must be non-empty strings of at most ${MAX_FILTER_CHARS} characters`);
+		(query as Record<string, unknown>)[key] = [...new Set(values)].sort();
 	}
+	if (query.type?.some((value) => !RECORD_TYPES.includes(value)))
+		throw new JournalQueryError("type contains an unsupported value");
+	if (query.source?.some((value) => !RECORD_SOURCES.includes(value)))
+		throw new JournalQueryError("source contains an unsupported value");
+	if (query.status?.some((value) => !RECORD_STATUSES.includes(value)))
+		throw new JournalQueryError("status contains an unsupported value");
 	if (query.trust?.some((value) => !JOURNAL_TRUST_LABELS.includes(value)))
 		throw new JournalQueryError("trust contains an unsupported value");
 	if (query.label?.some((value) => !RELATION_LABELS.includes(value)))
@@ -415,11 +498,17 @@ function normalizeQuery(input: JournalQuery): Omit<JournalQuery, "cursor"> {
 	for (const key of ["since", "until"] as const) {
 		const value = input[key];
 		if (value === undefined) continue;
+		if (typeof value !== "string" || value.length > 100)
+			throw new JournalQueryError(`${key} must be an RFC 3339 timestamp`);
 		const timestamp = Date.parse(value);
 		if (Number.isNaN(timestamp)) throw new JournalQueryError(`${key} must be an RFC 3339 timestamp`);
 		query[key] = new Date(timestamp).toISOString();
 	}
-	if (input.relatedTo !== undefined) query.relatedTo = input.relatedTo;
+	if (input.relatedTo !== undefined) {
+		if (typeof input.relatedTo !== "string" || input.relatedTo.length < 1 || input.relatedTo.length > 100)
+			throw new JournalQueryError("relatedTo must be a non-empty journal record ID");
+		query.relatedTo = input.relatedTo;
+	}
 	if (input.explain !== undefined) {
 		if (typeof input.explain !== "boolean") throw new JournalQueryError("explain must be a boolean");
 		query.explain = input.explain;
@@ -430,6 +519,8 @@ function normalizeQuery(input: JournalQuery): Omit<JournalQuery, "cursor"> {
 		}
 		query.limit = input.limit;
 	}
+	if (JSON.stringify(query).length > MAX_QUERY_SHAPE_CHARS)
+		throw new JournalQueryError(`normalized query exceeds ${MAX_QUERY_SHAPE_CHARS} characters`);
 	return query;
 }
 
@@ -625,7 +716,7 @@ function strongestToken(
 	for (const kind of ["exact", "prefix", "fuzzy"] as const) {
 		const matched = tokens
 			.filter((token) => journalTokenMatch(term, token) === kind)
-			.sort((left, right) => [...left].length - [...right].length || left.localeCompare(right))[0];
+			.sort((left, right) => [...left].length - [...right].length || (left < right ? -1 : left > right ? 1 : 0))[0];
 		if (matched) return { token: matched, kind };
 	}
 	return undefined;
@@ -735,6 +826,10 @@ function snippet(body: string, query: string, chars: number): string {
 
 function queryHash(query: Omit<JournalQuery, "cursor">): string {
 	return createHash("sha256").update(JSON.stringify(query)).digest("base64url").slice(0, 20);
+}
+
+function queryResultFits(result: JournalQueryResult, maxChars: number): boolean {
+	return JSON.stringify(result).length <= maxChars;
 }
 
 function encodeCursor(offset: number, query: Omit<JournalQuery, "cursor">): string {

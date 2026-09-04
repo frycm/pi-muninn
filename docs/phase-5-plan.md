@@ -1,6 +1,6 @@
 # Phase 5 — retrieval quality and scale
 
-**Status: implementation contract.** Each numbered slice below is one reviewable commit.
+**Status: complete.** The six slices below are implemented as separate reviewable commits.
 
 *Outcome: a person or model can retrieve the most useful project-journal evidence from a
 large history, see why each result matched, and measure changes against explicit relevance
@@ -119,11 +119,18 @@ The stable report includes query count, invalid/missing judgments, Recall@10, MR
 nDCG@10 plus one bounded per-query result. A checked-in fixture is the regression baseline;
 project teams can keep their own judgment file outside the journal or version it with code.
 
+The checked-in eight-query development/operations corpus now measures Recall@10 `1.0`,
+MRR@10 `0.9375` and nDCG@10 `0.953866` in both scan and index modes. One relevant target
+appears second because its active user correction is intentionally ranked immediately before
+it; all eight relevant records are retrieved in the first ten results.
+
 An embedding experiment is justified only after at least 50 independently written real
 queries show lexical Recall@10 below 0.90. It must improve Recall@10 by at least 0.05 without
 regressing exact-ID/filter correctness, remain fully local and optional, disclose its model
 and storage cost, and preserve scan-only operation. Until that gate is met, embeddings add
-opacity without evidence of value and are not implemented.
+opacity without evidence of value and are not implemented. The current corpus has only eight
+independently written judgments, below the 50-query gate, and lexical Recall@10 is already
+`1.0`; Phase 5 therefore records a measured decision not to add embeddings.
 
 ## Performance and equivalence gates
 
@@ -140,7 +147,7 @@ different storage later, the JSONL scan remains a supported oracle and recovery 
 
 ## Commit sequence
 
-### Commit 0 — contract and roadmap
+### Commit 0 — contract and roadmap (implemented)
 
 - Freeze the scope, non-goals, matching rules, evaluation gates and performance budgets.
 - Link this plan from the README and prior-phase handoff.
@@ -148,7 +155,7 @@ different storage later, the JSONL scan remains a supported oracle and recovery 
 Done when later ranking changes can be reviewed against measurable behavior rather than
 subjective examples.
 
-### Commit 1 — relevance evaluation
+### Commit 1 — relevance evaluation (implemented)
 
 - Parse bounded JSONL judgments without transcript access or writes.
 - Compute Recall@10, MRR@10 and nDCG@10 from canonical query results.
@@ -157,7 +164,7 @@ subjective examples.
 Tests: malformed/duplicate judgments; missing IDs; filters; metric arithmetic; output bounds;
 proof that journal and index bytes do not change.
 
-### Commit 2 — projected filters and explanations
+### Commit 2 — projected filters and explanations (implemented)
 
 - Add `trust` and `label` to the shared query parser, CLI and model tool schema.
 - Add opt-in structured score explanations and human rendering.
@@ -166,7 +173,7 @@ proof that journal and index bytes do not change.
 Tests: OR/AND filter semantics; retired/conflicted records; component sums; output bounds;
 CLI/tool parity; cursor mismatch.
 
-### Commit 3 — deterministic typo-tolerant ranking
+### Commit 3 — deterministic typo-tolerant ranking (implemented)
 
 - Implement phrase, term coverage, exact/prefix/fuzzy field matches and stable weights.
 - Expand relation results without misreporting them as direct lexical matches.
@@ -175,7 +182,7 @@ CLI/tool parity; cursor mismatch.
 Tests: typos; short-token refusal; phrase/coverage ordering; Unicode; correction expansion;
 scan/index equality including explanations.
 
-### Commit 4 — larger histories and index efficiency
+### Commit 4 — larger histories and index efficiency (implemented)
 
 - Version and optimize the local candidate index for exact, prefix and fuzzy lookup.
 - Preserve incremental append/rebuild behavior and read-only doctor inspection.
@@ -184,7 +191,7 @@ scan/index equality including explanations.
 Tests: schema upgrade; corruption/deletion recovery; incremental append; deterministic bytes;
 50,000-record budget.
 
-### Commit 5 — release hardening
+### Commit 5 — release hardening (implemented)
 
 - Run the relevance corpus through scan and index modes on supported CI runtimes.
 - Audit query/evaluation bounds, hostile text and no-write guarantees.

@@ -29,7 +29,7 @@ import {
 import { scanJournal } from "./journal/jsonl.ts";
 import { discoverLegacyStoreCandidates, inventoryLegacyStores, migrateMarkdownStores } from "./journal/migrate.ts";
 import { collectGitProvenance } from "./journal/provenance.ts";
-import { JournalQueryService } from "./journal/query.ts";
+import { JournalQueryError, JournalQueryService } from "./journal/query.ts";
 import type { NewJournalRecord } from "./journal/record.ts";
 import { appendAuthorizedJournalRecord, appendUserRelation, resolveUserConflict } from "./journal/writer.ts";
 import { runProjectCommand } from "./project/command.ts";
@@ -504,7 +504,12 @@ export async function runCli(
 		return { code: 2, out, err: [`muninn: unknown command "${command}"`, "", USAGE] };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		const code = error instanceof JournalArgumentError || error instanceof JournalEvaluationError ? 2 : 1;
+		const code =
+			error instanceof JournalArgumentError ||
+			error instanceof JournalEvaluationError ||
+			error instanceof JournalQueryError
+				? 2
+				: 1;
 		return { code, out, err: [message.startsWith("muninn:") ? message : `muninn: ${message}`] };
 	}
 }

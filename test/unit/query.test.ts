@@ -308,10 +308,32 @@ describe("canonical journal query", () => {
 	it("bounds summaries and full relation reads", () => {
 		const bounded = service("scan", { maxChars: 1024 }).query({ limit: 100 });
 		expect(bounded.truncated).toBe(true);
-		expect(JSON.stringify(bounded.records).length).toBeLessThanOrEqual(1024);
+		expect(JSON.stringify(bounded).length).toBeLessThanOrEqual(1024);
 		const read = service().read(records[0]?.id as string, 1, 2);
 		expect(read?.records).toHaveLength(2);
 		expect(read?.truncated).toBe(true);
+	});
+
+	it("bounds hostile query shapes and explanation evidence", async () => {
+		const terms = Array.from({ length: 40 }, (_, index) => `evidence-${index}`);
+		const written = await append(
+			{ type: "note", source: "agent", channel: "sdk", body: `${terms.join(" ")} unrelated-private-marker` },
+			"2026-08-06T10:00:00.000Z",
+		);
+		const explained = service().query({ query: terms[0] as string, ids: [written.id], explain: true }).records[0];
+		expect(JSON.stringify(explained?.explanation)).not.toContain("unrelated-private-marker");
+		const bounded = service("scan", { maxChars: 1024 }).query({ query: terms.join(" "), explain: true });
+		expect(bounded.truncated).toBe(true);
+		expect(JSON.stringify(bounded).length).toBeLessThanOrEqual(1024);
+		expect(bounded.next_cursor).toBeUndefined();
+
+		const query = service();
+		expect(() => query.query({ query: Array.from({ length: 65 }, (_, index) => `term-${index}`).join(" ") })).toThrow(
+			/64 distinct terms/,
+		);
+		expect(() => query.query({ tag: Array.from({ length: 51 }, (_, index) => `tag-${index}`) })).toThrow(/1 to 50/);
+		expect(() => query.query({ cursor: "x".repeat(4097) })).toThrow(/cursor/);
+		expect(() => query.query({ surprise: true } as unknown as JournalQuery)).toThrow(/unsupported field/);
 	});
 
 	it("checks transcript availability only inside configured session roots", async () => {

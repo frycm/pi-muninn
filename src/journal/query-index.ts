@@ -1,13 +1,16 @@
 /** Disposable lexical candidate index. Canonical filtering and ranking live in query.ts. */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { isEntryId } from "../ids.ts";
 import type { JournalRecord } from "./record.ts";
 import { serializeJournalRecord } from "./record.ts";
 
 const INDEX_SCHEMA = 2 as const;
 const INDEX_ANALYZER = "unicode-nfkc-lower-v1" as const;
 const MAX_OPTIMIZED_TOKEN_POINTS = 64;
+const MAX_INDEX_BYTES = 256 * 1024 * 1024;
+const MAX_INDEX_TERMS_PER_RECORD = 32_768;
 
 interface PersistedIndex {
 	schema: typeof INDEX_SCHEMA;
@@ -34,6 +37,11 @@ export function journalIndexPath(storePath: string): string {
 
 function legacyJournalIndexPath(storePath: string): string {
 	return join(storePath, ".index", "journal-v1.json");
+}
+
+function readPersistedIndex(path: string): PersistedIndex {
+	if (statSync(path).size > MAX_INDEX_BYTES) throw new Error(`index exceeds ${MAX_INDEX_BYTES} bytes`);
+	return JSON.parse(readFileSync(path, "utf-8")) as PersistedIndex;
 }
 
 export function normalizeJournalText(text: string): string {
@@ -99,7 +107,7 @@ export function inspectJournalIndex(storePath: string, records: readonly Journal
 		return { present: false, readable: false, exact: false, problem: "index is missing" };
 	}
 	try {
-		const raw = JSON.parse(readFileSync(path, "utf-8")) as PersistedIndex;
+		const raw = readPersistedIndex(path);
 		if (
 			raw.schema !== INDEX_SCHEMA ||
 			raw.analyzer !== INDEX_ANALYZER ||
@@ -207,7 +215,7 @@ export class JournalLexicalIndex {
 		if (!force) {
 			try {
 				if (existsSync(journalIndexPath(storePath))) {
-					const raw = JSON.parse(readFileSync(journalIndexPath(storePath), "utf-8")) as PersistedIndex;
+					const raw = readPersistedIndex(journalIndexPath(storePath));
 					if (
 						raw.schema !== INDEX_SCHEMA ||
 						raw.analyzer !== INDEX_ANALYZER ||
@@ -255,11 +263,21 @@ export class JournalLexicalIndex {
 		const index = new JournalLexicalIndex();
 		for (const [id, stored] of Object.entries(data.records)) {
 			if (
+				!isEntryId(id) ||
 				typeof stored !== "object" ||
 				stored === null ||
 				typeof stored.hash !== "string" ||
+				!/^[0-9a-f]{64}$/.test(stored.hash) ||
 				!Array.isArray(stored.terms) ||
-				stored.terms.some((term) => typeof term !== "string")
+				stored.terms.length > MAX_INDEX_TERMS_PER_RECORD ||
+				stored.terms.some(
+					(term, at) =>
+						typeof term !== "string" ||
+						term.length < 1 ||
+						term.length > 65_536 ||
+						normalizeJournalText(term) !== term ||
+						(at > 0 && (stored.terms[at - 1] as string) >= term),
+				)
 			)
 				throw new Error(`invalid index record ${id}`);
 			index.records.set(id, { hash: stored.hash, terms: stored.terms });

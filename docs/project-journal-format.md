@@ -1,6 +1,6 @@
 # Logical project journal format
 
-> **Normative and implemented through Phase 4.** The legacy
+> **Normative and implemented through Phase 5.** The legacy
 > [Markdown journal format](journal-format.md) remains readable only as migration input.
 
 The logical project journal is an append-only, sharded JSONL event stream. It records bounded
@@ -230,24 +230,25 @@ Raw records are the source of truth. The canonical reader builds a deterministic
 3. resolve relation targets without changing either record;
 4. project advisory lifecycle and active correction conflicts;
 5. label trust relative to the local member;
-6. apply explicit filters;
-7. rank exact IDs, user corrections, cue/body matches, recency and Git proximity using fixed
-   documented weights; and
-8. return bounded results with stable IDs.
+6. apply explicit record, projected trust and lifecycle/conflict filters;
+7. rank exact IDs, phrases, exact/prefix/conservative one-edit tokens, term coverage, user
+   corrections, deterministic recency and Git proximity using fixed weights; and
+8. return bounded stable IDs with an optional component-level explanation.
 
 The index is an acceleration of this projection, never an alternative source. Deleting
 `.index/` and scanning the journal must produce the same filtered record set.
 The current local index is schema 2 (`.index/journal-v2.json`), tagged with its text analyzer.
 It stores canonical-record hashes and derived terms; exact, trigram and conservative bigram
-candidate postings are rebuilt in memory. Schema 1, damaged and term-mismatched indexes are discarded
-and regenerated from JSONL. Index bytes are deterministic for the same canonical records.
+candidate postings are rebuilt in memory. Schema 1, damaged and term-mismatched indexes are
+discarded and regenerated from JSONL. Index bytes are deterministic for the same canonical
+records.
 
 Human `--json` output wraps records with query metadata but does not alter the record objects:
 
 ```json
 {
   "schema": 1,
-  "query": "postgres migration",
+  "query": {"query": "postgres migration", "explain": true},
   "records": [],
   "warnings": []
 }

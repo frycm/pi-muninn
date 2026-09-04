@@ -26,24 +26,27 @@ interface CorpusRecord extends NewJournalRecord {
 let store: string;
 let service: JournalQueryService;
 let shard: string;
+let localMember: string;
 
 beforeEach(() => {
 	store = mkdtempSync(join(tmpdir(), "muninn-evaluate-"));
 	const project = newProjectId();
-	const member = newMemberId();
+	localMember = newMemberId();
 	const host = newHostId();
 	const corpus = JSON.parse(readFileSync(CORPUS, "utf-8")) as CorpusRecord[];
-	shard = journalShardPath(store, member, host, new Date(corpus[0]?.at as string));
+	shard = journalShardPath(store, localMember, host, new Date(corpus[0]?.at as string));
 	mkdirSync(dirname(shard), { recursive: true });
 	writeFileSync(
 		shard,
 		corpus
 			.map(({ id, at, ...record }) =>
-				serializeJournalRecord(buildJournalRecord(record, { project, member, host, id, now: new Date(at) })),
+				serializeJournalRecord(
+					buildJournalRecord(record, { project, member: localMember, host, id, now: new Date(at) }),
+				),
 			)
 			.join(""),
 	);
-	service = new JournalQueryService({ storePath: store, localMember: member, mode: "scan" });
+	service = new JournalQueryService({ storePath: store, localMember, mode: "scan" });
 });
 
 afterEach(() => rmSync(store, { recursive: true, force: true }));
@@ -66,6 +69,26 @@ describe("journal relevance evaluation", () => {
 		expect(report.results.filter((result) => result.hits.length === 0)).toEqual([]);
 		expect(readFileSync(shard)).toEqual(before);
 		expect(existsSync(journalIndexPath(store))).toBe(false);
+	});
+
+	it("produces the same corpus rankings and metrics in scan and index modes", () => {
+		const judgments = readJournalEvaluation(JUDGMENTS);
+		const indexed = new JournalQueryService({
+			storePath: store,
+			localMember,
+			mode: "index",
+		});
+		const indexBefore = readFileSync(journalIndexPath(store));
+		const scanReport = evaluateJournal(service, judgments);
+		const indexReport = evaluateJournal(indexed, judgments);
+		expect(indexReport.metrics).toEqual(scanReport.metrics);
+		expect(indexReport.results).toEqual(scanReport.results);
+		for (const judgment of judgments) {
+			expect(indexed.query({ ...judgment.query, explain: true, limit: 10 }).records).toEqual(
+				service.query({ ...judgment.query, explain: true, limit: 10 }).records,
+			);
+		}
+		expect(readFileSync(journalIndexPath(store))).toEqual(indexBefore);
 	});
 
 	it("reports missing relevant records without including them in aggregate metrics", () => {

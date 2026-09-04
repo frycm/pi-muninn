@@ -215,6 +215,9 @@ describe("muninn project-journal CLI", () => {
 		expect(invalid.code).toBe(2);
 		expect(invalid.out).toEqual([]);
 		expect(invalid.err.join("\n")).toContain("--limit");
+		const unbounded = await runCli(["search", ...Array.from({ length: 65 }, (_, index) => `term-${index}`)], cwd);
+		expect(unbounded.code).toBe(2);
+		expect(unbounded.err.join("\n")).toContain("64 distinct terms");
 	});
 
 	it("returns the record with a distinct code when its transcript is unavailable locally", async () => {

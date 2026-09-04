@@ -12,7 +12,7 @@ The design is local-first and composable: append-only JSONL, Git synchronization
 retrieval and no hosted service in the storage or search path.
 
 > [!IMPORTANT]
-> Phases 3 and 4 are implemented; Phase 5 is underway. Linked worktrees and team clones
+> Phases 3 through 5 are implemented; Phase 6 is next. Linked worktrees and team clones
 > share one sharded JSONL project journal with validated onboarding, advisory lifecycle
 > declarations, explicit conflict resolution and read-only diagnostics. Automatic capture,
 > model tools, attended commands and Unix interfaces all use the same canonical service.
@@ -26,7 +26,7 @@ The implemented identity and registry contract is
 [docs/project-registry.md](docs/project-registry.md). Team onboarding, migration and recovery
 are covered by [docs/operations.md](docs/operations.md). The implemented Phase 4 contract is
 [docs/phase-4-plan.md](docs/phase-4-plan.md). Retrieval evaluation, explanation and scale are
-specified in [docs/phase-5-plan.md](docs/phase-5-plan.md).
+implemented in [docs/phase-5-plan.md](docs/phase-5-plan.md).
 
 ## Why a project journal
 
@@ -382,15 +382,17 @@ cost. See the [Phase 4 plan](docs/phase-4-plan.md).
 
 ### Phase 5 — retrieval quality and scale
 
-Underway: measure lexical retrieval against explicit project-specific relevance judgments,
-add projected trust/lifecycle filters and bounded score explanations, improve deterministic
-typo-tolerant ranking, and raise the performance budget to 50,000 records. Local embeddings
-remain gated on measured lexical misses; raw JSONL scanning remains the correctness oracle.
+Complete: explicit relevance evaluation, projected trust/lifecycle filters, bounded score
+explanations, deterministic phrase/prefix/one-edit ranking, scan/index DTO equivalence and a
+50,000-record performance gate. The checked-in eight-query corpus reaches Recall@10 `1.0`,
+MRR@10 `0.9375` and nDCG@10 `0.953866`. It does not meet the 50-real-query embedding
+experiment gate, and lexical recall is already above its threshold, so no embeddings were
+added. Raw JSONL scanning remains the correctness oracle.
 See the [Phase 5 plan](docs/phase-5-plan.md).
 
 ### Phase 6 — integrations
 
-Add optional remote-session and sandbox integrations where the core journal contract is not
+Next: add optional remote-session and sandbox integrations where the core journal contract is not
 enough, including explicit encrypted transcript exchange if teams need it. Integrations must
 not make the plain-file local workflow secondary.
 
@@ -410,7 +412,8 @@ npm test
 ```
 
 The supported baseline is `@earendil-works/pi-coding-agent >=0.84.2 <0.85.0`, Node
-`>=22.19.0`, Git, MiniSearch and `proper-lockfile`.
+`>=22.19.0`, Git and `proper-lockfile`. Retrieval indexing uses no native or hosted search
+dependency.
 
 Sibling projects are [pi-huginn](https://github.com/frycm/pi-huginn) for remote sessions and
 voice, and [pi-enclave](https://github.com/frycm/pi-enclave) for sandbox-first automation.
