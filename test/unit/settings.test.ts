@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, resolveSettings } from "../../src/settings.ts";
+import { DEFAULT_SETTINGS, isUsableRemote, resolveSettings } from "../../src/settings.ts";
 
 describe("resolveSettings — defaults", () => {
 	it("returns an independent copy of the documented defaults", () => {
@@ -9,6 +9,20 @@ describe("resolveSettings — defaults", () => {
 
 		first.settings.capture.outcomes = false;
 		expect(resolveSettings(undefined, undefined).settings.capture.outcomes).toBe(true);
+	});
+});
+
+describe("journal remote safety", () => {
+	it("accepts ordinary Git locations and rejects helpers, flags, controls, and embedded HTTP credentials", () => {
+		expect(isUsableRemote("ssh://git@example.com/team/journal.git")).toBe(true);
+		expect(isUsableRemote("git@example.com:team/journal.git")).toBe(true);
+		expect(isUsableRemote("/srv/git/journal.git")).toBe(true);
+		expect(isUsableRemote("ext::sh -c exploit")).toBe(false);
+		expect(isUsableRemote("--upload-pack=exploit")).toBe(false);
+		expect(isUsableRemote("https://token@example.com/journal.git")).toBe(false);
+		expect(isUsableRemote("https://user:secret@example.com/journal.git")).toBe(false);
+		expect(isUsableRemote("ssh://git:secret@example.com/journal.git")).toBe(false);
+		expect(isUsableRemote("https://example.com/journal.git\nmalice")).toBe(false);
 	});
 });
 

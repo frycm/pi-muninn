@@ -165,7 +165,24 @@ function validate(
 /** The same rule `git.ts` enforces before handing a URL to git. */
 export function isUsableRemote(url: string): boolean {
 	const trimmed = url.trim();
-	return trimmed !== "" && !trimmed.startsWith("-") && !/^ext::/i.test(trimmed);
+	if (trimmed === "" || trimmed !== url || trimmed.startsWith("-") || /^ext::/i.test(trimmed)) return false;
+	if ([...trimmed].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) return false;
+	if (/^https?:\/\//i.test(trimmed)) {
+		try {
+			const parsed = new URL(trimmed);
+			if (parsed.username !== "" || parsed.password !== "") return false;
+		} catch {
+			return false;
+		}
+	}
+	if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+		try {
+			if (new URL(trimmed).password !== "") return false;
+		} catch {
+			return false;
+		}
+	}
+	return true;
 }
 
 /** Width rank for the `lower-only` policy. Higher means wider. */

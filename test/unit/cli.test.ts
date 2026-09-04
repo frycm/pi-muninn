@@ -78,6 +78,38 @@ describe("muninn project-journal CLI", () => {
 		expect((await runCli(["project", "remote"], cwd)).code).toBe(1);
 	});
 
+	it("shares and joins a project journal on a fresh agent with one command", async () => {
+		await note("Shared onboarding evidence.");
+		const remote = join(root, "shared.git");
+		await execFileAsync("git", ["init", "--bare", "--quiet", "--initial-branch=main", remote], { cwd: root });
+		expect((await runCli(["project", "remote", remote], cwd)).code).toBe(0);
+		expect((await runCli(["sync"], cwd)).code).toBe(0);
+		const shared = await runCli(["project", "share", "--json"], cwd);
+		const descriptor = JSON.parse(shared.out[0] as string) as { project: string; remote: string };
+		expect(descriptor.remote).toBe(remote);
+
+		const targetAgent = join(root, "target-agent");
+		const targetCode = join(root, "target-code");
+		mkdirSync(targetAgent);
+		mkdirSync(targetCode);
+		process.env[AGENT_DIR_ENV] = targetAgent;
+		try {
+			const joined = await runCli(["project", "join", remote, "--json"], targetCode);
+			expect(joined.code).toBe(0);
+			const result = JSON.parse(joined.out[0] as string) as {
+				project: string;
+				member: string;
+				host: string;
+				store_created: boolean;
+			};
+			expect(result).toMatchObject({ project: descriptor.project, store_created: true });
+			expect(result.member).not.toBe(result.host);
+			expect((await runCli(["search", "onboarding"], targetCode)).code).toBe(0);
+		} finally {
+			process.env[AGENT_DIR_ENV] = agentDir;
+		}
+	});
+
 	it("writes, finds, and shows the same stable record ID", async () => {
 		const id = await note("Deploys need the VPN to reach staging.");
 		const searched = await runCli(["search", "deploy", "VPN", "--json"], cwd);

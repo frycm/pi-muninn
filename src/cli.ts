@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** `muninn` — direct human and Unix access to one logical project journal. */
 import { realpathSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveAgentDir } from "./agent-dir.ts";
 import { commitJournal } from "./capture/commit.ts";
@@ -25,6 +25,7 @@ import { JournalQueryService } from "./journal/query.ts";
 import type { NewJournalRecord } from "./journal/record.ts";
 import { appendAuthorizedJournalRecord, appendUserRelation } from "./journal/writer.ts";
 import { runProjectCommand } from "./project/command.ts";
+import { joinProjectJournal, projectShare } from "./project/onboarding.ts";
 import { type ResolvedProject, resolveLogicalProject } from "./project/resolver.ts";
 import { type HostIdentity, loadHostIdentity } from "./store/host.ts";
 import { ensureStore, projectStoreIdentity, storeIdentity } from "./store/init.ts";
@@ -45,6 +46,8 @@ const USAGE = [
 	"  muninn annotate ID TEXT [--json]",
 	"  muninn path",
 	"  muninn project link|show|unlink|remote [URL|--remove]",
+	"  muninn project share [PATH] [--json]",
+	"  muninn project join JOURNAL-URL [PATH] [--force] [--json]",
 	"  muninn migrate [--dry-run] [--json]",
 	"  muninn reindex [--json]",
 	"  muninn status [--json]",
@@ -119,6 +122,57 @@ export async function runCli(
 		if (command === "help" || command === "--help" || command === "-h") return { code: 0, out: [USAGE], err };
 		if (command === "version" || command === "--version") return { code: 0, out: [MUNINN_VERSION], err };
 		if (command === "project") {
+			if (args[0] === "share") {
+				const parsed = parseProjectShareArgs(args.slice(1));
+				const context = await projectContext(parsed.path ? resolve(cwd, parsed.path) : cwd, false);
+				const shared = projectShare(context.project, readProjectManifest(context.project.storePath));
+				return {
+					code: 0,
+					out: parsed.json
+						? [JSON.stringify(shared)]
+						: [
+								`project: ${shared.name} · ${shared.project}`,
+								`journal: ${shared.remote}`,
+								`join: muninn project join ${shared.remote}`,
+							],
+					err,
+				};
+			}
+			if (args[0] === "join") {
+				const parsed = parseProjectJoinArgs(args.slice(1));
+				const agentDir = resolveAgentDir();
+				const host = loadHostIdentity(agentDir);
+				const joined = await joinProjectJournal({
+					agentDir,
+					host,
+					remote: parsed.remote,
+					cwd: parsed.path ? resolve(cwd, parsed.path) : cwd,
+					force: parsed.force,
+				});
+				const result = {
+					schema: 1 as const,
+					kind: "project-join" as const,
+					project: joined.project.id,
+					name: joined.project.name,
+					member: joined.project.member.id,
+					host: host.id,
+					store: joined.project.storePath,
+					remote: joined.remote,
+					store_created: joined.storeCreated,
+				};
+				return {
+					code: 0,
+					out: parsed.json
+						? [JSON.stringify(result)]
+						: [
+								`muninn: joined ${joined.project.name} · ${joined.project.id}`,
+								`store: ${joined.project.storePath}${joined.storeCreated ? " (installed)" : " (reused)"}`,
+								`member: ${joined.project.member.name} · ${joined.project.member.id}`,
+								`journal: ${joined.remote}`,
+							],
+					err,
+				};
+			}
 			if (args[0] === "remote") {
 				const values = args.slice(1);
 				if (values.length > 1) throw new JournalArgumentError("project remote takes one URL or --remove");
@@ -339,6 +393,40 @@ export async function runCli(
 		const code = error instanceof JournalArgumentError ? 2 : 1;
 		return { code, out, err: [message.startsWith("muninn:") ? message : `muninn: ${message}`] };
 	}
+}
+
+function parseProjectShareArgs(args: readonly string[]): { path?: string; json: boolean } {
+	let path: string | undefined;
+	let json = false;
+	for (const arg of args) {
+		if (arg === "--json") json = true;
+		else if (arg.startsWith("--")) throw new JournalArgumentError(`unknown project share option ${arg}`);
+		else if (path) throw new JournalArgumentError("project share takes at most one path");
+		else path = arg;
+	}
+	return { ...(path ? { path } : {}), json };
+}
+
+function parseProjectJoinArgs(args: readonly string[]): {
+	remote: string;
+	path?: string;
+	force: boolean;
+	json: boolean;
+} {
+	let remote: string | undefined;
+	let path: string | undefined;
+	let force = false;
+	let json = false;
+	for (const arg of args) {
+		if (arg === "--force") force = true;
+		else if (arg === "--json") json = true;
+		else if (arg.startsWith("--")) throw new JournalArgumentError(`unknown project join option ${arg}`);
+		else if (!remote) remote = arg;
+		else if (!path) path = arg;
+		else throw new JournalArgumentError("project join takes one journal URL and at most one project path");
+	}
+	if (!remote) throw new JournalArgumentError("project join needs a journal URL");
+	return { remote, ...(path ? { path } : {}), force, json };
 }
 
 function hasFilters(query: object): boolean {

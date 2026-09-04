@@ -33,6 +33,8 @@ const STAGEABLE = new Set([".gitignore", "project.json", "migration.json", "jour
 
 export type GitCommand =
 	| { kind: "init" }
+	/** Clone one explicit journal URL into the empty working directory. */
+	| { kind: "clone"; url: string }
 	| { kind: "config"; key: "user.name" | "user.email"; value: string }
 	| { kind: "add"; paths: string[] }
 	| { kind: "commit"; message: string; paths: string[] }
@@ -42,6 +44,8 @@ export type GitCommand =
 			target: "--show-toplevel" | "--git-common-dir" | "--is-inside-work-tree" | "HEAD";
 	  }
 	| { kind: "log-count" }
+	/** NUL-delimited mode/object/stage/path rows for validating an untrusted clone. */
+	| { kind: "ls-files-stage" }
 	/** The branch HEAD points at — works on an unborn branch, fails when detached. */
 	| { kind: "current-branch" }
 	/** Point an unborn HEAD at a branch: `git init` on any git version, without `--initial-branch`. */
@@ -140,6 +144,9 @@ export function toArgv(command: GitCommand): string[] {
 			// `--initial-branch`: that flag needs git ≥ 2.28, and a symbolic-ref
 			// on the unborn HEAD does the same on any version.
 			return ["init", "--quiet"];
+		case "clone":
+			assertRemoteUrl(command.url);
+			return ["clone", "--quiet", "--no-local", "--", command.url, "."];
 		case "config":
 			// Setter only — there is no read form, so an empty value here would
 			// silently blank the identity a store commits under.
@@ -164,6 +171,8 @@ export function toArgv(command: GitCommand): string[] {
 			return ["rev-parse", command.target];
 		case "log-count":
 			return ["rev-list", "--count", "HEAD"];
+		case "ls-files-stage":
+			return ["ls-files", "--stage", "-z"];
 		case "current-branch":
 			return ["symbolic-ref", "--short", "HEAD"];
 		case "set-head":
@@ -271,6 +280,7 @@ export async function git(cwd: string, command: GitCommand, options: GitOptions 
 				...process.env,
 				GIT_CONFIG_NOSYSTEM: "1",
 				GIT_TERMINAL_PROMPT: "0",
+				GIT_ALLOW_PROTOCOL: "file:ssh:https:http:git",
 				// A rebase that stops to ask for a commit message would hang a
 				// session shutdown forever; there is no terminal to answer it on.
 				GIT_EDITOR: "true",

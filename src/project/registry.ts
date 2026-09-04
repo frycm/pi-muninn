@@ -169,7 +169,8 @@ function defaultMemberName(): string {
 	}
 }
 
-function newRegistry(): ProjectRegistry {
+/** Prepare a new registry value without writing it. Join uses this for rollback-safe staging. */
+export function createProjectRegistry(): ProjectRegistry {
 	return {
 		schema: PROJECT_REGISTRY_SCHEMA,
 		member: { id: newMemberId(), name: defaultMemberName(), createdAt: new Date().toISOString() },
@@ -217,12 +218,13 @@ export async function editProjectRegistry<T>(
 	agentDir: string,
 	hostId: string,
 	edit: (registry: ProjectRegistry) => RegistryEdit<T>,
+	options: { initial?: ProjectRegistry } = {},
 ): Promise<T> {
 	const root = projectsRootPath(agentDir);
 	mkdirSync(root, { recursive: true, mode: 0o700 });
 	return withStoreLock(root, "registry", { host: hostId }, () => {
 		const existing = readProjectRegistry(agentDir);
-		const registry = existing ?? newRegistry();
+		const registry = structuredClone(existing ?? options.initial ?? createProjectRegistry());
 		const result = edit(registry);
 		if (!existing || result.changed) {
 			// Validate the exact object about to become authoritative.

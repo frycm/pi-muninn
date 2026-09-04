@@ -34,30 +34,33 @@ manifest remote is unset.
 
 ## Join an existing team journal
 
-Obtain the project UUID and journal Git URL from a teammate. In the local code checkout:
+On an existing member's machine, print a share descriptor:
 
 ```bash
-muninn project link --id <project-id> --name my-project
-muninn project show
+muninn project share
+muninn project share --json | jq
 ```
 
-The `store` line gives `<journal-store>`. Clone before starting a pi session that would
-initialize that path:
+On the new machine, run the printed join command from the code checkout:
 
 ```bash
-git clone <journal-url> <journal-store>
-muninn project remote <journal-url>
+muninn project join <journal-url>
 muninn sync
 ```
 
-Setting the remote after the clone also registers the local member and host in
-`project.json`. Each member/host writes only
+Join clones into a private temporary directory, validates the manifest, tracked paths,
+records and writer ownership, then installs the UUID store and registry mapping. It never
+overwrites an existing store. Each member/host writes only
 `journal/<member-id>/<host-id>/<YYYY-MM>.jsonl`; sync union-merges concurrent registrations
 and refuses identity collisions.
 
-If the store path was initialized before cloning, move it to a backup path, clone the team
-journal into the printed store path, and use `muninn note` or `muninn project remote` to
-register the local writer. Do not merge unrelated Git histories.
+### Manual recovery join
+
+If automated join cannot be used, obtain the project UUID and journal Git URL from a
+teammate, run `muninn project link --id <project-id>`, and use `muninn project show` to find
+the destination. If that path was initialized already, move it to a backup path before
+cloning the shared journal there. Then run `muninn project remote <journal-url>` to register
+the local writer. Do not merge unrelated Git histories.
 
 ## Search and correct history
 

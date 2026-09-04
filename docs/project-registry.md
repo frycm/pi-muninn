@@ -91,6 +91,8 @@ muninn project show [PATH]
 muninn project link [PATH] [--id UUID] [--name NAME] [--force]
 muninn project unlink [PATH]
 muninn project remote [URL|--remove]
+muninn project share [PATH] [--json]
+muninn project join JOURNAL-URL [PATH] [--force] [--json]
 ```
 
 - `show` is read-only and reports the project and member IDs, UUID store, current root,
@@ -105,6 +107,11 @@ muninn project remote [URL|--remove]
   commands so an attended session cannot silently switch stores beneath pending writes.
 - `remote` reads or changes the explicit remote in the journal's `project.json`. The value is
   user-owned metadata and is never inferred from the code repository's remotes.
+- `share` prints the project UUID, name and explicit journal remote without exposing a store
+  path as team identity.
+- `join` validates an untrusted temporary clone before installing the UUID store and mapping
+  the selected code checkout. `--force` may replace an existing checkout mapping but never
+  an existing store directory.
 
 To reconnect a renamed repository, retain the UUID printed by `unlink` or obtain it with
 `show`, then run:
@@ -116,5 +123,6 @@ muninn project link --id <project-id>
 No command deletes a store. Recovery from a mistaken mapping is therefore an unlink/relink,
 not data restoration.
 
-Cloning and joining an existing team journal requires both the shared project UUID and the
-journal repository. The exact sequence is documented in [operations.md](operations.md).
+Joining normally requires only the explicit journal URL; the manifest supplies the project
+UUID. The automated and manual recovery sequences are documented in
+[operations.md](operations.md).

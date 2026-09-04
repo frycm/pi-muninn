@@ -183,6 +183,10 @@ export interface LinkProjectOptions {
 	projectId?: string;
 	name?: string;
 	force?: boolean;
+	/** Prepared only by the join transaction; used iff no registry exists yet. */
+	initialRegistry?: ProjectRegistry;
+	/** Detect another process creating a different member identity during join staging. */
+	expectedMemberId?: string;
 }
 
 export async function linkLogicalProject(options: LinkProjectOptions): Promise<ResolvedProject> {
@@ -195,64 +199,72 @@ export async function linkLogicalProject(options: LinkProjectOptions): Promise<R
 	const requestedId = options.projectId ?? hint?.project;
 	const requestedName = options.name?.trim() ?? hint?.name;
 
-	return editProjectRegistry(options.agentDir, options.hostId, (registry) => {
-		const existing = findMapping(registry, probe);
-		let target = requestedId ? registry.projects.find((project) => project.id === requestedId) : existing?.project;
-
-		if (existing && target && existing.project.id !== target.id && !options.force) {
-			throw new Error(
-				`muninn: ${probe.root} is already linked to project ${existing.project.id}; pass --force to relink it`,
-			);
-		}
-		if (existing && requestedId && existing.project.id !== requestedId && !target && !options.force) {
-			throw new Error(
-				`muninn: ${probe.root} is already linked to project ${existing.project.id}; pass --force to relink it`,
-			);
-		}
-
-		let changed = false;
-		if (options.force) {
-			for (const project of registry.projects) {
-				if (project.id === target?.id) continue;
-				const before = project.locations.length;
-				project.locations = project.locations.filter(
-					(location) =>
-						location.root !== probe.root && (!probe.gitCommonDir || location.gitCommonDir !== probe.gitCommonDir),
-				);
-				changed ||= project.locations.length !== before;
+	return editProjectRegistry(
+		options.agentDir,
+		options.hostId,
+		(registry) => {
+			if (options.expectedMemberId && registry.member.id !== options.expectedMemberId) {
+				throw new Error("muninn: local member identity changed while joining; retry the join");
 			}
-		}
+			const existing = findMapping(registry, probe);
+			let target = requestedId ? registry.projects.find((project) => project.id === requestedId) : existing?.project;
 
-		if (!target) {
-			target = {
-				id: requestedId ?? newProjectId(),
-				name: requestedName || defaultProjectName(probe.root),
-				createdAt: new Date().toISOString(),
-				locations: [],
+			if (existing && target && existing.project.id !== target.id && !options.force) {
+				throw new Error(
+					`muninn: ${probe.root} is already linked to project ${existing.project.id}; pass --force to relink it`,
+				);
+			}
+			if (existing && requestedId && existing.project.id !== requestedId && !target && !options.force) {
+				throw new Error(
+					`muninn: ${probe.root} is already linked to project ${existing.project.id}; pass --force to relink it`,
+				);
+			}
+
+			let changed = false;
+			if (options.force) {
+				for (const project of registry.projects) {
+					if (project.id === target?.id) continue;
+					const before = project.locations.length;
+					project.locations = project.locations.filter(
+						(location) =>
+							location.root !== probe.root && (!probe.gitCommonDir || location.gitCommonDir !== probe.gitCommonDir),
+					);
+					changed ||= project.locations.length !== before;
+				}
+			}
+
+			if (!target) {
+				target = {
+					id: requestedId ?? newProjectId(),
+					name: requestedName || defaultProjectName(probe.root),
+					createdAt: new Date().toISOString(),
+					locations: [],
+				};
+				registry.projects.push(target);
+				registry.projects.sort((left, right) => left.id.localeCompare(right.id));
+				changed = true;
+			}
+			if (requestedName !== undefined && target.name !== requestedName) {
+				target.name = requestedName;
+				changed = true;
+			}
+			changed = addLocation(target, probe) || changed;
+			return {
+				value: resolved(
+					options.agentDir,
+					registry,
+					target,
+					probe,
+					"linked",
+					hint && !options.projectId
+						? `explicit link accepting repository hint ${hint.project}`
+						: `explicit link for ${probe.root}`,
+				),
+				changed,
 			};
-			registry.projects.push(target);
-			registry.projects.sort((left, right) => left.id.localeCompare(right.id));
-			changed = true;
-		}
-		if (requestedName !== undefined && target.name !== requestedName) {
-			target.name = requestedName;
-			changed = true;
-		}
-		changed = addLocation(target, probe) || changed;
-		return {
-			value: resolved(
-				options.agentDir,
-				registry,
-				target,
-				probe,
-				"linked",
-				hint && !options.projectId
-					? `explicit link accepting repository hint ${hint.project}`
-					: `explicit link for ${probe.root}`,
-			),
-			changed,
-		};
-	});
+		},
+		options.initialRegistry ? { initial: options.initialRegistry } : {},
+	);
 }
 
 export interface UnlinkProjectResult {
