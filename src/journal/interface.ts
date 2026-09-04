@@ -186,7 +186,7 @@ export function renderRead(id: string, result: JournalReadResult, mode: JournalO
 			...(record.git?.branch ? [`branch ${record.git.branch}`] : []),
 			...(record.session
 				? [
-						`session ${record.session.file}${record.session.last ? `#${record.session.last}` : ""}${transcripts.get(record.id)?.available ? "" : " (transcript unavailable locally)"}`,
+						`session ${record.session.file}${record.session.last ? `#${record.session.last}` : ""}${transcripts.get(record.id)?.availability === "exchange" ? " (imported transcript available locally)" : transcripts.get(record.id)?.available ? "" : " (transcript unavailable locally)"}`,
 					]
 				: []),
 			...record.relations.map((relation) => `${relation.type} ${relation.target}`),

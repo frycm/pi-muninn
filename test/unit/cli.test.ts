@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -322,6 +322,61 @@ describe("muninn project-journal CLI", () => {
 		const shown = await runCli(["show", written.id, "--json"], cwd);
 		expect(shown.code).toBe(3);
 		expect(JSON.parse(shown.out[0] as string).transcripts[0]).toMatchObject({ available: false });
+	});
+
+	it("exports and imports one encrypted transcript through the CLI", async () => {
+		await note("Create the project journal.");
+		const registry = readProjectRegistry(agentDir);
+		const project = registry?.projects[0];
+		const host = loadHostIdentity(agentDir);
+		const sessions = join(agentDir, "sessions");
+		mkdirSync(sessions, { recursive: true });
+		const transcript = join(sessions, "cli-session.jsonl");
+		const transcriptText = `${JSON.stringify({ type: "session", id: "cli" })}\n${JSON.stringify({ type: "message", text: "private" })}\n`;
+		writeFileSync(transcript, transcriptText, { mode: 0o600 });
+		const written = await appendAuthorizedJournalRecord(
+			{
+				authority: "headless-user",
+				record: {
+					type: "note",
+					source: "user",
+					channel: "cli",
+					body: "Exchange this transcript.",
+					session: { file: transcript },
+				},
+			},
+			{
+				storePath: join(agentDir, "muninn-projects", project?.id as string),
+				project: project?.id as string,
+				member: registry?.member.id as string,
+				host: host.id,
+			},
+		);
+		const fakeAge = async (args: readonly string[]) => {
+			const output = args[args.indexOf("--output") + 1] as string;
+			const input = args.at(-1) as string;
+			writeFileSync(output, Buffer.from(readFileSync(input).map((byte) => byte ^ 0x5a)), { mode: 0o600 });
+		};
+		const identity = join(root, "age-key.txt");
+		const bundle = join(root, "session.age");
+		writeFileSync(identity, "fixture", { mode: 0o600 });
+		const exported = await runCli(
+			["transcript", "export", written.id, bundle, "--recipient", "age1fixture", "--json"],
+			cwd,
+			{ ageRunner: fakeAge },
+		);
+		expect(JSON.parse(exported.out[0] as string)).toMatchObject({ kind: "transcript-export", record: written.id });
+		rmSync(transcript);
+		const imported = await runCli(["transcript", "import", bundle, "--identity", identity, "--json"], cwd, {
+			ageRunner: fakeAge,
+		});
+		expect(JSON.parse(imported.out[0] as string)).toMatchObject({ kind: "transcript-import", record: written.id });
+		const shown = await runCli(["show", written.id, "--json"], cwd);
+		expect(shown.code).toBe(0);
+		expect(JSON.parse(shown.out[0] as string).transcripts[0]).toMatchObject({
+			availability: "exchange",
+			available: true,
+		});
 	});
 
 	it("appends a correction without modifying its target and reads the relation chain", async () => {

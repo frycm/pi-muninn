@@ -32,6 +32,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes age
       - run: npm ci
       - run: npm test
 

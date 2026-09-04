@@ -161,6 +161,7 @@ export default function (pi: ExtensionAPI): void {
 		journal ??= new JournalQueryService({
 			storePath: current.project.storePath,
 			localMember: current.project.member.id,
+			agentDir: getAgentDir(),
 			mode: "index",
 			maxChars: 16_000,
 			transcriptRoots: [join(getAgentDir(), "sessions")],
