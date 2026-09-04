@@ -419,10 +419,10 @@ the ordinary journal path, and every integration remains optional. See the
 
 ### Phase 7 — optional cryptographic governance
 
-Only evidence from real distributed use should start this work. It requires a threat model,
-member keys, rotation and recovery, signed records/events, remote ACL interaction and an
-explicit policy for compromised-key history. Until then, lifecycle state stays honestly
-advisory.
+In progress: explicit out-of-band trust pins, Ed25519 member keys, signed records and
+self-governance events, rotation/recovery, prospective local enforcement and an explicit
+compromised-history policy. Signatures authenticate present bytes but do not replace Git
+history or remote ACL administration. See the [Phase 7 plan](docs/phase-7-plan.md).
 
 ## Development
 
