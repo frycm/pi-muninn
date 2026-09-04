@@ -211,6 +211,16 @@ describe("/muninn project journal", () => {
 		).toEqual(expect.arrayContaining(["corrects", "annotates"]));
 	});
 
+	it("shows the read-only conflict inbox", async () => {
+		const target = await seed("The service uses one release channel.");
+		await runtime().appendRelation(target.id, "Use blue.", "corrects");
+		await runtime().appendRelation(target.id, "Use green.", "corrects");
+		const output = await runMuninnCommand("conflicts", runtime());
+		expect(output.text).toContain(`target ${target.id}`);
+		expect(output.text).toContain("Use blue.");
+		expect((await runMuninnCommand("conflicts now", runtime())).level).toBe("warning");
+	});
+
 	it("reports missing targets rather than creating dangling user corrections", async () => {
 		const missing = "j-0198f2b0-1111-7000-8000-000000000099";
 		const output = await runMuninnCommand(`correct ${missing} New text.`, runtime());

@@ -214,6 +214,49 @@ describe("muninn project-journal CLI", () => {
 		expect(records.find((record) => record.id === correctionId)?.relations).toEqual([{ type: "corrects", target }]);
 	});
 
+	it("lists, explicitly resolves, and reopens correction conflicts", async () => {
+		const target = await note("The deployment window is Tuesday.");
+		const first = await runCli(["correct", target, "Use Wednesday.", "--json"], cwd);
+		const second = await runCli(["correct", target, "Use Thursday.", "--json"], cwd);
+		const branchIds = [first, second].map((result) => JSON.parse(result.out[0] as string).id as string).sort();
+		const before = await runCli(["conflicts", "--json"], cwd);
+		const conflict = JSON.parse(before.out[0] as string).conflicts[0] as {
+			target: string;
+			branches: Array<{ id: string }>;
+		};
+		expect(conflict.target).toBe(target);
+		expect(conflict.branches.map((branch) => branch.id).sort()).toEqual(branchIds);
+		const resolved = await runCli(["resolve", target, "Use the approved Friday window.", "--json"], cwd);
+		expect(resolved.code).toBe(0);
+		const resolution = JSON.parse(resolved.out[0] as string) as {
+			id: string;
+			relations: Array<{ type: string; target: string }>;
+		};
+		expect(
+			resolution.relations
+				.filter((relation) => relation.type === "supersedes")
+				.map((item) => item.target)
+				.sort(),
+		).toEqual(branchIds);
+		expect(JSON.parse((await runCli(["conflicts", "--json"], cwd)).out[0] as string).conflicts).toEqual([]);
+		expect(JSON.parse((await runCli(["show", target, "--json"], cwd)).out[0] as string).records[0].body).toContain(
+			"Tuesday",
+		);
+		await runCli(["correct", target, "Emergency maintenance is Saturday."], cwd);
+		const reopened = JSON.parse((await runCli(["conflicts", "--json"], cwd)).out[0] as string).conflicts[0] as {
+			branches: Array<{ id: string }>;
+		};
+		expect(reopened.branches.map((branch) => branch.id)).toContain(resolution.id);
+	});
+
+	it("does not write when resolve targets a record without a conflict", async () => {
+		const target = await note("One undisputed fact.");
+		const result = await runCli(["resolve", target, "No change."], cwd);
+		expect(result).toMatchObject({ code: 1, out: [] });
+		expect(result.err.join("\n")).toContain("not conflicted; nothing written");
+		expect(JSON.parse((await runCli(["conflicts", "--json"], cwd)).out[0] as string).conflicts).toEqual([]);
+	});
+
 	it("lists sessions and tails records in stable machine formats", async () => {
 		await note("One operational fact.");
 		await note("Another operational fact.");

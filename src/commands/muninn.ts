@@ -3,6 +3,7 @@ import type { MuninnSessionState } from "../capture/session-state.ts";
 import {
 	parseJournalQueryArgs,
 	renderAppend,
+	renderConflicts,
 	renderRead,
 	renderSearch,
 	renderSessions,
@@ -47,6 +48,7 @@ export const USAGE = [
 	"  /muninn note TEXT",
 	"  /muninn correct ID TEXT",
 	"  /muninn annotate ID TEXT",
+	"  /muninn conflicts",
 	"  /muninn project",
 	"  /muninn team",
 	"  /muninn reindex",
@@ -80,6 +82,8 @@ export async function runMuninnCommand(args: string, runtime: CommandRuntime): P
 			return relation(rest, "corrects", runtime);
 		case "annotate":
 			return relation(rest, "annotates", runtime);
+		case "conflicts":
+			return conflicts(rest, runtime);
 		case "reindex":
 			return reindex(runtime);
 		case "sync":
@@ -156,6 +160,11 @@ async function listSessions(args: string, runtime: CommandRuntime): Promise<Comm
 async function listTail(args: string, runtime: CommandRuntime): Promise<CommandOutput> {
 	const parsed = parseJournalQueryArgs(splitArgs(args));
 	return { level: "info", text: renderSearch(tail(await service(runtime), parsed.query), "text").join("\n") };
+}
+
+async function conflicts(args: string, runtime: CommandRuntime): Promise<CommandOutput> {
+	if (args !== "") return { level: "warning", text: "muninn: /muninn conflicts takes no arguments" };
+	return { level: "info", text: renderConflicts((await service(runtime)).conflictInbox(), "text").join("\n") };
 }
 
 async function note(text: string, runtime: CommandRuntime): Promise<CommandOutput> {

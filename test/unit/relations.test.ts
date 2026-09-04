@@ -6,7 +6,12 @@ import { newEntryId, newHostId, newMemberId, newProjectId } from "../../src/ids.
 import { scanJournal } from "../../src/journal/jsonl.ts";
 import { buildJournalRecord, type JournalRecord } from "../../src/journal/record.ts";
 import { correctionRank, projectRelations, relationNeighborhood } from "../../src/journal/relations.ts";
-import { appendAuthorizedJournalRecord, appendUserRelation, JournalAuthorityError } from "../../src/journal/writer.ts";
+import {
+	appendAuthorizedJournalRecord,
+	appendUserRelation,
+	JournalAuthorityError,
+	resolveUserConflict,
+} from "../../src/journal/writer.ts";
 
 const roots: string[] = [];
 
@@ -213,6 +218,68 @@ describe("relation projection", () => {
 		expect(projection.cycles).toEqual([[cycleA, cycleB].sort()]);
 	});
 
+	it("removes explicitly superseded branches and reopens on a later correction", () => {
+		const ids = identity();
+		const target = newEntryId();
+		const left = newEntryId();
+		const right = newEntryId();
+		const resolution = newEntryId();
+		const later = newEntryId();
+		const base = [
+			record(target, ids, "target"),
+			record(left, ids, "left", [{ type: "corrects", target }], { source: "user", type: "correction" }),
+			record(right, ids, "right", [{ type: "corrects", target }], { source: "user", type: "correction" }),
+		];
+		const resolved = record(
+			resolution,
+			ids,
+			"resolved",
+			[
+				{ type: "corrects", target },
+				{ type: "supersedes", target: left },
+				{ type: "supersedes", target: right },
+			],
+			{ source: "user", type: "correction" },
+		);
+		expect(projectRelations([...base, resolved], ids.member).conflicts).toEqual([]);
+		const reopened = record(later, ids, "later", [{ type: "corrects", target }], {
+			source: "user",
+			type: "correction",
+		});
+		expect(projectRelations([...base, resolved, reopened], ids.member).conflicts).toEqual([
+			{ target, records: [resolution, later].sort() },
+		]);
+	});
+
+	it("keeps concurrent resolutions as an active conflict", () => {
+		const ids = identity();
+		const target = newEntryId();
+		const left = newEntryId();
+		const right = newEntryId();
+		const first = newEntryId();
+		const second = newEntryId();
+		const base = [
+			record(target, ids, "target"),
+			record(left, ids, "left", [{ type: "corrects", target }], { source: "user", type: "correction" }),
+			record(right, ids, "right", [{ type: "corrects", target }], { source: "user", type: "correction" }),
+		];
+		const resolution = (id: string, body: string) =>
+			record(
+				id,
+				ids,
+				body,
+				[
+					{ type: "corrects", target },
+					{ type: "supersedes", target: left },
+					{ type: "supersedes", target: right },
+				],
+				{ source: "user", type: "correction" },
+			);
+		expect(
+			projectRelations([...base, resolution(first, "one"), resolution(second, "two")], ids.member).conflicts,
+		).toEqual([{ target, records: [first, second].sort() }]);
+	});
+
 	it("labels a teammate correction as teammate-user", () => {
 		const ids = identity();
 		const target = newEntryId();
@@ -223,5 +290,121 @@ describe("relation projection", () => {
 		});
 		const projection = projectRelations([record(target, ids, "old"), correction], ids.member);
 		expect(projection.views.get(correction.id)?.trust).toBe("teammate-user");
+	});
+});
+
+describe("explicit conflict resolution", () => {
+	it("atomically supersedes every active branch without modifying prior bytes", async () => {
+		const path = store();
+		const ids = identity();
+		const target = await appendAuthorizedJournalRecord(
+			{ authority: "headless-user", record: { type: "note", source: "user", channel: "cli", body: "old" } },
+			{ storePath: path, ...ids },
+		);
+		const left = await appendUserRelation({
+			authority: "headless-user",
+			target: target.id,
+			text: "left",
+			relation: "corrects",
+			channel: "cli",
+			storePath: path,
+			...ids,
+		});
+		const right = await appendUserRelation({
+			authority: "headless-user",
+			target: target.id,
+			text: "right",
+			relation: "corrects",
+			channel: "cli",
+			storePath: path,
+			...ids,
+		});
+		const bytes = readFileSync(target.path, "utf-8").split("\n")[0];
+		const result = await resolveUserConflict({
+			authority: "headless-user",
+			target: target.id,
+			text: "chosen",
+			channel: "cli",
+			storePath: path,
+			...ids,
+		});
+		expect(result.status).toBe("resolved");
+		if (result.status !== "resolved") return;
+		expect(result.branches).toEqual([left.id, right.id].sort());
+		expect(result.written.record.relations).toEqual([
+			{ type: "corrects", target: target.id },
+			...[left.id, right.id].sort().map((branch) => ({ type: "supersedes", target: branch })),
+		]);
+		expect(readFileSync(target.path, "utf-8").split("\n")[0]).toBe(bytes);
+		expect(
+			projectRelations(
+				scanJournal(path).records.map((item) => item.record),
+				ids.member,
+			).conflicts,
+		).toEqual([]);
+	});
+
+	it("writes nothing for a missing or non-conflicted target", async () => {
+		const path = store();
+		const ids = identity();
+		const missing = await resolveUserConflict({
+			authority: "headless-user",
+			target: newEntryId(),
+			text: "nothing",
+			channel: "cli",
+			storePath: path,
+			...ids,
+		});
+		expect(missing.status).toBe("missing");
+		const target = await appendAuthorizedJournalRecord(
+			{ authority: "headless-user", record: { type: "note", source: "user", channel: "cli", body: "only" } },
+			{ storePath: path, ...ids },
+		);
+		const before = scanJournal(path).records.length;
+		expect(
+			(
+				await resolveUserConflict({
+					authority: "headless-user",
+					target: target.id,
+					text: "nothing",
+					channel: "cli",
+					storePath: path,
+					...ids,
+				})
+			).status,
+		).toBe("not-conflicted");
+		expect(scanJournal(path).records).toHaveLength(before);
+	});
+
+	it("serialises two same-store resolutions so only one can write", async () => {
+		const path = store();
+		const ids = identity();
+		const target = await appendAuthorizedJournalRecord(
+			{ authority: "headless-user", record: { type: "note", source: "user", channel: "cli", body: "old" } },
+			{ storePath: path, ...ids },
+		);
+		for (const text of ["left", "right"]) {
+			await appendUserRelation({
+				authority: "headless-user",
+				target: target.id,
+				text,
+				relation: "corrects",
+				channel: "cli",
+				storePath: path,
+				...ids,
+			});
+		}
+		const resolve = (text: string) =>
+			resolveUserConflict({
+				authority: "headless-user",
+				target: target.id,
+				text,
+				channel: "cli",
+				storePath: path,
+				...ids,
+			});
+		const outcomes = await Promise.all([resolve("chosen one"), resolve("chosen two")]);
+		expect(outcomes.map((outcome) => outcome.status).sort()).toEqual(["not-conflicted", "resolved"]);
+		expect(scanJournal(path).records).toHaveLength(4);
 	});
 });

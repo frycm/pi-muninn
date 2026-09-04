@@ -1,5 +1,6 @@
 /** Stable human/Unix projections over the canonical journal query service. */
 import type {
+	JournalConflictsResult,
 	JournalQuery,
 	JournalQueryResult,
 	JournalQueryService,
@@ -169,6 +170,27 @@ export function renderRead(id: string, result: JournalReadResult, mode: JournalO
 				: []),
 			...record.relations.map((relation) => `${relation.type} ${relation.target}`),
 		]),
+		...result.warnings.map((warning) => `! ${warning}`),
+	];
+}
+
+export function renderConflicts(result: JournalConflictsResult, mode: JournalOutputMode): string[] {
+	if (mode === "json") return [JSON.stringify(result)];
+	if (mode === "jsonl") {
+		return result.conflicts.map((conflict) =>
+			JSON.stringify({ schema: JOURNAL_INTERFACE_SCHEMA, kind: "conflict", ...conflict }),
+		);
+	}
+	if (result.conflicts.length === 0) return ["muninn: no unresolved journal conflicts"];
+	return [
+		`${result.conflicts.length} unresolved journal ${result.conflicts.length === 1 ? "conflict" : "conflicts"}:`,
+		...result.conflicts.flatMap((conflict) => [
+			`target ${conflict.target} · ${conflict.target_record.snippet}`,
+			...conflict.branches.map(
+				(branch) => `  branch ${branch.id} · ${branch.trust} · ${branch.labels.join(",")} · ${branch.snippet}`,
+			),
+		]),
+		...(result.truncated ? ["! conflict output truncated"] : []),
 		...result.warnings.map((warning) => `! ${warning}`),
 	];
 }

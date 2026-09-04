@@ -87,11 +87,22 @@ export function projectRelations(
 	}
 
 	const conflicts: RelationProjection["conflicts"] = [];
+	const superseded = new Set(
+		[...views.values()].flatMap((candidate) =>
+			candidate.outgoing.filter((edge) => edge.type === "supersedes").map((edge) => edge.to),
+		),
+	);
 	for (const view of views.values()) {
 		for (const edge of view.incoming) {
 			addLabel(view, edge.type === "corrects" ? "corrected" : edge.type === "supersedes" ? "superseded" : "annotated");
 		}
-		const disputing = view.incoming.filter((edge) => edge.type === "corrects" || edge.type === "supersedes");
+		const disputing = view.incoming.filter(
+			(edge) =>
+				(edge.type === "corrects" ||
+					(edge.type === "supersedes" &&
+						!views.get(edge.from)?.outgoing.some((candidate) => candidate.type === "corrects"))) &&
+				!superseded.has(edge.from),
+		);
 		if (disputing.length > 1) {
 			const records = disputing.map((edge) => edge.from).sort();
 			conflicts.push({ target: view.record.id, records });

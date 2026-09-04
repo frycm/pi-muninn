@@ -70,6 +70,19 @@ export interface JournalReadResult {
 	truncated: boolean;
 }
 
+export interface JournalConflict {
+	target: string;
+	target_record: JournalSearchRecord;
+	branches: JournalSearchRecord[];
+}
+
+export interface JournalConflictsResult {
+	schema: 1;
+	conflicts: JournalConflict[];
+	warnings: string[];
+	truncated: boolean;
+}
+
 export class JournalQueryError extends Error {
 	constructor(message: string) {
 		super(`muninn: invalid journal query: ${message}`);
@@ -242,6 +255,47 @@ export class JournalQueryService {
 			warnings: this.warnings(),
 			truncated: neighborhood.truncated,
 		};
+	}
+
+	/** The complete active conflict inbox, independently of search ranking or filters. */
+	conflictInbox(limit = 100): JournalConflictsResult {
+		if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+			throw new JournalQueryError("conflict limit must be 1 to 100");
+		const conflicts: JournalConflict[] = [];
+		const warnings: string[] = [];
+		const maxChars = Math.max(1024, this.options.maxChars ?? DEFAULT_MAX_CHARS);
+		let truncated = false;
+		const fits = (nextConflicts: JournalConflict[], nextWarnings: string[]) =>
+			JSON.stringify({ schema: 1, conflicts: nextConflicts, warnings: nextWarnings, truncated: false }).length <=
+			maxChars;
+		for (const conflict of this.projection.conflicts.slice(0, limit)) {
+			const target = this.projection.views.get(conflict.target)?.record;
+			if (!target) continue;
+			const dto: JournalConflict = {
+				target: target.id,
+				target_record: searchDto({ record: target, score: 0, expanded: false }, this.projection, "", 160),
+				branches: conflict.records.flatMap((id) => {
+					const record = this.projection.views.get(id)?.record;
+					return record ? [searchDto({ record, score: 0, expanded: false }, this.projection, "", 160)] : [];
+				}),
+			};
+			if (!fits([...conflicts, dto], warnings)) {
+				truncated = true;
+				break;
+			}
+			conflicts.push(dto);
+		}
+		if (this.projection.conflicts.length > conflicts.length) truncated = true;
+		const sourceWarnings = this.warnings();
+		for (const warning of sourceWarnings) {
+			if (!fits(conflicts, [...warnings, warning])) {
+				truncated = true;
+				break;
+			}
+			warnings.push(warning);
+		}
+		if (sourceWarnings.length > warnings.length) truncated = true;
+		return { schema: 1, conflicts, warnings, truncated };
 	}
 
 	private warnings(): string[] {

@@ -11,6 +11,7 @@ import {
 	type JournalOutputMode,
 	parseJournalQueryArgs,
 	renderAppend,
+	renderConflicts,
 	renderRead,
 	renderSearch,
 	renderSessions,
@@ -23,7 +24,7 @@ import { discoverLegacyStoreCandidates, inventoryLegacyStores, migrateMarkdownSt
 import { collectGitProvenance } from "./journal/provenance.ts";
 import { JournalQueryService } from "./journal/query.ts";
 import type { NewJournalRecord } from "./journal/record.ts";
-import { appendAuthorizedJournalRecord, appendUserRelation } from "./journal/writer.ts";
+import { appendAuthorizedJournalRecord, appendUserRelation, resolveUserConflict } from "./journal/writer.ts";
 import { runProjectCommand } from "./project/command.ts";
 import { joinProjectJournal, projectShare } from "./project/onboarding.ts";
 import { type ResolvedProject, resolveLogicalProject } from "./project/resolver.ts";
@@ -45,6 +46,8 @@ const USAGE = [
 	"  muninn note TEXT [--json]",
 	"  muninn correct ID TEXT [--json]",
 	"  muninn annotate ID TEXT [--json]",
+	"  muninn conflicts [--json|--jsonl]",
+	"  muninn resolve TARGET TEXT [--json]",
 	"  muninn path",
 	"  muninn project link|show|unlink|remote [URL|--remove]",
 	"  muninn project share [PATH] [--json]",
@@ -263,6 +266,14 @@ export async function runCli(
 			const result = context.service.query(parsed.query);
 			return { code: result.records.length === 0 ? 1 : 0, out: renderSearch(result, parsed.mode), err };
 		}
+		if (command === "conflicts") {
+			const parsed = parseJournalQueryArgs(args);
+			if (Object.keys(parsed.query).length > 0 || parsed.follow || parsed.relations) {
+				throw new JournalArgumentError("conflicts accepts only --json or --jsonl");
+			}
+			const context = await projectContext(cwd, false);
+			return { code: 0, out: renderConflicts(context.service.conflictInbox(), parsed.mode), err };
+		}
 		if (command === "show") {
 			const id = args.shift();
 			if (!id) throw new JournalArgumentError("show needs a journal record ID");
@@ -347,6 +358,29 @@ export async function runCli(
 				host: context.host.id,
 			});
 			return { code: 0, out: renderAppend(written.record, parsed.mode), err };
+		}
+		if (command === "resolve") {
+			const parsed = parseRelationArgs(args, command);
+			const context = await projectContext(cwd, true);
+			const git = await collectGitProvenance(cwd);
+			const resolved = await resolveUserConflict({
+				authority: "headless-user",
+				target: parsed.target,
+				text: parsed.text,
+				channel: "cli",
+				storePath: context.project.storePath,
+				project: context.project.id,
+				member: context.project.member.id,
+				host: context.host.id,
+				...(git ? { git } : {}),
+			});
+			if (resolved.status === "missing") {
+				return { code: 1, out, err: [`muninn: no journal record has id ${parsed.target}`] };
+			}
+			if (resolved.status === "not-conflicted") {
+				return { code: 1, out, err: [`muninn: journal record ${parsed.target} is not conflicted; nothing written`] };
+			}
+			return { code: 0, out: renderAppend(resolved.written.record, parsed.mode), err };
 		}
 		if (command === "migrate") {
 			const parsed = parseSimpleFlags(args, ["dry-run", "json"]);
@@ -547,7 +581,7 @@ function parseWriteArgs(args: readonly string[]): { text: string; mode: JournalO
 
 function parseRelationArgs(
 	args: readonly string[],
-	command: "correct" | "annotate",
+	command: "correct" | "annotate" | "resolve",
 ): { target: string; text: string; mode: JournalOutputMode } {
 	const target = args[0];
 	if (!target) throw new JournalArgumentError(`${command} needs a target ID and text`);

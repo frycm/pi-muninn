@@ -1,6 +1,13 @@
 /** One authority boundary for every non-migration project-journal write. */
 import { isEntryId, newEntryId } from "../ids.ts";
-import { type AppendJournalOptions, type AppendJournalResult, appendJournalRecord } from "./jsonl.ts";
+import { withStoreLock } from "../store/lock.ts";
+import {
+	type AppendJournalOptions,
+	type AppendJournalResult,
+	appendJournalRecord,
+	appendJournalRecordLocked,
+	scanJournal,
+} from "./jsonl.ts";
 import type {
 	JournalChannel,
 	JournalGitProvenance,
@@ -8,6 +15,7 @@ import type {
 	JournalSessionPointer,
 	NewJournalRecord,
 } from "./record.ts";
+import { projectRelations } from "./relations.ts";
 
 export type JournalWriterAuthority = "attended-user" | "headless-user" | "model" | "automatic";
 
@@ -118,4 +126,49 @@ export async function appendUserRelation(options: UserRelationWriteOptions): Pro
 		},
 		options,
 	);
+}
+
+export type ResolveConflictResult =
+	| { status: "resolved"; branches: string[]; written: AppendJournalResult }
+	| { status: "missing" }
+	| { status: "not-conflicted" };
+
+export interface ResolveConflictOptions extends Omit<UserRelationWriteOptions, "relation"> {}
+
+/** Resolve exactly the active branches observed under the append lock. */
+export async function resolveUserConflict(options: ResolveConflictOptions): Promise<ResolveConflictResult> {
+	if (!isEntryId(options.target)) throw new JournalAuthorityError(`${options.target} is not a journal record id`);
+	if (options.text.trim() === "") throw new JournalAuthorityError("resolution text cannot be empty");
+	return withStoreLock(options.storePath, "append", { host: options.host }, () => {
+		const scan = scanJournal(options.storePath);
+		if (scan.problems.length > 0) {
+			throw new JournalAuthorityError(`cannot resolve a damaged journal (${scan.problems[0]?.message})`);
+		}
+		const records = scan.records.map((item) => item.record);
+		if (!records.some((record) => record.id === options.target)) return { status: "missing" };
+		const conflict = projectRelations(records, options.member).conflicts.find(
+			(candidate) => candidate.target === options.target,
+		);
+		if (!conflict) return { status: "not-conflicted" };
+		const id = newEntryId();
+		const record: NewJournalRecord = {
+			type: "correction",
+			source: "user",
+			channel: options.channel,
+			body: options.text,
+			tags: options.tags ?? [],
+			paths: options.paths ?? [],
+			relations: [
+				{ type: "corrects", target: options.target },
+				...conflict.records.map((target) => ({ type: "supersedes" as const, target })),
+			],
+			...(options.task ? { task: options.task } : {}),
+			...(options.continues ? { continues: options.continues } : {}),
+			...(options.session ? { session: options.session } : {}),
+			...(options.git ? { git: options.git } : {}),
+		};
+		assertAuthority({ authority: options.authority, record }, id);
+		const written = appendJournalRecordLocked(record, { ...options, id });
+		return { status: "resolved", branches: conflict.records, written };
+	});
 }
