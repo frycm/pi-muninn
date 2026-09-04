@@ -12,11 +12,11 @@ The design is local-first and composable: append-only JSONL, Git synchronization
 retrieval and no hosted service in the storage or search path.
 
 > [!IMPORTANT]
-> Phases 3 and 4 are implemented. Linked worktrees and team clones share one sharded JSONL
-> project journal with validated onboarding, advisory lifecycle declarations, explicit
-> conflict resolution and read-only diagnostics. Automatic capture, model tools, attended
-> commands and Unix interfaces all use the same canonical service. Journal content is never
-> injected into prompts.
+> Phases 3 and 4 are implemented; Phase 5 is underway. Linked worktrees and team clones
+> share one sharded JSONL project journal with validated onboarding, advisory lifecycle
+> declarations, explicit conflict resolution and read-only diagnostics. Automatic capture,
+> model tools, attended commands and Unix interfaces all use the same canonical service.
+> Journal content is never injected into prompts.
 
 The legacy Markdown migration-input contract is
 [docs/journal-format.md](docs/journal-format.md). The JSONL contract is
@@ -25,7 +25,8 @@ sequence is [docs/phase-3-plan.md](docs/phase-3-plan.md).
 The implemented identity and registry contract is
 [docs/project-registry.md](docs/project-registry.md). Team onboarding, migration and recovery
 are covered by [docs/operations.md](docs/operations.md). The implemented Phase 4 contract is
-[docs/phase-4-plan.md](docs/phase-4-plan.md).
+[docs/phase-4-plan.md](docs/phase-4-plan.md). Retrieval evaluation, explanation and scale are
+specified in [docs/phase-5-plan.md](docs/phase-5-plan.md).
 
 ## Why a project journal
 
@@ -370,9 +371,11 @@ cost. See the [Phase 4 plan](docs/phase-4-plan.md).
 
 ### Phase 5 — retrieval quality and scale
 
-Measure lexical retrieval on real project histories beyond the Phase 3 10,000-record budget,
-improve query explanation, filters and ranking, and consider local embeddings only if
-evaluation shows a material benefit. Raw JSONL scanning remains the correctness baseline.
+Underway: measure lexical retrieval against explicit project-specific relevance judgments,
+add projected trust/lifecycle filters and bounded score explanations, improve deterministic
+typo-tolerant ranking, and raise the performance budget to 50,000 records. Local embeddings
+remain gated on measured lexical misses; raw JSONL scanning remains the correctness oracle.
+See the [Phase 5 plan](docs/phase-5-plan.md).
 
 ### Phase 6 — integrations
 

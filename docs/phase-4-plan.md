@@ -244,8 +244,10 @@ for recovery rather than the primary interface.
 ### Phase 5 — retrieval quality and scale
 
 Phase 5 receives canonical lifecycle and conflict projections as ranking/filter inputs. It
-may improve explanation and retrieval evaluation, but raw JSONL scanning stays the
-correctness baseline and lifecycle never hides history by default.
+adds explicit relevance evaluation, score explanations, projected filters and deterministic
+typo-tolerant lexical ranking under a 50,000-record budget. Raw JSONL scanning stays the
+correctness oracle and lifecycle never hides history by default. See
+[phase-5-plan.md](phase-5-plan.md).
 
 ### Phase 6 — integrations
 
