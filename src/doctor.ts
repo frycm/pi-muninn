@@ -1,6 +1,10 @@
 /** Read-only, structured diagnostics for a logical project journal. */
 import { existsSync } from "node:fs";
 import { GitError, git, gitToplevel, isGitRepository } from "./git.ts";
+import { projectPolicyProblem } from "./governance/enforcement.ts";
+import { cryptographicStatus } from "./governance/status.ts";
+import { readProjectTrust } from "./governance/trust.ts";
+import { VERIFICATION_STATES, VerificationProjection } from "./governance/verification.ts";
 import { inspectTranscriptExchange } from "./integrations/transcript.ts";
 import { scanJournal } from "./journal/jsonl.ts";
 import { inspectJournalIndex } from "./journal/query-index.ts";
@@ -9,7 +13,7 @@ import { readProjectRegistry } from "./project/registry.ts";
 import { type ResolvedProject, resolveLogicalProject } from "./project/resolver.ts";
 import { canonicalPath } from "./store/paths.ts";
 import { type ProjectManifest, readProjectManifest } from "./store/project-manifest.ts";
-import { lifecycleWarnings } from "./team/lifecycle.ts";
+import { lifecycleWarnings, type TeamRosterGovernance } from "./team/lifecycle.ts";
 
 export type DoctorStatus = "ok" | "warning" | "error";
 
@@ -162,7 +166,15 @@ export async function diagnoseProject(options: { agentDir: string; cwd: string }
 	}
 
 	if (manifest) {
-		const warnings = lifecycleWarnings(manifest, records);
+		let governance: TeamRosterGovernance | undefined;
+		try {
+			const trust = readProjectTrust(options.agentDir, manifest.project);
+			governance = { trust, projection: new VerificationProjection(manifest, trust) };
+		} catch {
+			// crypto.local below reports the malformed local state; retain the
+			// compatibility projection here so doctor can continue collecting checks.
+		}
+		const warnings = lifecycleWarnings(manifest, records, governance);
 		if (warnings.length === 0) add("lifecycle.consistent", "ok", "no records were written during a retired interval");
 		else {
 			add(
@@ -171,6 +183,79 @@ export async function diagnoseProject(options: { agentDir: string; cwd: string }
 				`${warnings.length} record(s) were written during a retired interval`,
 				"review the lifecycle declaration and append a correction if the journal is stale",
 			);
+		}
+	}
+
+	if (manifest) {
+		try {
+			const crypto = cryptographicStatus({
+				agentDir: options.agentDir,
+				storePath: project.storePath,
+				manifest,
+				member: project.member.id,
+			});
+			if (crypto.identity.state === "absent" && crypto.keys.synchronized === 0) {
+				add("crypto.local", "ok", "optional cryptographic signing is not enabled");
+			} else if (crypto.identity.state !== "enrolled") {
+				add(
+					"crypto.local",
+					"warning",
+					`local signing identity is ${crypto.identity.state}; ${crypto.keys.trusted} key(s) are locally trusted`,
+					"run `muninn crypto status` and explicitly initialize or repair local trust",
+				);
+			} else {
+				add(
+					"crypto.local",
+					"ok",
+					`local signing identity is enrolled; ${crypto.keys.trusted} key(s) are locally trusted`,
+				);
+			}
+			const concerning = VERIFICATION_STATES.filter(
+				(state) => state !== "unsigned" && state !== "verified" && crypto.records.states[state] > 0,
+			);
+			if (concerning.length === 0) {
+				add("crypto.records", "ok", `${crypto.records.total} record signature state(s) projected`);
+			} else {
+				add(
+					"crypto.records",
+					"warning",
+					concerning.map((state) => `${crypto.records.states[state]} ${state}`).join(", "),
+					"run `muninn search --verification STATE` and inspect the original journal lines",
+				);
+			}
+			const governanceStates = VERIFICATION_STATES.filter(
+				(state) =>
+					state !== "unsigned" &&
+					state !== "verified" &&
+					(crypto.team_events.states[state] > 0 || crypto.key_events.states[state] > 0),
+			);
+			if (governanceStates.length === 0) {
+				add(
+					"crypto.governance",
+					"ok",
+					`${crypto.team_events.total} team and ${crypto.key_events.total} key event signature state(s) projected`,
+				);
+			} else {
+				add(
+					"crypto.governance",
+					"warning",
+					governanceStates
+						.map((state) => `${crypto.team_events.states[state] + crypto.key_events.states[state]} ${state}`)
+						.join(", "),
+					"run `muninn crypto status` and verify the named fingerprints out of band",
+				);
+			}
+			const policyProblem = projectPolicyProblem(project.storePath, options.agentDir);
+			if (policyProblem) {
+				add(
+					"crypto.policy",
+					"error",
+					policyProblem,
+					"inspect verification states and establish trust before the next push",
+				);
+			} else add("crypto.policy", "ok", `local ${crypto.policy.mode} policy is satisfied`);
+		} catch (error) {
+			add("crypto.local", "error", describe(error), "repair the local identity or project trust file");
 		}
 	}
 

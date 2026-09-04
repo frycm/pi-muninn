@@ -1,7 +1,11 @@
 /** One authority boundary for every non-migration project-journal write. */
 import { relative } from "node:path";
+import { assertRecordPolicy } from "../governance/enforcement.ts";
+import { assertSigningIdentityEnrolled } from "../governance/identity.ts";
+import { readProjectTrust } from "../governance/trust.ts";
 import { isEntryId, newEntryId } from "../ids.ts";
 import { withStoreLock } from "../store/lock.ts";
+import { readProjectManifest } from "../store/project-manifest.ts";
 import {
 	type AppendJournalOptions,
 	type AppendJournalResult,
@@ -16,7 +20,7 @@ import type {
 	JournalSessionPointer,
 	NewJournalRecord,
 } from "./record.ts";
-import { buildJournalRecord, serializeJournalRecord } from "./record.ts";
+import { buildJournalRecord, journalRecordSigningPayload, serializeJournalRecord } from "./record.ts";
 import { projectRelations } from "./relations.ts";
 
 export type JournalWriterAuthority = "attended-user" | "headless-user" | "model" | "automatic" | "integration";
@@ -93,6 +97,30 @@ export interface AppendIntegrationResult extends AppendJournalResult {
 	replayed: boolean;
 }
 
+function assertSigningEnrollment(options: AppendJournalOptions): void {
+	if (!options.signing) return;
+	const manifest = readProjectManifest(options.storePath);
+	if (!manifest) throw new JournalAuthorityError(`cannot sign without project.json`);
+	if (manifest.project !== options.project) throw new JournalAuthorityError(`cannot sign for another project`);
+	assertSigningIdentityEnrolled(manifest, options.signing, options.member);
+}
+
+function governedOptions(options: AppendJournalOptions): AppendJournalOptions {
+	const agentDir = options.agentDir;
+	if (!agentDir) return options;
+	return {
+		...options,
+		validateRecord(record) {
+			options.validateRecord?.(record);
+			const manifest = readProjectManifest(options.storePath);
+			if (!manifest || manifest.project !== options.project) {
+				throw new JournalAuthorityError("cannot enforce policy without this project's manifest");
+			}
+			assertRecordPolicy(record, manifest, readProjectTrust(agentDir, options.project));
+		},
+	};
+}
+
 /**
  * Append one external observation exactly once per provider/external ID.
  *
@@ -104,6 +132,7 @@ export async function appendIntegrationObservation(
 	options: Omit<AppendJournalOptions, "id" | "now">,
 ): Promise<AppendIntegrationResult> {
 	assertAuthority({ authority: "integration", record }, newEntryId());
+	assertSigningEnrollment(options);
 	const integration = record.integration as NonNullable<NewJournalRecord["integration"]>;
 	return withStoreLock(options.storePath, "append", { host: options.host }, () => {
 		const scan = scanJournal(options.storePath);
@@ -143,7 +172,7 @@ export async function appendIntegrationObservation(
 				id: existing.id,
 				now: new Date(existing.at),
 			});
-			if (serializeJournalRecord(candidate) !== serializeJournalRecord(existing)) {
+			if (!journalRecordSigningPayload(candidate).equals(journalRecordSigningPayload(existing))) {
 				throw new JournalAuthorityError(
 					`integration key ${integration.provider}/${integration.external_id} was reused with different content`,
 				);
@@ -157,10 +186,13 @@ export async function appendIntegrationObservation(
 				replayed: true,
 			};
 		}
-		const written = appendJournalRecordLocked(record, {
-			...options,
-			now: new Date(integration.observed_at),
-		});
+		const written = appendJournalRecordLocked(
+			record,
+			governedOptions({
+				...options,
+				now: new Date(integration.observed_at),
+			}),
+		);
 		return { ...written, replayed: false };
 	});
 }
@@ -175,7 +207,8 @@ export async function appendAuthorizedJournalRecord(
 	}
 	const id = options.id ?? newEntryId();
 	assertAuthority(write, id);
-	return appendJournalRecord(write.record, { ...options, id });
+	assertSigningEnrollment(options);
+	return appendJournalRecord(write.record, governedOptions({ ...options, id }));
 }
 
 export interface UserRelationWriteOptions extends Omit<AppendJournalOptions, "id"> {
@@ -228,6 +261,7 @@ export interface ResolveConflictOptions extends Omit<UserRelationWriteOptions, "
 export async function resolveUserConflict(options: ResolveConflictOptions): Promise<ResolveConflictResult> {
 	if (!isEntryId(options.target)) throw new JournalAuthorityError(`${options.target} is not a journal record id`);
 	if (options.text.trim() === "") throw new JournalAuthorityError("resolution text cannot be empty");
+	assertSigningEnrollment(options);
 	return withStoreLock(options.storePath, "append", { host: options.host }, () => {
 		const scan = scanJournal(options.storePath);
 		if (scan.problems.length > 0) {
@@ -257,7 +291,7 @@ export async function resolveUserConflict(options: ResolveConflictOptions): Prom
 			...(options.git ? { git: options.git } : {}),
 		};
 		assertAuthority({ authority: options.authority, record }, id);
-		const written = appendJournalRecordLocked(record, { ...options, id });
+		const written = appendJournalRecordLocked(record, governedOptions({ ...options, id }));
 		return { status: "resolved", branches: conflict.records, written };
 	});
 }

@@ -26,6 +26,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { commitJournalLocked } from "../capture/commit.ts";
 import { GitError, type GitIdentity, GitMissingError, git, isGitRepository } from "../git.ts";
+import { projectPolicyProblem } from "../governance/enforcement.ts";
 import { scanJournal } from "../journal/jsonl.ts";
 import { LockBusyError, withStoreLock } from "../store/lock.ts";
 import {
@@ -41,6 +42,8 @@ export const REMOTE_NAME = "origin";
 
 export interface SyncOptions {
 	storePath: string;
+	/** Enables this machine's prospective verification gate before push. */
+	agentDir?: string;
 	hostId: string;
 	hostName: string;
 	/**
@@ -187,6 +190,10 @@ async function transaction(options: SyncOptions, result: SyncResult): Promise<Sy
 		}
 		const synchronizedProblem = validateWriterOwnership(options.storePath);
 		if (synchronizedProblem) return stop(result, "rebase", synchronizedProblem);
+		if (options.agentDir) {
+			const policyProblem = projectPolicyProblem(options.storePath, options.agentDir);
+			if (policyProblem) return stop(result, "push", `local verification policy: ${policyProblem}`);
+		}
 
 		// --- push ----------------------------------------------------------
 		if (options.noPush) {

@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { diagnoseProject } from "../../src/doctor.ts";
 import { git } from "../../src/git.ts";
+import { setVerificationPolicy } from "../../src/governance/trust.ts";
 import { newEntryId } from "../../src/ids.ts";
 import { transcriptExchangePath } from "../../src/integrations/transcript.ts";
 import { journalShardPath } from "../../src/journal/jsonl.ts";
@@ -70,7 +71,7 @@ describe("muninn doctor", () => {
 		const indexBefore = readFileSync(journalIndexPath(project.storePath), "utf-8");
 		const manifestBefore = readFileSync(join(project.storePath, "project.json"), "utf-8");
 		const result = await diagnoseProject({ agentDir, cwd });
-		expect(result.summary).toEqual({ ok: 12, warnings: 0, errors: 0 });
+		expect(result.summary).toEqual({ ok: 16, warnings: 0, errors: 0 });
 		expect(result.checks.map((candidate) => candidate.code)).toEqual([
 			"registry.valid",
 			"project.mapping",
@@ -81,6 +82,10 @@ describe("muninn doctor", () => {
 			"remote.consistent",
 			"journal.valid",
 			"lifecycle.consistent",
+			"crypto.local",
+			"crypto.records",
+			"crypto.governance",
+			"crypto.policy",
 			"relations.consistent",
 			"transcripts.local",
 			"index.valid",
@@ -98,6 +103,7 @@ describe("muninn doctor", () => {
 		expect(result.summary.errors).toBeGreaterThan(0);
 		expect(existsSync(hostFilePath(freshAgent))).toBe(false);
 		expect(existsSync(join(freshAgent, "muninn-projects"))).toBe(false);
+		expect(existsSync(join(freshAgent, "muninn-trust"))).toBe(false);
 	});
 
 	it("reports a stale or damaged index without repairing it", async () => {
@@ -120,6 +126,26 @@ describe("muninn doctor", () => {
 		expect(check(result, "transcripts.local")?.message).toMatch(/session-backed|group or other/);
 		expect(readFileSync(path)).toEqual(before);
 		expect(statSync(path).mode & 0o777).toBe(0o644);
+	});
+
+	it("reports a prospective verification-policy violation without removing evidence", async () => {
+		await setVerificationPolicy({
+			agentDir,
+			project: project.id,
+			host: host.id,
+			mode: "require",
+			requiredAfter: "2020-01-01T00:00:00.000Z",
+		});
+		const written = await appendAuthorizedJournalRecord(
+			{ authority: "headless-user", record: { type: "note", source: "user", channel: "cli", body: "unsigned" } },
+			{ storePath: project.storePath, project: project.id, member: project.member.id, host: host.id },
+		);
+		const result = await diagnoseProject({ agentDir, cwd });
+		expect(check(result, "crypto.policy")?.status).toBe("error");
+		expect(check(result, "crypto.policy")?.message).toContain(written.id);
+		expect(
+			new JournalQueryService({ storePath: project.storePath, localMember: project.member.id }).has(written.id),
+		).toBe(true);
 	});
 
 	it("separately reports remote, journal, lifecycle, and relation problems", async () => {

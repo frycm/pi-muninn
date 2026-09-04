@@ -1,4 +1,12 @@
 /** Schema and canonical serialization for Phase 3 project-journal records. */
+import {
+	parseSignatureEnvelope,
+	type SignatureEnvelope,
+	type SigningMaterial,
+	signatureEnvelope,
+	signingKeyId,
+	verifyPayload,
+} from "../governance/keys.ts";
 import { isEntryId, isHostId, isMemberId, isProjectId, newEntryId } from "../ids.ts";
 import { redact } from "../redact.ts";
 
@@ -12,6 +20,7 @@ export const RECORD_STATUSES = ["completed", "partial", "failed", "cancelled", "
 export const RELATION_TYPES = ["corrects", "supersedes", "annotates"] as const;
 export const MAX_INTEGRATION_METADATA_FIELDS = 32;
 export const MAX_INTEGRATION_METADATA_BYTES = 8 * 1024;
+const RECORD_SIGNATURE_DOMAIN = "MUNINN-JOURNAL-RECORD-V1\0";
 
 export type JournalRecordType = (typeof RECORD_TYPES)[number];
 export type JournalSource = (typeof RECORD_SOURCES)[number];
@@ -80,6 +89,7 @@ export interface JournalRecord {
 	integration?: JournalIntegration;
 	legacy?: JournalLegacyOrigin;
 	redacted?: true;
+	signature?: SignatureEnvelope;
 }
 
 export interface NewJournalRecord {
@@ -133,6 +143,7 @@ const KNOWN_KEYS = new Set([
 	"integration",
 	"legacy",
 	"redacted",
+	"signature",
 ]);
 
 function object(value: unknown, at: string): Record<string, unknown> {
@@ -339,6 +350,7 @@ export function parseJournalRecord(value: unknown): ParsedJournalRecord {
 		if (raw.redacted !== true) throw new Error("redacted must be true when present");
 		record.redacted = true;
 	}
+	if (raw.signature !== undefined) record.signature = parseSignatureEnvelope(raw.signature);
 	const extensions: Record<string, unknown> = {};
 	for (const [key, extension] of Object.entries(raw)) {
 		if (!KNOWN_KEYS.has(key)) extensions[key] = jsonSafe(extension, `extension ${key}`);
@@ -391,12 +403,14 @@ function scrub(input: NewJournalRecord): NewJournalRecord & { redacted?: true } 
 export interface BuildJournalRecordOptions extends JournalRecordIdentity {
 	now?: Date;
 	id?: string;
+	/** Explicit enrolled identity; absence preserves the unsigned workflow. */
+	signing?: SigningMaterial;
 }
 
 /** Fill deterministic identity/time fields, redact free text, and validate. */
 export function buildJournalRecord(input: NewJournalRecord, options: BuildJournalRecordOptions): JournalRecord {
 	const clean = scrub(input);
-	return validateJournalRecord({
+	const record = validateJournalRecord({
 		schema: JOURNAL_SCHEMA,
 		id: options.id ?? newEntryId(),
 		at: (options.now ?? new Date()).toISOString(),
@@ -420,12 +434,12 @@ export function buildJournalRecord(input: NewJournalRecord, options: BuildJourna
 		...(clean.legacy ? { legacy: clean.legacy } : {}),
 		...(clean.redacted ? { redacted: true } : {}),
 	});
+	return options.signing ? signJournalRecord(record, options.signing) : record;
 }
 
-/** Stable key order, no insignificant whitespace, exactly one trailing newline. */
-export function serializeJournalRecord(record: JournalRecord): string {
+function orderedJournalRecord(record: JournalRecord, includeSignature: boolean): Record<string, unknown> {
 	const valid = validateJournalRecord(record);
-	const ordered: JournalRecord = {
+	return {
 		schema: valid.schema,
 		id: valid.id,
 		at: valid.at,
@@ -448,7 +462,42 @@ export function serializeJournalRecord(record: JournalRecord): string {
 		...(valid.integration ? { integration: valid.integration } : {}),
 		...(valid.legacy ? { legacy: valid.legacy } : {}),
 		...(valid.redacted ? { redacted: true } : {}),
+		...(includeSignature && valid.signature ? { signature: valid.signature } : {}),
 	};
+}
+
+/** Exact domain-separated bytes covered by a record signature. */
+export function journalRecordSigningPayload(record: JournalRecord): Buffer {
+	return Buffer.from(`${RECORD_SIGNATURE_DOMAIN}${JSON.stringify(orderedJournalRecord(record, false))}`, "utf-8");
+}
+
+export function signJournalRecord(record: JournalRecord, material: SigningMaterial): JournalRecord {
+	if (material.member !== record.member) throw new Error("journal signing key belongs to another member");
+	if (record.at < material.created_at) throw new Error("journal record predates its signing key");
+	const unsigned = { ...record };
+	delete unsigned.signature;
+	const valid = validateJournalRecord(unsigned);
+	return validateJournalRecord({
+		...valid,
+		signature: signatureEnvelope(journalRecordSigningPayload(valid), material),
+	});
+}
+
+export function verifyJournalRecordSignature(record: JournalRecord, publicKey: string): boolean {
+	try {
+		return Boolean(
+			record.signature &&
+				record.signature.key === signingKeyId(publicKey) &&
+				verifyPayload(journalRecordSigningPayload(record), record.signature.value, publicKey),
+		);
+	} catch {
+		return false;
+	}
+}
+
+/** Stable key order, no insignificant whitespace, exactly one trailing newline. */
+export function serializeJournalRecord(record: JournalRecord): string {
+	const ordered = orderedJournalRecord(record, true);
 	const line = `${JSON.stringify(ordered)}\n`;
 	const bytes = Buffer.byteLength(line, "utf-8");
 	if (bytes > MAX_RECORD_BYTES) throw new Error(`journal record is ${bytes} bytes; maximum is ${MAX_RECORD_BYTES}`);

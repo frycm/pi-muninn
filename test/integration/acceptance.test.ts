@@ -1,12 +1,17 @@
 /** Cross-clone acceptance for one distributed logical-project journal. */
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resetCommitDebounce } from "../../src/capture/commit.ts";
 import { diagnoseProject } from "../../src/doctor.ts";
+import { readSigningIdentity } from "../../src/governance/identity.ts";
+import { rotateProjectSigningKey } from "../../src/governance/operations.ts";
+import { initializeProjectCryptography } from "../../src/governance/setup.ts";
+import { pinProjectSigningKey, readProjectTrust, setVerificationPolicy } from "../../src/governance/trust.ts";
+import { VerificationProjection } from "../../src/governance/verification.ts";
 import { newHostId, newMemberId, newProjectId } from "../../src/ids.ts";
 import { JournalQueryService } from "../../src/journal/query.ts";
 import { appendAuthorizedJournalRecord, appendUserRelation, resolveUserConflict } from "../../src/journal/writer.ts";
@@ -228,5 +233,212 @@ describe("distributed project journal", () => {
 		const manifest = readProjectManifest(laptopTwo);
 		expect(manifest?.members.map((item) => item.id).sort()).toEqual([ada.id, martin.id].sort());
 		expect(manifest?.hosts.map((item) => item.id).sort()).toEqual([hostOne.id, hostTwo.id].sort());
+	});
+
+	it("authenticates a required-policy workflow across clones and follows rotation", async () => {
+		const ownerAgent = join(root, "signed-owner-agent");
+		const ownerCode = join(root, "signed-owner-code");
+		const joinerAgent = join(root, "signed-joiner-agent");
+		const joinerCode = join(root, "signed-joiner-code");
+		for (const path of [ownerAgent, ownerCode, joinerAgent, joinerCode]) mkdirSync(path);
+		const ownerHost = host("owner-host");
+		const joinerHost = host("joiner-host");
+		const owner = await resolveLogicalProject({
+			agentDir: ownerAgent,
+			cwd: ownerCode,
+			hostId: ownerHost.id,
+			create: true,
+		});
+		if (!owner) throw new Error("owner project was not resolved");
+		project = owner.id;
+		await ensureStore(owner.storePath, projectStoreIdentity(owner, ownerHost));
+		setProjectRemote(owner.storePath, remote);
+		const ownerCrypto = await initializeProjectCryptography({
+			agentDir: ownerAgent,
+			storePath: owner.storePath,
+			project,
+			member: owner.member.id,
+			host: ownerHost,
+		});
+		const ownerSigning = readSigningIdentity(ownerAgent, owner.member.id);
+		if (!ownerSigning) throw new Error("owner signing key is missing");
+		const ownerRecord = await appendAuthorizedJournalRecord(
+			{
+				authority: "headless-user",
+				record: { type: "note", source: "user", channel: "cli", body: "Owner signed the release plan." },
+			},
+			{
+				storePath: owner.storePath,
+				agentDir: ownerAgent,
+				project,
+				member: owner.member.id,
+				host: ownerHost.id,
+				signing: ownerSigning,
+			},
+		);
+		expect(
+			(
+				await sync({
+					storePath: owner.storePath,
+					agentDir: ownerAgent,
+					hostId: ownerHost.id,
+					hostName: ownerHost.name,
+					remote,
+				})
+			).problem,
+		).toBeUndefined();
+
+		const joined = await joinProjectJournal({ agentDir: joinerAgent, cwd: joinerCode, host: joinerHost, remote });
+		let manifest = readProjectManifest(joined.project.storePath);
+		if (!manifest) throw new Error("joined manifest is missing");
+		await pinProjectSigningKey({
+			agentDir: joinerAgent,
+			manifest,
+			member: owner.member.id,
+			key: ownerCrypto.identity.key,
+			host: joinerHost.id,
+		});
+		await initializeProjectCryptography({
+			agentDir: joinerAgent,
+			storePath: joined.project.storePath,
+			project,
+			member: joined.project.member.id,
+			host: joinerHost,
+		});
+		const joinerSigning = readSigningIdentity(joinerAgent, joined.project.member.id);
+		if (!joinerSigning) throw new Error("joiner signing key is missing");
+		await setVerificationPolicy({
+			agentDir: joinerAgent,
+			project,
+			host: joinerHost.id,
+			mode: "require",
+			requiredAfter: "2026-01-01T00:00:00.000Z",
+		});
+		await appendAuthorizedJournalRecord(
+			{
+				authority: "headless-user",
+				record: { type: "note", source: "user", channel: "cli", body: "Joiner verified the release plan." },
+			},
+			{
+				storePath: joined.project.storePath,
+				agentDir: joinerAgent,
+				project,
+				member: joined.project.member.id,
+				host: joinerHost.id,
+				signing: joinerSigning,
+			},
+		);
+		expect(
+			(
+				await sync({
+					storePath: joined.project.storePath,
+					agentDir: joinerAgent,
+					hostId: joinerHost.id,
+					hostName: joinerHost.name,
+					remote,
+				})
+			).problem,
+		).toBeUndefined();
+		expect(
+			(
+				await sync({
+					storePath: owner.storePath,
+					agentDir: ownerAgent,
+					hostId: ownerHost.id,
+					hostName: ownerHost.name,
+					remote,
+				})
+			).problem,
+		).toBeUndefined();
+
+		let ownerQuery = new JournalQueryService({
+			storePath: owner.storePath,
+			localMember: owner.member.id,
+			agentDir: ownerAgent,
+			mode: "scan",
+		});
+		expect(ownerQuery.query({ query: "Joiner verified" }).records[0]?.verification).toBe("untrusted");
+		manifest = readProjectManifest(owner.storePath);
+		if (!manifest) throw new Error("owner manifest is missing");
+		await pinProjectSigningKey({
+			agentDir: ownerAgent,
+			manifest,
+			member: joined.project.member.id,
+			key: joinerSigning.id,
+			host: ownerHost.id,
+		});
+		await setVerificationPolicy({
+			agentDir: ownerAgent,
+			project,
+			host: ownerHost.id,
+			mode: "require",
+			requiredAfter: "2026-01-01T00:00:00.000Z",
+		});
+		ownerQuery = new JournalQueryService({
+			storePath: owner.storePath,
+			localMember: owner.member.id,
+			agentDir: ownerAgent,
+			mode: "scan",
+		});
+		expect(ownerQuery.query({ query: "Joiner verified" }).records[0]?.verification).toBe("verified");
+
+		await rotateProjectSigningKey({
+			agentDir: joinerAgent,
+			storePath: joined.project.storePath,
+			project,
+			member: joined.project.member.id,
+			host: joinerHost,
+		});
+		const successor = readSigningIdentity(joinerAgent, joined.project.member.id);
+		if (!successor) throw new Error("joiner successor key is missing");
+		const rotatedRecord = await appendAuthorizedJournalRecord(
+			{
+				authority: "headless-user",
+				record: { type: "note", source: "user", channel: "cli", body: "Successor signed this record." },
+			},
+			{
+				storePath: joined.project.storePath,
+				agentDir: joinerAgent,
+				project,
+				member: joined.project.member.id,
+				host: joinerHost.id,
+				signing: successor,
+			},
+		);
+		expect(
+			(
+				await sync({
+					storePath: joined.project.storePath,
+					agentDir: joinerAgent,
+					hostId: joinerHost.id,
+					hostName: joinerHost.name,
+					remote,
+				})
+			).problem,
+		).toBeUndefined();
+		expect(
+			(
+				await sync({
+					storePath: owner.storePath,
+					agentDir: ownerAgent,
+					hostId: ownerHost.id,
+					hostName: ownerHost.name,
+					remote,
+				})
+			).problem,
+		).toBeUndefined();
+		manifest = readProjectManifest(owner.storePath);
+		if (!manifest) throw new Error("final owner manifest is missing");
+		const projection = new VerificationProjection(manifest, readProjectTrust(ownerAgent, project));
+		expect(projection.record(ownerRecord.record)).toBe("verified");
+		expect(projection.record(rotatedRecord.record)).toBe("verified");
+		expect(projection.record({ ...rotatedRecord.record, body: "tampered" })).toBe("invalid");
+		const tracked = (await git(joined.project.storePath, ["ls-files"])).trim().split("\n").filter(Boolean);
+		for (const path of tracked) {
+			const bytes = readFileSync(join(joined.project.storePath, path), "utf-8");
+			for (const secret of [ownerSigning.private_key, joinerSigning.private_key, successor.private_key]) {
+				expect(bytes).not.toContain(secret);
+			}
+		}
 	});
 });

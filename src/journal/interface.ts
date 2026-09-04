@@ -1,4 +1,6 @@
 /** Stable human/Unix projections over the canonical journal query service. */
+
+import { VERIFICATION_STATES } from "../governance/verification.ts";
 import type {
 	JournalConflictsResult,
 	JournalQuery,
@@ -40,6 +42,7 @@ const ARRAY_FILTERS = new Map<string, keyof JournalQuery>([
 	["integration", "integration"],
 	["trust", "trust"],
 	["label", "label"],
+	["verification", "verification"],
 ]);
 
 function values(value: string): string[] {
@@ -119,7 +122,9 @@ export function parseJournalQueryArgs(
 								? enumValues(parsed, JOURNAL_TRUST_LABELS, flag)
 								: arrayKey === "label"
 									? enumValues(parsed, RELATION_LABELS, flag)
-									: parsed;
+									: arrayKey === "verification"
+										? enumValues(parsed, VERIFICATION_STATES, flag)
+										: parsed;
 			(query as Record<string, unknown>)[arrayKey] = [
 				...((query as Record<string, string[]>)[arrayKey] ?? []),
 				...checked,
@@ -175,7 +180,7 @@ export function renderRead(id: string, result: JournalReadResult, mode: JournalO
 	return [
 		...result.records.flatMap((record, index) => [
 			...(index > 0 ? [""] : []),
-			`${record.id} · ${record.at} · ${record.type}/${record.source}`,
+			`${record.id} · ${record.at} · ${record.type}/${record.source} · ${record.verification}`,
 			record.body,
 			`member ${record.member} · host ${record.host}`,
 			...(record.integration
@@ -219,7 +224,7 @@ export function renderConflicts(result: JournalConflictsResult, mode: JournalOut
 function formatSearchRecord(record: JournalSearchRecord): string {
 	const labels = record.labels.length > 0 ? ` · ${record.labels.join(",")}` : "";
 	const integration = record.integration ? ` · ${record.integration.provider}/${record.integration.event}` : "";
-	return `${record.at} · ${record.id} · ${record.type}/${record.source}${integration} · ${record.trust}${labels} · ${record.snippet}`;
+	return `${record.at} · ${record.id} · ${record.type}/${record.source}${integration} · ${record.trust}/${record.verification}${labels} · ${record.snippet}`;
 }
 
 function formatExplanation(explanation: NonNullable<JournalSearchRecord["explanation"]>): string {

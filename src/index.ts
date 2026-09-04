@@ -30,6 +30,7 @@ import {
 	taskFromSessionFile,
 } from "./capture/session-state.ts";
 import { type CommandOutput, type CommandRuntime, runMuninnCommand } from "./commands/muninn.ts";
+import { readEnrolledSigningIdentity } from "./governance/identity.ts";
 import { collectIntegrationEntries, integrationObservationRecord } from "./integrations/protocol.ts";
 import type { AppendJournalResult } from "./journal/jsonl.ts";
 import { collectGitProvenance } from "./journal/provenance.ts";
@@ -41,7 +42,7 @@ import { formatStatus, formatStatusLine, formatWarning } from "./status.ts";
 import { storeIdentity } from "./store/init.ts";
 import { readProjectManifest } from "./store/project-manifest.ts";
 import { describeSync, type SyncResult, sync } from "./sync/sync.ts";
-import { projectTeamRoster, renderTeamRoster } from "./team/lifecycle.ts";
+import { locallyGovernedTeamRoster, renderTeamRoster } from "./team/lifecycle.ts";
 import { journalContextTool } from "./tools/journal-context.ts";
 import { journalNoteTool } from "./tools/journal-note.ts";
 import { journalReadTool } from "./tools/journal-read.ts";
@@ -143,6 +144,12 @@ export default function (pi: ExtensionAPI): void {
 	const captureTargetPath = (current: SessionContext): string | undefined =>
 		current.scopes.active.find((scope) => scope.scope === current.scopes.captureTarget)?.path;
 
+	const signingOptions = (current: SessionContext, storePath: string) => {
+		if (!current.project) return { agentDir: getAgentDir() };
+		const signing = readEnrolledSigningIdentity(getAgentDir(), storePath, current.project.member.id);
+		return { agentDir: getAgentDir(), ...(signing ? { signing } : {}) };
+	};
+
 	const afterJournalAppend = (
 		currentState: MuninnSessionState,
 		storePath: string,
@@ -208,6 +215,7 @@ export default function (pi: ExtensionAPI): void {
 					member: project.member.id,
 					host: current.host.id,
 					lockTimeoutMs: BACKGROUND_LOCK_TIMEOUT_MS,
+					...signingOptions(current, storePath),
 				});
 				if (!written.replayed) afterJournalAppend(currentState, storePath, written);
 			});
@@ -241,6 +249,7 @@ export default function (pi: ExtensionAPI): void {
 					project: current.project.id,
 					member: current.project.member.id,
 					host: current.host.id,
+					...signingOptions(current, projectScope.path),
 				},
 			);
 			if (currentState) afterJournalAppend(currentState, projectScope.path, written);
@@ -278,7 +287,9 @@ export default function (pi: ExtensionAPI): void {
 		if (!current.project) return "muninn: no logical project is linked for this session";
 		const manifest = readProjectManifest(current.project.storePath);
 		if (!manifest) return "muninn: project journal has no project.json";
-		return renderTeamRoster(projectTeamRoster(manifest, current.project.member.id, current.host.id)).join("\n");
+		return renderTeamRoster(
+			locallyGovernedTeamRoster(manifest, getAgentDir(), current.project.member.id, current.host.id),
+		).join("\n");
 	};
 
 	pi.registerCommand("muninn", {
@@ -307,6 +318,7 @@ export default function (pi: ExtensionAPI): void {
 						project: current.project.id,
 						member: current.project.member.id,
 						host: current.host.id,
+						...signingOptions(current, projectScope.path),
 					},
 				);
 				if (currentState) afterJournalAppend(currentState, projectScope.path, written);
@@ -337,6 +349,7 @@ export default function (pi: ExtensionAPI): void {
 					project: current.project.id,
 					member: current.project.member.id,
 					host: current.host.id,
+					...signingOptions(current, projectScope.path),
 					...(currentState ? { task: currentState.task } : {}),
 					...(currentState?.continues ? { continues: currentState.continues } : {}),
 					...(pointer ? { session: pointer } : {}),
@@ -479,6 +492,7 @@ export default function (pi: ExtensionAPI): void {
 					member: projectIdentity.member.id,
 					host: current.host.id,
 					lockTimeoutMs: BACKGROUND_LOCK_TIMEOUT_MS,
+					...signingOptions(current, storePath),
 				},
 			);
 			afterJournalAppend(currentState, storePath, result);
@@ -568,6 +582,7 @@ export default function (pi: ExtensionAPI): void {
 					member: projectIdentity.member.id,
 					host: current.host.id,
 					lockTimeoutMs: BACKGROUND_LOCK_TIMEOUT_MS,
+					...signingOptions(current, storePath),
 				},
 			);
 			afterJournalAppend(currentState, storePath, written);
@@ -624,6 +639,7 @@ export default function (pi: ExtensionAPI): void {
 			if (!scope.exists) continue;
 			const result = await sync({
 				storePath: scope.path,
+				agentDir: getAgentDir(),
 				hostId: current.host.id,
 				hostName: current.host.name,
 				remote: readProjectManifest(scope.path)?.remote ?? null,

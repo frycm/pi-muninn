@@ -2,6 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { generateSigningIdentity } from "../../src/governance/identity.ts";
+import { enrollProjectSigningKey } from "../../src/governance/registry.ts";
 import { newHostId, newMemberId, newProjectId, newTeamEventId } from "../../src/ids.ts";
 import { JournalQueryService } from "../../src/journal/query.ts";
 import { appendAuthorizedJournalRecord } from "../../src/journal/writer.ts";
@@ -14,7 +16,7 @@ import {
 	parseProjectManifest,
 	readProjectManifest,
 } from "../../src/store/project-manifest.ts";
-import { declareTeamEvent, projectTeamRoster } from "../../src/team/lifecycle.ts";
+import { declareTeamEvent, projectTeamRoster, verifyTeamEventSignature } from "../../src/team/lifecycle.ts";
 
 let root: string;
 let store: string;
@@ -102,6 +104,26 @@ describe("team lifecycle manifest", () => {
 });
 
 describe("team lifecycle declarations", () => {
+	it("signs the canonical declaration with an enrolled member key", async () => {
+		const signing = generateSigningIdentity(member.id, new Date("2026-09-02T00:00:00.000Z"));
+		await enrollProjectSigningKey({ storePath: store, project, member: member.id, host, identity: signing });
+		const declared = await declareTeamEvent({
+			storePath: store,
+			project,
+			actorMember: member.id,
+			actorHost: host.id,
+			actorHostName: host.name,
+			kind: "member-renamed",
+			name: "Marty",
+			at: "2026-09-03T00:00:00.000Z",
+			signing,
+		});
+		expect(declared.event.signature).toMatchObject({ key: signing.id, algorithm: "ed25519" });
+		expect(verifyTeamEventSignature(declared.event, signing.public_key)).toBe(true);
+		expect(verifyTeamEventSignature({ ...declared.event, name: "Mallory" }, signing.public_key)).toBe(false);
+		expect(readProjectManifest(store)).toMatchObject({ schema: 2 });
+	});
+
 	it("commits a local self-declaration and refuses a teammate target", async () => {
 		const declared = await declareTeamEvent({
 			storePath: store,

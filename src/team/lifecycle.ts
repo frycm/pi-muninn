@@ -1,5 +1,10 @@
 /** Advisory team lifecycle declarations and their deterministic roster projection. */
 import { commitJournalLocked } from "../capture/commit.ts";
+import { assertTeamEventPolicy, lifecycleEventAllowed } from "../governance/enforcement.ts";
+import { assertSigningIdentityEnrolled } from "../governance/identity.ts";
+import { type SigningMaterial, signatureEnvelope, signingKeyId, verifyPayload } from "../governance/keys.ts";
+import { type ProjectTrust, readProjectTrust } from "../governance/trust.ts";
+import { VerificationProjection } from "../governance/verification.ts";
 import { newTeamEventId } from "../ids.ts";
 import type { JournalRecord } from "../journal/record.ts";
 import { storeIdentity } from "../store/init.ts";
@@ -7,10 +12,56 @@ import { withStoreLock } from "../store/lock.ts";
 import {
 	type ProjectManifest,
 	type ProjectTeamEvent,
+	parseProjectTeamEvent,
 	readProjectManifest,
+	SIGNED_PROJECT_MANIFEST_SCHEMA,
 	type TeamEventKind,
 	writeProjectManifest,
 } from "../store/project-manifest.ts";
+
+const TEAM_EVENT_SIGNATURE_DOMAIN = "MUNINN-TEAM-EVENT-V1\0";
+
+/** Exact domain-separated bytes covered by a lifecycle declaration. */
+export function teamEventSigningPayload(event: ProjectTeamEvent): Buffer {
+	const unsigned = { ...event };
+	delete unsigned.signature;
+	const valid = parseProjectTeamEvent(unsigned);
+	return Buffer.from(
+		`${TEAM_EVENT_SIGNATURE_DOMAIN}${JSON.stringify({
+			id: valid.id,
+			at: valid.at,
+			kind: valid.kind,
+			member: valid.member,
+			actor_member: valid.actor_member,
+			actor_host: valid.actor_host,
+			...(valid.host ? { host: valid.host } : {}),
+			...(valid.name ? { name: valid.name } : {}),
+			...(valid.reason ? { reason: valid.reason } : {}),
+		})}`,
+		"utf-8",
+	);
+}
+
+export function signTeamEvent(event: ProjectTeamEvent, material: SigningMaterial): ProjectTeamEvent {
+	if (material.member !== event.actor_member) throw new Error("team event signing key belongs to another member");
+	if (event.at < material.created_at) throw new Error("team event predates its signing key");
+	const unsigned = { ...event };
+	delete unsigned.signature;
+	const valid = parseProjectTeamEvent(unsigned);
+	return parseProjectTeamEvent({ ...valid, signature: signatureEnvelope(teamEventSigningPayload(valid), material) });
+}
+
+export function verifyTeamEventSignature(event: ProjectTeamEvent, publicKey: string): boolean {
+	try {
+		return Boolean(
+			event.signature &&
+				event.signature.key === signingKeyId(publicKey) &&
+				verifyPayload(teamEventSigningPayload(event), event.signature.value, publicKey),
+		);
+	} catch {
+		return false;
+	}
+}
 
 export type TeamLifecycleState = "active" | "retired";
 
@@ -40,7 +91,17 @@ export interface TeamRoster {
 }
 
 /** Apply canonical `(at, id)` events without treating unsigned lifecycle state as authorization. */
-export function projectTeamRoster(manifest: ProjectManifest, localMember?: string, localHost?: string): TeamRoster {
+export interface TeamRosterGovernance {
+	trust: ProjectTrust;
+	projection: VerificationProjection;
+}
+
+export function projectTeamRoster(
+	manifest: ProjectManifest,
+	localMember?: string,
+	localHost?: string,
+	governance?: TeamRosterGovernance,
+): TeamRoster {
 	const members = new Map(
 		manifest.members.map((member) => [
 			member.id,
@@ -60,6 +121,7 @@ export function projectTeamRoster(manifest: ProjectManifest, localMember?: strin
 		]),
 	);
 	for (const event of manifest.team_events) {
+		if (governance && !lifecycleEventAllowed(event, governance.trust, governance.projection)) continue;
 		const member = members.get(event.member);
 		const host = event.host ? hosts.get(event.host) : undefined;
 		switch (event.kind) {
@@ -97,6 +159,19 @@ export function projectTeamRoster(manifest: ProjectManifest, localMember?: strin
 	};
 }
 
+export function locallyGovernedTeamRoster(
+	manifest: ProjectManifest,
+	agentDir: string,
+	localMember?: string,
+	localHost?: string,
+): TeamRoster {
+	const trust = readProjectTrust(agentDir, manifest.project);
+	return projectTeamRoster(manifest, localMember, localHost, {
+		trust,
+		projection: new VerificationProjection(manifest, trust),
+	});
+}
+
 export interface DeclareTeamEventOptions {
 	storePath: string;
 	project: string;
@@ -111,6 +186,9 @@ export interface DeclareTeamEventOptions {
 	reason?: string;
 	at?: string;
 	id?: string;
+	signing?: SigningMaterial;
+	/** Applies this machine's prospective policy; omitted preserves the plain workflow. */
+	agentDir?: string;
 }
 
 export interface DeclareTeamEventResult {
@@ -146,7 +224,7 @@ export async function declareTeamEvent(options: DeclareTeamEventOptions): Promis
 		} else if (options.host) {
 			throw new Error(`muninn: ${options.kind} cannot target a host`);
 		}
-		const event: ProjectTeamEvent = {
+		let event: ProjectTeamEvent = parseProjectTeamEvent({
 			id: options.id ?? newTeamEventId(),
 			at: options.at ?? new Date().toISOString(),
 			kind: options.kind,
@@ -156,9 +234,16 @@ export async function declareTeamEvent(options: DeclareTeamEventOptions): Promis
 			...(options.host ? { host: options.host } : {}),
 			...(options.name ? { name: options.name } : {}),
 			...(options.reason ? { reason: options.reason } : {}),
-		};
+		});
+		if (options.signing) {
+			assertSigningIdentityEnrolled(manifest, options.signing, options.actorMember);
+			event = signTeamEvent(event, options.signing);
+		}
+		const trust = options.agentDir ? readProjectTrust(options.agentDir, manifest.project) : undefined;
+		if (trust) assertTeamEventPolicy(event, manifest, trust);
 		const updated = writeProjectManifest(options.storePath, {
 			...manifest,
+			schema: event.signature ? SIGNED_PROJECT_MANIFEST_SCHEMA : manifest.schema,
 			team_events: [...manifest.team_events, event],
 		});
 		const committed = await commitJournalLocked({
@@ -172,7 +257,12 @@ export async function declareTeamEvent(options: DeclareTeamEventOptions): Promis
 		});
 		return {
 			event: updated.team_events.find((candidate) => candidate.id === event.id) as ProjectTeamEvent,
-			roster: projectTeamRoster(updated, options.actorMember, options.actorHost),
+			roster: projectTeamRoster(
+				updated,
+				options.actorMember,
+				options.actorHost,
+				trust ? { trust, projection: new VerificationProjection(updated, trust) } : undefined,
+			),
 			committed: committed.committed,
 		};
 	});
@@ -195,7 +285,11 @@ export function renderTeamRoster(roster: TeamRoster): string[] {
 }
 
 /** Warnings are diagnostic only; post-retirement records remain visible and valid. */
-export function lifecycleWarnings(manifest: ProjectManifest, records: readonly JournalRecord[]): string[] {
+export function lifecycleWarnings(
+	manifest: ProjectManifest,
+	records: readonly JournalRecord[],
+	governance?: TeamRosterGovernance,
+): string[] {
 	const events = manifest.team_events;
 	const warnings: string[] = [];
 	for (const record of records) {
@@ -203,6 +297,7 @@ export function lifecycleWarnings(manifest: ProjectManifest, records: readonly J
 		let hostState: TeamLifecycleState = "active";
 		for (const event of events) {
 			if (event.at >= record.at) break;
+			if (governance && !lifecycleEventAllowed(event, governance.trust, governance.projection)) continue;
 			if (event.member === record.member) {
 				if (event.kind === "member-retired") memberState = "retired";
 				if (event.kind === "member-restored") memberState = "active";

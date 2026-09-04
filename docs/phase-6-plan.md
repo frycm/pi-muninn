@@ -227,6 +227,7 @@ workflow remains unchanged.
 ### Phase 7 — optional cryptographic governance
 
 Transcript encryption does not authenticate journal authors and does not make advisory team
-lifecycle declarations enforceable. Phase 7 still requires evidence from real distributed use,
-a threat model and a separate design for member signing keys, rotation, recovery, revocation
-and compromised history. An `age` recipient key must not be silently reused as a signing key.
+lifecycle declarations enforceable. Phase 7 therefore starts with an explicit threat model
+and a separate design for member signing keys, rotation, recovery, revocation and compromised
+history. An `age` recipient key must not be silently reused as a signing key. See the
+[Phase 7 plan](phase-7-plan.md).

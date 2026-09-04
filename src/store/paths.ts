@@ -17,6 +17,20 @@ export function hostFilePath(agentDir: string): string {
 	return join(agentDir, "muninn", "host.json");
 }
 
+/** User-owned Ed25519 member identity; never part of a project journal. */
+export function signingIdentityPath(agentDir: string): string {
+	return join(agentDir, "muninn", "signing.json");
+}
+
+/** User-owned project trust policy; never synchronized through the journal. */
+export function trustRootPath(agentDir: string): string {
+	return join(agentDir, "muninn-trust");
+}
+
+export function projectTrustPath(agentDir: string, project: string): string {
+	return join(trustRootPath(agentDir), `${project}.json`);
+}
+
 /** User-owned registry and project stores. Repository content never selects this root. */
 export function projectsRootPath(agentDir: string): string {
 	return join(agentDir, "muninn-projects");

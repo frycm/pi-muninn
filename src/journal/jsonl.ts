@@ -13,6 +13,7 @@ import {
 	writeSync,
 } from "node:fs";
 import { join, relative } from "node:path";
+import type { SigningMaterial } from "../governance/keys.ts";
 import { isHostId, isMemberId } from "../ids.ts";
 import { withStoreLock } from "../store/lock.ts";
 import {
@@ -27,9 +28,15 @@ import {
 
 export interface AppendJournalOptions extends JournalRecordIdentity {
 	storePath: string;
+	/** Enables this machine's prospective project policy for authorized writers. */
+	agentDir?: string;
 	now?: Date;
 	id?: string;
 	lockTimeoutMs?: number;
+	/** Optional only so legacy/plain stores retain byte-for-byte behavior. */
+	signing?: SigningMaterial;
+	/** Authority-layer hook, evaluated after canonical construction and before append. */
+	validateRecord?: (record: JournalRecord) => void;
 }
 
 export interface AppendJournalResult {
@@ -84,6 +91,7 @@ export async function appendJournalRecord(
 export function appendJournalRecordLocked(input: NewJournalRecord, options: AppendJournalOptions): AppendJournalResult {
 	const now = options.now ?? new Date();
 	const record = buildJournalRecord(input, { ...options, now });
+	options.validateRecord?.(record);
 	const line = serializeJournalRecord(record);
 	const path = journalShardPath(options.storePath, options.member, options.host, now);
 	const existing = scanJournal(options.storePath).records.find((candidate) => candidate.record.id === record.id);

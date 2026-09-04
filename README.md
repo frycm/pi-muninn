@@ -12,11 +12,12 @@ The design is local-first and composable: append-only JSONL, Git synchronization
 retrieval and no hosted service in the storage or search path.
 
 > [!IMPORTANT]
-> Phases 3 through 6 are implemented. Linked worktrees, team clones and optional evidence
+> Phases 3 through 7 are implemented. Linked worktrees, team clones and optional evidence
 > producers share one sharded JSONL project journal with validated onboarding, advisory
-> lifecycle declarations, explicit conflict resolution and read-only diagnostics. Automatic
-> capture, model tools, attended commands and Unix interfaces all use the same canonical
-> service. Journal content is never injected into prompts.
+> lifecycle declarations, optional Ed25519 provenance, explicit conflict resolution and
+> read-only diagnostics. Automatic capture, model tools, attended commands and Unix
+> interfaces all use the same canonical service. Journal content is never injected into
+> prompts.
 
 The legacy Markdown migration-input contract is
 [docs/journal-format.md](docs/journal-format.md). The JSONL contract is
@@ -28,7 +29,9 @@ are covered by [docs/operations.md](docs/operations.md). The implemented Phase 4
 [docs/phase-4-plan.md](docs/phase-4-plan.md). Retrieval evaluation, explanation and scale are
 implemented in [docs/phase-5-plan.md](docs/phase-5-plan.md). Optional external producers,
 sandbox evidence and encrypted transcript exchange are implemented under
-[docs/phase-6-plan.md](docs/phase-6-plan.md).
+[docs/phase-6-plan.md](docs/phase-6-plan.md). Optional signed records, explicit local trust
+and prospective enforcement are implemented in
+[docs/phase-7-plan.md](docs/phase-7-plan.md).
 
 ## Why a project journal
 
@@ -72,7 +75,11 @@ The repository now includes:
 - bounded, attributable and idempotent external-observation producers plus a verified
   `pi-enclave` audit summary adapter; and
 - explicit `age`-encrypted exchange of one selected local transcript, kept outside journal
-  Git and resolved through the ordinary read interface after import.
+  Git and resolved through the ordinary read interface after import;
+- optional Ed25519 member identities, signed records and self-lifecycle events;
+- explicit local trust/distrust, transition-signed rotation and unchained recovery; and
+- a prospective local verification policy that gates new writes and stops before push while
+  preserving all synchronized evidence.
 
 The project store is now `<agent-dir>/muninn-projects/<project-id>/`. Checkout roots, Git
 common directories and paths are registry aliases or provenance, never durable identity.
@@ -132,6 +139,11 @@ muninn team rename-member NAME [--reason TEXT] [--json]
 muninn team rename-host HOST-ID NAME [--reason TEXT] [--json]
 muninn team retire-host|restore-host HOST-ID [--reason TEXT] [--json]
 muninn team leave|return [--reason TEXT] [--json]
+muninn crypto init|public|status|rotate|recover [--json]
+muninn crypto trust MEMBER KEY [--json]
+muninn crypto distrust|revoke KEY [--reason TEXT] [--json]
+muninn crypto compromise KEY --effective RFC3339 [--reason TEXT] [--json]
+muninn crypto policy observe|require [--from now|RFC3339] [--compromised-history retain|reject] [--json]
 muninn migrate [--dry-run] [--json]
 muninn reindex [--json]
 muninn status [--json]
@@ -207,6 +219,7 @@ journal_search({
   trust?: string[],
   label?: string[],
   integration?: string[],
+  verification?: string[],
   since?: string,
   until?: string,
   relatedTo?: string,
@@ -273,6 +286,9 @@ muninn transcript import BUNDLE.age --identity KEY.txt [--json]
 muninn path
 muninn project remote [URL|--remove]
 muninn team list [--json]
+muninn crypto status [--json]
+muninn crypto trust MEMBER KEY [--json]
+muninn crypto policy require --from now [--json]
 muninn doctor [--json]
 muninn evaluate JUDGMENTS.jsonl [--json]
 ```
@@ -284,6 +300,7 @@ muninn search "database migration" --json | jq -r '.records[] | [.at, .id, .snip
 muninn search "deploy" --trust teammate-user --label conflict --explain --json | jq '.records[] | {id, explanation}'
 muninn sessions --branch feature/auth --json | jq '.sessions[] | select(.status == "failed")'
 muninn search --integration pi-enclave --json | jq '.records[].integration.metadata'
+muninn search --verification untrusted --json | jq '.records[] | {id, member, verification}'
 rg -n '"type":"correction"' "$(muninn path)"/journal
 muninn search "timeout" --json | jq -r '.records[].id' | fzf
 ```
@@ -342,8 +359,14 @@ its sync transport is Git and its canonical query path is deterministic lexical 
 - Code, docs, config and explicit project instructions outrank journal history.
 - Every record carries source, member, host, session and Git/worktree provenance when known.
 - Teammate records retain their original source but are labelled relative to the reader.
-- Lifecycle declarations are unsigned and advisory: retirement labels records but neither
-  hides them nor revokes Git access.
+- Cryptographic governance is opt-in. Without it, lifecycle declarations remain readable and
+  advisory; with it, signatures authenticate present bytes against explicit local pins.
+- The default verification policy is `observe`. `require` applies only from its recorded
+  local cutoff and never rewrites, deletes or hides earlier evidence.
+- Trust files and private signing keys stay outside journal Git. A self-enrolled synchronized
+  key is `untrusted` until a person compares its full fingerprint out of band and pins it.
+- Retirement, revocation and compromise do not revoke Git access. Repository ACLs remain a
+  separate operator responsibility.
 - Secrets are redacted before append; records marked as redacted remain visibly so.
 - Full pi transcripts are local evidence and are not synchronized by default.
 - A user may export one selected transcript through `age`; Muninn never puts the encrypted
@@ -395,9 +418,9 @@ model/human/Unix query interfaces and explicit multi-clone Git synchronization.
 
 Complete: validated share/join commands, deterministic roster projection, shell-only local
 member/host lifecycle declarations, attended read-only team/conflict views, an explicit
-correction-conflict resolution flow and a read-only operational doctor. Signed identity or
-enforceable revocation remains out of scope until real team use justifies its key-management
-cost. See the [Phase 4 plan](docs/phase-4-plan.md).
+correction-conflict resolution flow and a read-only operational doctor. Its unsigned,
+advisory compatibility behavior remains the Phase 7 default. See the
+[Phase 4 plan](docs/phase-4-plan.md).
 
 ### Phase 5 — retrieval quality and scale
 
@@ -419,10 +442,12 @@ the ordinary journal path, and every integration remains optional. See the
 
 ### Phase 7 — optional cryptographic governance
 
-Only evidence from real distributed use should start this work. It requires a threat model,
-member keys, rotation and recovery, signed records/events, remote ACL interaction and an
-explicit policy for compromised-key history. Until then, lifecycle state stays honestly
-advisory.
+Complete: explicit out-of-band trust pins, Ed25519 member keys, signed records and
+self-governance events, rotation/recovery, prospective local enforcement and an explicit
+compromised-history policy. Signatures authenticate present bytes but do not replace Git
+history, completeness guarantees or remote ACL administration. This closes the current
+roadmap; hardware-backed keys, threshold governance, transparency and provider-specific ACL
+automation require separate designs. See the [Phase 7 plan](docs/phase-7-plan.md).
 
 ## Development
 
@@ -433,7 +458,8 @@ npm test
 ```
 
 The supported baseline is `@earendil-works/pi-coding-agent >=0.84.2 <0.85.0`, Node
-`>=22.19.0`, Git and `proper-lockfile`. Retrieval indexing uses no native or hosted search
+`>=22.19.0`, Bun in its CI compatibility job, Git and `proper-lockfile`. Signing uses the
+runtime's standard Ed25519 implementation; retrieval indexing uses no native or hosted search
 dependency. The `age` executable is required only for explicit transcript export/import.
 
 Sibling projects are [pi-huginn](https://github.com/frycm/pi-huginn) for remote sessions and

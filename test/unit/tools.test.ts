@@ -126,6 +126,7 @@ describe("journal tool schemas", () => {
 		expect(searchProperties).toHaveProperty("trust");
 		expect(searchProperties).toHaveProperty("label");
 		expect(searchProperties).toHaveProperty("integration");
+		expect(searchProperties).toHaveProperty("verification");
 		expect(searchProperties).toHaveProperty("explain");
 		expect(JSON.parse(JSON.stringify(tools[3]?.parameters)).properties.relations.items.properties.type.const).toBe(
 			"annotates",
@@ -150,14 +151,18 @@ describe("journal_search and journal_read", () => {
 			relations: [{ type: "corrects", target: target.id }],
 		});
 		const rt = runtime();
-		const search = JSON.parse(textOf(await run(journalSearchTool(rt), { query: "Deploys require VPN" }))) as {
-			records: Array<{ id: string }>;
+		const search = JSON.parse(
+			textOf(await run(journalSearchTool(rt), { query: "Deploys require VPN", verification: ["unsigned"] })),
+		) as {
+			records: Array<{ id: string; verification: string }>;
 		};
 		expect(new Set(search.records.map((record) => record.id))).toEqual(new Set([target.id, correction.id]));
+		expect(search.records.every((record) => record.verification === "unsigned")).toBe(true);
 		const read = JSON.parse(textOf(await run(journalReadTool(rt), { id: target.id, relationDepth: 1 }))) as {
-			records: Array<{ id: string }>;
+			records: Array<{ id: string; verification: string }>;
 		};
 		expect(read.records.map((record) => record.id)).toEqual([target.id, correction.id]);
+		expect(read.records.every((record) => record.verification === "unsigned")).toBe(true);
 		const explained = JSON.parse(textOf(await run(journalSearchTool(rt), { query: "VPN", explain: true }))) as {
 			records: Array<{ id: string; explanation?: { match: string; total: number }; score: number }>;
 		};
@@ -189,8 +194,9 @@ describe("journal_context", () => {
 			await run(journalContextTool(runtime()), { ids: [selected.id, selected.id, missing], maxChars: 1000 }),
 		);
 		expect(text.length).toBeLessThanOrEqual(1000);
-		const parsed = JSON.parse(text) as { records: Array<{ id: string }>; missing: string[] };
+		const parsed = JSON.parse(text) as { records: Array<{ id: string; verification: string }>; missing: string[] };
 		expect(parsed.records.map((record) => record.id)).toEqual([selected.id]);
+		expect(parsed.records[0]?.verification).toBe("unsigned");
 		expect(parsed.missing).toEqual([missing]);
 		expect(text).not.toContain(unselected.id);
 	});
