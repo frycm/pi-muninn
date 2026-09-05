@@ -16,7 +16,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { scanJournal } from "../../src/journal/jsonl.ts";
 import { readProjectRegistry } from "../../src/project/registry.ts";
 import { projectStorePath } from "../../src/store/paths.ts";
-import { type MockProvider, type MockScript, startMockProvider } from "../fixtures/mock-provider.ts";
+import {
+	type MockProvider,
+	type MockScript,
+	memoryOutcomeReply,
+	startMockProvider,
+} from "../fixtures/mock-provider.ts";
 
 const execFileAsync = promisify(execFile);
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -24,15 +29,7 @@ const PI = join(ROOT, "node_modules", ".bin", "pi");
 const MUNINN = join(ROOT, "src", "index.ts");
 const PROVIDER_EXTENSION = join(ROOT, "test", "fixtures", "mock-provider-extension.ts");
 
-const OUTCOME_REPLY = [
-	"phase: test",
-	"cue: when vitest hangs in CI",
-	"",
-	"The CI job hung until watch mode was disabled.",
-	"",
-	"- Run `pnpm test --run`; vitest watch mode hangs the CI job.",
-	"- The CI runner has no TTY, which is why watch mode never exits.",
-].join("\n");
+const OUTCOME_REPLY = memoryOutcomeReply;
 
 let home: string;
 let agentDir: string;
@@ -113,7 +110,7 @@ describe("outcome entries through a real pi session", () => {
 		// A task, not a chat: the model reads a file, then reports. Muninn's
 		// outcome prompt is answered from the template.
 		const script: MockScript = (request) => {
-			if (request.isOutcomeCall) return OUTCOME_REPLY;
+			if (request.isOutcomeCall) return OUTCOME_REPLY(request);
 			const calledTool = request.messages.some((message) => message.role === "tool" || message.role === "toolResult");
 			if (calledTool) return "The README says watch mode is the problem.";
 			return { toolCall: { name: "read", arguments: { path: "README.md" } } };
@@ -169,7 +166,7 @@ describe("outcome entries through a real pi session", () => {
 
 describe("a chat is not a task", () => {
 	beforeEach(async () => {
-		await setUp((request) => (request.isOutcomeCall ? OUTCOME_REPLY : "It is 3pm."));
+		await setUp((request) => (request.isOutcomeCall ? OUTCOME_REPLY(request) : "It is 3pm."));
 	});
 
 	it("writes no outcome entry for a single turn with no tool calls", async () => {
@@ -233,7 +230,7 @@ describe("compaction", () => {
 		const script: MockScript = (request) => {
 			if (request.raw.includes("<conversation>"))
 				return "Read README.md and diagnosed the CI watch-mode hang. Use pnpm test --run.";
-			if (request.isOutcomeCall) return OUTCOME_REPLY;
+			if (request.isOutcomeCall) return OUTCOME_REPLY(request);
 			const calledTool = request.messages.some((message) => message.role === "tool" || message.role === "toolResult");
 			return calledTool
 				? "The README says watch mode is the problem."
@@ -255,4 +252,148 @@ describe("compaction", () => {
 	// own entry. The scripted provider cannot provoke either; the mechanism —
 	// `take()` at compaction unsealing the accumulator so later turns collect
 	// again — is pinned in test/unit/outcome.test.ts.
+});
+
+describe("Phase 8 session memory workflows", () => {
+	it.each([
+		{ name: "default settings", globalMode: undefined, projectMode: undefined },
+		{ name: "project-only opt-in", globalMode: undefined, projectMode: "assisted" },
+		{ name: "project opt-out", globalMode: "assisted", projectMode: "manual" },
+	])("omits proactive guidance and memory calls with $name", async ({ globalMode, projectMode }) => {
+		await setUp(() => "Ready to inspect the current code.", {
+			muninn: {
+				memory: { model: { provider: "muninn-test", id: "memory" } },
+				...(globalMode ? { recall: { mode: globalMode } } : {}),
+			},
+		});
+		if (projectMode) {
+			mkdirSync(join(project, ".pi"), { recursive: true });
+			writeFileSync(
+				join(project, ".pi", "settings.json"),
+				JSON.stringify({ muninn: { recall: { mode: projectMode } } }),
+			);
+		}
+		const result = await pi("Investigate the test runner hanging in CI.");
+		expect(result.stdout).toContain("Ready to inspect");
+		expect(mock.requests).toHaveLength(1);
+		expect(JSON.parse(mock.requests[0]?.raw as string).model).toBe("mock");
+		expect(mock.requests[0]?.raw).not.toContain("Muninn assisted recall is enabled");
+		if (!globalMode && projectMode) expect(result.stderr).toContain('project settings may only lower "recall.mode"');
+	});
+
+	it("removes proactive guidance on resume after the user withdraws opt-in", async () => {
+		await setUp(() => "Ready to inspect the current code.", { muninn: { recall: { mode: "assisted" } } });
+		await pi("Investigate the test runner hanging in CI.");
+		expect(mock.requests[0]?.raw).toContain("Muninn assisted recall is enabled");
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ muninn: { recall: { mode: "manual" } } }));
+		await pi("Continue investigating the current code.", ["--continue"]);
+		expect(mock.requests).toHaveLength(2);
+		expect(mock.requests[1]?.raw).not.toContain("Muninn assisted recall is enabled");
+	});
+
+	it("uses a dedicated memory model, then recalls the evidence in a fresh session without recapturing it", async () => {
+		await setUp(
+			(request) => {
+				if (request.isOutcomeCall) return OUTCOME_REPLY(request);
+				const system = request.messages.find((m) => m.role === "system")?.content;
+				if (typeof system === "string" && system.includes("Generate up to three short lexical"))
+					return '{"queries":["vitest watch mode"]}';
+				if (typeof system === "string" && system.includes("Select useful project memories")) {
+					const input = JSON.parse(request.messages.find((m) => m.role === "user")?.content as string);
+					return JSON.stringify({
+						selected: [
+							{ id: input.candidates[0].match.id, reason: "The same CI watch-mode symptom has a prior command." },
+						],
+					});
+				}
+				const recalling = request.raw.includes("Recall earlier fixes");
+				const tools = request.messages.filter((m) => m.role === "tool" || m.role === "toolResult");
+				if (tools.length)
+					return recalling
+						? "The journal suggests pnpm test --run; verify the current scripts first."
+						: "The README identifies vitest watch mode.";
+				return recalling
+					? { toolCall: { name: "journal_recall", arguments: { query: "build worker waits forever" } } }
+					: { toolCall: { name: "read", arguments: { path: "README.md" } } };
+			},
+			{ muninn: { memory: { model: { provider: "muninn-test", id: "memory" } }, recall: { mode: "assisted" } } },
+		);
+		await pi("Why does CI hang?");
+		const first = records();
+		expect(first).toHaveLength(1);
+		await pi("Recall earlier fixes for the build worker waiting forever.");
+		expect(records()).toHaveLength(1);
+		const memoryCalls = mock.requests.filter((r) => JSON.parse(r.raw).model === "memory");
+		expect(memoryCalls.length).toBeGreaterThanOrEqual(3);
+		expect(mock.requests.filter((r) => r.isOutcomeCall)).toHaveLength(1);
+		const codingRequests = mock.requests.filter((r) => JSON.parse(r.raw).model === "mock");
+		expect(codingRequests.some((r) => r.raw.includes("Muninn assisted recall is enabled"))).toBe(true);
+		expect(
+			codingRequests.some((r) =>
+				r.messages.some((m) => m.role === "tool" && JSON.stringify(m.content).includes(first[0]?.id as string)),
+			),
+		).toBe(true);
+	});
+
+	it("distills and reuses an explicit remember request with automatic capture disabled", async () => {
+		let step = 0;
+		await setUp(
+			(request) => {
+				if (request.isOutcomeCall) return OUTCOME_REPLY(request);
+				step++;
+				if (step === 1) return { toolCall: { name: "read", arguments: { path: "README.md" } } };
+				if (step === 2 || step === 3) return { toolCall: { name: "journal_remember", arguments: {} } };
+				return "Remembered the useful CI lesson.";
+			},
+			{ muninn: { capture: { outcomes: false } } },
+		);
+		await pi("Remember this session after reading README.md for the CI issue.");
+		expect(records()).toHaveLength(1);
+		expect(records()[0]?.source).toBe("agent");
+		expect(records()[0]?.body).toContain("pnpm test --run");
+		expect(mock.requests.filter((r) => r.isOutcomeCall)).toHaveLength(1);
+		expect(mock.requests.some((r) => r.raw.includes("Muninn assisted recall is enabled"))).toBe(false);
+	});
+
+	it("fails visibly when the configured memory model is unavailable without falling back", async () => {
+		await setUp(
+			(request) => {
+				if (request.messages.some((m) => m.role === "tool")) return "Read complete.";
+				return { toolCall: { name: "read", arguments: { path: "README.md" } } };
+			},
+			{ muninn: { memory: { model: { provider: "unavailable", id: "no-model" } } } },
+		);
+		const result = await pi("Inspect README.md");
+		expect(records()).toEqual([]);
+		expect(result.stderr).toContain("memory model is unavailable");
+		expect(mock.requests.filter((r) => r.isOutcomeCall)).toEqual([]);
+	});
+
+	it("supports the remember and recall slash commands in a continued pi session", async () => {
+		await setUp((request) => {
+			if (request.isOutcomeCall) return OUTCOME_REPLY(request);
+			const sys = request.messages.find((m) => m.role === "system")?.content;
+			if (typeof sys === "string" && sys.includes("Generate up to three short lexical"))
+				return '{"queries":["vitest watch mode"]}';
+			if (typeof sys === "string" && sys.includes("Select useful project memories")) {
+				const data = JSON.parse(request.messages.find((m) => m.role === "user")?.content as string);
+				return JSON.stringify({ selected: [{ id: data.candidates[0].match.id, reason: "Matching CI symptom." }] });
+			}
+			if (request.raw.includes("The user requested project-memory recall")) {
+				if (request.messages.some((m) => m.role === "tool" && String(m.content).includes('"selected"')))
+					return "Recalled the CI evidence.";
+				return { toolCall: { name: "journal_recall", arguments: { query: "CI hangs" } } };
+			}
+			return request.messages.some((m) => m.role === "tool")
+				? "Read complete."
+				: { toolCall: { name: "read", arguments: { path: "README.md" } } };
+		});
+		await pi("Read README.md");
+		const remembered = await pi("/muninn remember", ["--continue"]);
+		expect(remembered.stderr).toContain("1 reused");
+		const recalled = await pi("/muninn recall CI hangs", ["--continue"]);
+		expect(recalled.stderr).toContain("requested assisted recall");
+		expect(recalled.stdout).toContain("Recalled the CI evidence");
+		expect(records()).toHaveLength(1);
+	});
 });

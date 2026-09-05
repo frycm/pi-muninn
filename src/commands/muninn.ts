@@ -46,6 +46,8 @@ export const USAGE = [
 	"  /muninn sessions [FILTERS]",
 	"  /muninn tail [FILTERS]",
 	"  /muninn note TEXT",
+	"  /muninn remember [FOCUS]              distill session lessons",
+	"  /muninn recall QUERY                  recall relevant solutions",
 	"  /muninn correct ID TEXT",
 	"  /muninn annotate ID TEXT",
 	"  /muninn conflicts",

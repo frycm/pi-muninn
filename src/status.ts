@@ -14,6 +14,7 @@ export interface StatusInput {
 	piVersion: string;
 	runtime: string;
 	session: SessionContext;
+	memory?: string;
 	/** Per-scope journal counts. Computed on demand, so absent means "not asked for". */
 	journal?: ScopeJournalStats[];
 	/** Journal writes that failed this session. Silence here would be the worst outcome. */
@@ -83,6 +84,11 @@ export function formatStatus(input: StatusInput): string {
 		settings.capture.outcomes ? "outcomes" : null,
 	].filter((kind): kind is string => kind !== null);
 	lines.push(`capture   ${captureKinds.length > 0 ? captureKinds.join(", ") : "nothing (all kinds disabled)"}`);
+	const model = settings.memory.model;
+	lines.push(
+		`memory    ${model === "session" ? "session model" : `${model.provider}/${model.id}`} · recall ${settings.recall.mode} (proactive ${settings.recall.mode === "assisted" ? "on" : "off"})`,
+	);
+	if (input.memory) lines.push(`          ${input.memory}`);
 	if (input.uncommitted) {
 		lines.push(
 			`          ${input.uncommitted} ${input.uncommitted === 1 ? "entry" : "entries"} written, not yet committed`,

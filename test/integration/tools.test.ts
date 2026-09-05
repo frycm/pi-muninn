@@ -89,7 +89,7 @@ beforeAll(async () => {
 	// note → search → answer, in one run.
 	let step = 0;
 	mock = await startMockProvider((request) => {
-		if (request.isOutcomeCall) return "phase: test\n\nNothing durable.";
+		if (request.isOutcomeCall) return '{"memories":[]}';
 		step++;
 		if (step === 1) {
 			return {

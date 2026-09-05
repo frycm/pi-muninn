@@ -32,6 +32,8 @@ flowchart TD
 | Entry points | Register pi tools, hooks and commands; parse Unix commands. | `src/index.ts`, `src/cli.ts`, `src/commands/` |
 | Identity | Resolve a trusted working directory to an opaque project, member and host. | `src/project/`, `src/store/host.ts` |
 | Capture | Detect explicit user cues, accumulate task work, generate outcomes, persist resume state. | `src/capture/` |
+| Memory | Select a model, extract structured lessons, chunk branch evidence and replay prepared writes. | `src/memory/` |
+| Assisted recall | Expand lexical queries, select bounded evidence and revalidate corrections. | `src/recall/` |
 | Write boundary | Enforce caller authority, policy, idempotency, redaction and canonical appends. | `src/journal/writer.ts`, `record.ts`, `jsonl.ts` |
 | Retrieval | Validate filters, project relations and lifecycle, rank and bound responses. | `src/journal/query.ts`, `relations.ts`, `query-index.ts` |
 | Synchronization | Commit, fetch, validate identity/ownership, rebase and push. | `src/sync/`, `src/git.ts` |

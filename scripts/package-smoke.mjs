@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { startMockProvider } from "../test/fixtures/mock-provider.ts";
+import { memoryOutcomeReply, startMockProvider } from "../test/fixtures/mock-provider.ts";
 
 const execFileAsync = promisify(execFile);
 function execute(...args) {
@@ -48,7 +48,7 @@ try {
 		(await execute(cli, ["search", "packaged CLI evidence", "--json"], { cwd: code, env })).stdout,
 	);
 	assert(search.records.some((record) => record.snippet.includes("packaged CLI evidence")));
-	const probe = `import extension from 'pi-muninn'; import { muninnIntegrationEntry } from 'pi-muninn/integration'; const tools=[]; extension({registerTool:t=>tools.push(t.name),registerCommand(){},on(){}}); if(tools.length!==4||typeof muninnIntegrationEntry!=='function') throw Error('bad exports');`;
+	const probe = `import extension from 'pi-muninn'; import { muninnIntegrationEntry } from 'pi-muninn/integration'; const tools=[]; extension({registerTool:t=>tools.push(t.name),registerCommand(){},on(){}}); if(tools.length!==6||typeof muninnIntegrationEntry!=='function') throw Error('bad exports');`;
 	await execute(process.execPath, ["--input-type=module", "-e", probe], { cwd: consumer, env });
 	// Resolve declarations through the installed export map, including their
 	// transitive relative imports, using Node's module rules.
@@ -83,7 +83,7 @@ void [extension, recordType];
 	);
 	mock = await startMockProvider((request, call) =>
 		request.isOutcomeCall
-			? "phase: test\ncue: when checking the package\n\nRead README.md successfully.\n\n- The installed extension captured the task."
+			? memoryOutcomeReply(request, "The installed extension captured the task.")
 			: call > 0
 				? "Package read succeeded."
 				: { toolCall: { name: "read", arguments: { path: "README.md" } } },

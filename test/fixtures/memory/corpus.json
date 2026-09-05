@@ -1,0 +1,113 @@
+[
+	{
+		"id": "ci-watch",
+		"symptom": "The CI test job waits forever.",
+		"cause": "The test script starts vitest in watch mode.",
+		"solution": "Use pnpm test --run in this fixture's CI job.",
+		"failed": "Increasing the timeout left the process waiting.",
+		"verification": "pnpm test --run completed with exit code 0.",
+		"applies": "This fixture uses vitest and its test script forwards arguments.",
+		"recall": "Why does the build worker never finish running tests?",
+		"negative": "How should the staging VPN be configured?"
+	},
+	{
+		"id": "docker-arch",
+		"symptom": "The container exits with exec format error on an ARM runner.",
+		"cause": "The fixture image contains only an amd64 executable.",
+		"solution": "Build the fixture image for linux/arm64 using docker buildx build --platform linux/arm64.",
+		"failed": "Changing execute permissions did not fix the architecture mismatch.",
+		"verification": "The arm64 image started successfully on the ARM runner.",
+		"applies": "A native ARM runner without an amd64 emulator.",
+		"recall": "The image binary cannot execute on our ARM build machine.",
+		"negative": "Why is the test runner waiting in watch mode?"
+	},
+	{
+		"id": "port-busy",
+		"symptom": "The development server fails with EADDRINUSE on port 3000.",
+		"cause": "A previous instance of the fixture server owns port 3000.",
+		"solution": "Stop the identified old fixture process, then restart the server.",
+		"failed": "Reinstalling dependencies did not release the port.",
+		"verification": "The new server bound port 3000 and returned HTTP 200.",
+		"applies": "The listener was confirmed to be our disposable development instance.",
+		"recall": "Our dev server cannot bind its usual listening address.",
+		"negative": "How do we build a native ARM Docker image?"
+	},
+	{
+		"id": "sqlite-busy",
+		"symptom": "SQLite reports database is locked during the fixture import.",
+		"cause": "A second fixture writer holds an unfinished transaction.",
+		"solution": "Finish the outstanding transaction and serialize fixture writes.",
+		"failed": "Rerunning the import concurrently kept producing SQLITE_BUSY.",
+		"verification": "A serialized import completed and row counts matched.",
+		"applies": "This import has one local SQLite database and two writers.",
+		"recall": "Our local import fails when both jobs write to SQLite.",
+		"negative": "How do we fix expired TLS certificates?"
+	},
+	{
+		"id": "pytest-env",
+		"symptom": "pytest cannot import the fixture package even though it is installed.",
+		"cause": "The pytest executable belongs to a different Python environment.",
+		"solution": "Run python -m pytest with the fixture virtual environment's Python.",
+		"failed": "Reinstalling the package into the same virtual environment did not change the other executable.",
+		"verification": "python -m pytest collected and passed the fixture tests.",
+		"applies": "The environment's python imports the package successfully.",
+		"recall": "Tests say the Python module is missing but Python can import it.",
+		"negative": "What fixed a stale development-server process?"
+	},
+	{
+		"id": "migration-order",
+		"symptom": "The new service reports relation widgets does not exist.",
+		"cause": "Deployment started the service before applying the fixture schema migration.",
+		"solution": "Run the pending fixture migration before starting the new service version.",
+		"failed": "Restarting the service without migrating left the table absent.",
+		"verification": "The migration created widgets and the service health check passed.",
+		"applies": "The deployment targets the fixture's intended database.",
+		"recall": "The deployed app cannot find the table introduced in this release.",
+		"negative": "Why does pytest run under the wrong interpreter?"
+	},
+	{
+		"id": "timezone-test",
+		"symptom": "A date assertion passes locally but fails at midnight on CI.",
+		"cause": "The fixture test reads the host's local timezone.",
+		"solution": "Use an explicit UTC timezone and a fixed test clock.",
+		"failed": "Changing the expected string to the CI output broke local execution.",
+		"verification": "The test passed under both tested host timezone settings.",
+		"applies": "This test asserts UTC behavior, not local calendar behavior.",
+		"recall": "Our date tests change result depending on where they run.",
+		"negative": "Which database migration must precede deployment?"
+	},
+	{
+		"id": "cursor-loop",
+		"symptom": "The fixture API client repeats the same page forever.",
+		"cause": "The loop reuses the previous cursor rather than the returned next_cursor.",
+		"solution": "Advance to next_cursor after each page and stop when it is absent.",
+		"failed": "Increasing the page size still repeated records.",
+		"verification": "A three-page fixture returned each record once and terminated.",
+		"applies": "This API uses opaque next_cursor pagination.",
+		"recall": "Our pagination client downloads duplicate pages without stopping.",
+		"negative": "How was a local timezone-dependent test stabilized?"
+	},
+	{
+		"id": "tls-unresolved",
+		"symptom": "One fixture host intermittently fails TLS certificate validation.",
+		"cause": null,
+		"solution": null,
+		"failed": "Retrying the request did not establish why certificate validation failed.",
+		"verification": null,
+		"applies": "The incident remains unresolved; do not disable certificate verification.",
+		"recall": "What was established about intermittent certificate verification failures?",
+		"negative": "Which command fixed the CI watch-mode hang?"
+	},
+	{
+		"id": "versioned-cli",
+		"symptom": "Fixture CLI 2 rejects the --legacy-mode flag.",
+		"cause": "The fixture upgraded from CLI 1 to CLI 2, which removed that flag.",
+		"solution": "Use the CLI 2 configuration file in this fixture.",
+		"failed": "Copying the CLI 1 command still failed with unknown option.",
+		"verification": "The CLI 2 invocation read the config and completed.",
+		"applies": "CLI version 2 only; older CLI 1 instructions are historical.",
+		"correction": "The fixture now uses CLI 3 and its profile subcommand. The CLI 2 configuration procedure no longer applies to the current fixture.",
+		"recall": "What should replace our obsolete CLI flag after the upgrades?",
+		"negative": "Why does our pagination cursor never advance?"
+	}
+]

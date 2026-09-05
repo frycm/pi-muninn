@@ -6,7 +6,14 @@
  */
 import type { JournalSessionPointer, NewJournalRecord } from "../journal/record.ts";
 import type { MuninnSettings } from "../settings.ts";
-import { bodyFromUserText, type Channel, type CueMatch, detectCorrection, detectExplicit } from "./cues.ts";
+import {
+	bodyFromUserText,
+	type Channel,
+	type CueMatch,
+	detectCorrection,
+	detectExplicit,
+	isRememberRequest,
+} from "./cues.ts";
 import type { MuninnSessionState } from "./session-state.ts";
 
 export type CaptureKind = "explicit" | "correction";
@@ -55,6 +62,7 @@ export function decideCapture(input: CaptureInput): CaptureDecision | undefined 
 	// A slash command is handled by its own handler; classifying its text as
 	// prose would journal the command line itself.
 	if (text.startsWith("/")) return undefined;
+	if (isRememberRequest(text)) return undefined;
 
 	const explicit = detectExplicit(text);
 	if (explicit.matched) return explicitEntry(text, explicit, input);

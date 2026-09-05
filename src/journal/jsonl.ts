@@ -24,6 +24,7 @@ import {
 	type NewJournalRecord,
 	parseJournalLine,
 	serializeJournalRecord,
+	validateJournalRecord,
 } from "./record.ts";
 
 export interface AppendJournalOptions extends JournalRecordIdentity {
@@ -99,6 +100,16 @@ export async function appendJournalRecord(
 export function appendJournalRecordLocked(input: NewJournalRecord, options: AppendJournalOptions): AppendJournalResult {
 	const now = options.now ?? new Date();
 	const record = buildJournalRecord(input, { ...options, now });
+	return appendCanonicalRecordLocked(record, options);
+}
+
+/** Internal prepared-write path. Caller owns authority validation and the store lock. */
+export function appendCanonicalRecordLocked(record: JournalRecord, options: AppendJournalOptions): AppendJournalResult {
+	validateJournalRecord(record);
+	if (record.project !== options.project || record.member !== options.member || record.host !== options.host) {
+		throw new Error("prepared journal record identity mismatch");
+	}
+	const now = new Date(record.at);
 	options.validateRecord?.(record);
 	const line = serializeJournalRecord(record);
 	const path = journalShardPath(options.storePath, options.member, options.host, now);

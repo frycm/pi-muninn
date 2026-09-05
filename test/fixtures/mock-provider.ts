@@ -21,6 +21,28 @@ export type MockReply = string | { toolCall: { name: string; arguments: Record<s
 
 export type MockScript = (request: MockRequest, callIndex: number) => MockReply;
 
+/** Build evidence-referenced fixture output for the actual extraction request. */
+export function memoryOutcomeReply(
+	request: MockRequest,
+	claim = "Run pnpm test --run; vitest watch mode hangs the CI job.",
+): string {
+	const input = request.messages.find((message) => message.role === "user");
+	const text = typeof input?.content === "string" ? input.content : JSON.stringify(input?.content);
+	const parsed = JSON.parse(text ?? "{}") as { evidence?: Array<{ id: string }> };
+	return JSON.stringify({
+		memories: [
+			{
+				kind: "outcome",
+				phase: "test",
+				cue: "when vitest hangs in CI",
+				context: "The CI job hung until watch mode was disabled.",
+				claims: [claim],
+				evidence_refs: (parsed.evidence ?? []).slice(-3).map((e) => e.id),
+			},
+		],
+	});
+}
+
 export interface MockProvider {
 	url: string;
 	port: number;

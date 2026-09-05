@@ -34,6 +34,13 @@ export interface CueMatch {
 
 const NO_MATCH: CueMatch = { matched: false };
 
+/** A request to distill work, rather than a literal fact to store verbatim. */
+export function isRememberRequest(text: string): boolean {
+	return /^(?:please\s+)?(?:remember|summari[sz]e|save)\s+(?:(?:what|how)\s+(?:we|you|this session)\b|(?:this|our|the|current)\s+session\b|(?:the\s+)?(?:solution|fix|lessons?)\s+(?:from|for|we)\b)/i.test(
+		text.trim(),
+	);
+}
+
 /**
  * Offsets where a sentence begins. Cues only count at one of these — that
  * anchoring is where most of the precision comes from.

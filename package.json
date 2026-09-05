@@ -36,6 +36,7 @@
 		"build": "tsc -p tsconfig.build.json",
 		"test:package": "node scripts/package-smoke.mjs",
 		"test:eval": "npm run build && node scripts/evaluate.mjs",
+		"eval:memory": "npm run build && node scripts/evaluate-memory.mjs",
 		"prepare": "npm run build"
 	},
 	"peerDependencies": {
