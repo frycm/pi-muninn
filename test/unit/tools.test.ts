@@ -133,9 +133,11 @@ describe("journal tool schemas", () => {
 		);
 	});
 
-	it("registers no lifecycle hook that injects journal content into prompts", () => {
+	it("keeps lifecycle guidance independent of journal retrieval", () => {
 		const source = readFileSync(new URL("../../src/index.ts", import.meta.url), "utf-8");
-		expect(source).not.toContain('pi.on("before_agent_start"');
+		const guidance = source.slice(source.indexOf('pi.on("before_agent_start"'), source.indexOf("const statusReport"));
+		expect(guidance).not.toContain("queryJournal(");
+		expect(guidance).toContain('recall.mode !== "assisted"');
 		expect(source).not.toContain("systemPromptOverride");
 	});
 });

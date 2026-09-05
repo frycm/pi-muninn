@@ -14,4 +14,7 @@ Start with the [user guide](../README.md) for installation and examples.
 | [Project registry](project-registry.md) | Local identity and checkout resolution contract. |
 | [Legacy Markdown](journal-format.md) | Historical format accepted only as migration input. |
 
-These documents describe current behavior. Completed implementation plans are retained in Git history rather than the active documentation.
+These reference documents describe current behavior. [Phase 8 — model-assisted memory and
+solution recall](phase-8-plan.md) tracks the implementation and its remaining real-model
+quality-evaluation gate. Completed implementation plans are retained in Git history rather
+than the active documentation.

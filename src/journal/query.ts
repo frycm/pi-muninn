@@ -239,6 +239,24 @@ export class JournalQueryService {
 		return this.projection.views.has(id);
 	}
 
+	/** Whether a bounded read includes every adjacent record, including edges beyond its depth limit. */
+	hasCompleteNeighborhood(ids: readonly string[]): boolean {
+		this.ensureFresh();
+		const selected = new Set(ids);
+		return (
+			ids.length > 0 &&
+			ids.every((id) => {
+				const view = this.projection.views.get(id);
+				return (
+					view !== undefined &&
+					[...view.incoming.map((edge) => edge.from), ...view.outgoing.map((edge) => edge.to)].every((other) =>
+						selected.has(other),
+					)
+				);
+			})
+		);
+	}
+
 	/** Add a just-appended record without waiting for a filesystem rescan. */
 	add(record: JournalRecord): void {
 		this.ensureFresh();

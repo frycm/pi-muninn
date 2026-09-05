@@ -18,6 +18,7 @@
 
 /** Automatically use a user-owned logical-project store, or disable it. */
 export type ProjectScopeSetting = false | "auto";
+export type MemoryModelSetting = "session" | { provider: string; id: string };
 
 export interface MuninnSettings {
 	scopes: {
@@ -28,12 +29,17 @@ export interface MuninnSettings {
 		corrections: boolean;
 		outcomes: boolean;
 	};
+	memory: { model: MemoryModelSetting; maxInputTokens: number; maxOutputTokens: number; timeoutMs: number };
+	recall: { mode: "manual" | "assisted"; maxCandidates: number; maxChars: number };
 }
 
 export const DEFAULT_SETTINGS: MuninnSettings = {
 	scopes: { project: "auto" },
 	sync: { onShutdown: true },
 	capture: { corrections: true, outcomes: true },
+	memory: { model: "session", maxInputTokens: 12_000, maxOutputTokens: 2_000, timeoutMs: 30_000 },
+	// Proactive recall always requires explicit user opt-in in global settings.
+	recall: { mode: "manual", maxCandidates: 20, maxChars: 12_000 },
 };
 
 export type SettingsScope = "global" | "project";
@@ -71,10 +77,12 @@ export interface LoadedSettings {
  *   tightening operation under this rule.
  *
  */
-type FieldType = "boolean" | "project-scope";
+type FieldType = "boolean" | "project-scope" | "model" | "recall-mode" | "integer";
 
 interface FieldSpec {
 	type: FieldType;
+	min?: number;
+	max?: number;
 }
 
 /**
@@ -91,6 +99,13 @@ const FIELDS: Record<string, FieldSpec> = {
 
 	"capture.corrections": { type: "boolean" },
 	"capture.outcomes": { type: "boolean" },
+	"memory.model": { type: "model" },
+	"memory.maxInputTokens": { type: "integer", min: 2000, max: 64_000 },
+	"memory.maxOutputTokens": { type: "integer", min: 256, max: 8000 },
+	"memory.timeoutMs": { type: "integer", min: 1000, max: 120_000 },
+	"recall.mode": { type: "recall-mode" },
+	"recall.maxCandidates": { type: "integer", min: 1, max: 50 },
+	"recall.maxChars": { type: "integer", min: 1000, max: 64_000 },
 };
 
 const PROJECT_SCOPE_VALUES: ReadonlyArray<ProjectScopeSetting> = [false, "auto"];
@@ -153,6 +168,27 @@ function validate(
 	};
 
 	switch (spec.type) {
+		case "model": {
+			const identifier = (v: unknown) =>
+				typeof v === "string" &&
+				/^\S{1,256}$/.test(v) &&
+				[...v].every((c) => c.charCodeAt(0) >= 32 && c.charCodeAt(0) !== 127);
+			return value === "session" ||
+				(isPlainObject(value) && Object.keys(value).length === 2 && identifier(value.provider) && identifier(value.id))
+				? { ok: true, value: structuredClone(value) }
+				: bad("invalid-value", `"${path}" must be "session" or { provider, id }`);
+		}
+		case "integer":
+			return typeof value === "number" &&
+				Number.isSafeInteger(value) &&
+				value >= (spec.min ?? 0) &&
+				value <= (spec.max ?? 0)
+				? { ok: true, value }
+				: bad("invalid-value", `"${path}" must be an integer from ${spec.min} to ${spec.max}`);
+		case "recall-mode":
+			return value === "manual" || value === "assisted"
+				? { ok: true, value }
+				: bad("invalid-value", `"${path}" must be "manual" or "assisted"`);
 		case "boolean":
 			return typeof value === "boolean" ? { ok: true, value } : bad("invalid-type", `"${path}" must be a boolean`);
 		case "project-scope":
@@ -189,6 +225,10 @@ export function isUsableRemote(url: string): boolean {
 /** Width rank for the `lower-only` policy. Higher means wider. */
 function rank(spec: FieldSpec, value: unknown): number | null {
 	switch (spec.type) {
+		case "integer":
+			return typeof value === "number" ? value : null;
+		case "recall-mode":
+			return value === "assisted" ? 1 : 0;
 		case "boolean":
 			return value === true ? 1 : 0;
 		default:

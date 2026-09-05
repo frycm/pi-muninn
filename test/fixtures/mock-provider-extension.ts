@@ -14,16 +14,14 @@ export default function (pi: ExtensionAPI): void {
 		baseUrl,
 		apiKey: "test-key",
 		api: "openai-completions",
-		models: [
-			{
-				id: "mock",
-				name: "Mock model",
-				reasoning: false,
-				input: ["text"],
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 128_000,
-				maxTokens: 4_096,
-			},
-		],
+		models: ["mock", "memory"].map((id) => ({
+			id,
+			name: `Mock ${id} model`,
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 4_096,
+		})),
 	});
 }

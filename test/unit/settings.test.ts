@@ -67,6 +67,44 @@ describe("resolveSettings — global settings", () => {
 	});
 });
 
+describe("proactive recall requires user opt-in", () => {
+	it("defaults to manual even when a dedicated memory model is configured", () => {
+		expect(resolveSettings(undefined, undefined).settings.recall.mode).toBe("manual");
+		expect(
+			resolveSettings({ memory: { model: { provider: "fixture", id: "memory" } } }, undefined).settings.recall.mode,
+		).toBe("manual");
+	});
+
+	it("accepts an explicit global opt-in and returns to manual when it is removed", () => {
+		const optedIn = resolveSettings({ recall: { mode: "assisted" } }, undefined);
+		expect(optedIn.settings.recall.mode).toBe("assisted");
+		expect(optedIn.warnings).toEqual([]);
+		expect(resolveSettings({}, undefined).settings.recall.mode).toBe("manual");
+	});
+
+	it.each([undefined, { recall: { mode: "manual" } }])("rejects project-only opt-in over %j", (global) => {
+		const resolved = resolveSettings(global, { recall: { mode: "assisted" } });
+		expect(resolved.settings.recall.mode).toBe("manual");
+		expect(resolved.warnings).toContainEqual(
+			expect.objectContaining({ path: "recall.mode", scope: "project", kind: "not-tightening" }),
+		);
+	});
+
+	it("allows a project to disable a global opt-in", () => {
+		const resolved = resolveSettings({ recall: { mode: "assisted" } }, { recall: { mode: "manual" } });
+		expect(resolved.settings.recall.mode).toBe("manual");
+		expect(resolved.warnings).toEqual([]);
+	});
+
+	it.each([true, "true", "auto", null])("does not treat invalid mode %j as opt-in", (mode) => {
+		const resolved = resolveSettings({ recall: { mode } }, undefined);
+		expect(resolved.settings.recall.mode).toBe("manual");
+		expect(resolved.warnings).toContainEqual(
+			expect.objectContaining({ path: "recall.mode", scope: "global", kind: "invalid-value" }),
+		);
+	});
+});
+
 describe("resolveSettings — project settings tighten only", () => {
 	it("lets a project disable capture but not enable a globally disabled kind", () => {
 		const off = resolveSettings(undefined, { capture: { outcomes: false } });

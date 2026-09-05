@@ -48,6 +48,43 @@ Regression tests require recall at least 0.90, MRR at least 0.80 and nDCG at lea
 
 For evaluation on a real project, create a JSONL file of judgments using stable record IDs and run `muninn eval judgments.jsonl --json`. Such field data would be needed before claiming production retrieval quality or deciding whether semantic search is justified. The current release uses no embedding service or vector database.
 
+## Memory extraction and assisted recall
+
+Phase 8 tests exercise model selection, pre-model redaction, input/deadline/retry limits,
+structured evidence references, branch chunking, replay after an interrupted append, and
+corrections arriving during selection. Real pi processes test a dedicated memory model,
+explicit remembering with automatic capture disabled, and recalling a solution in a fresh
+session without re-journaling the retrieved history. Mock-provider tests establish contracts
+and orchestration; they do not establish real-model factual quality or proactive tool use.
+
+The authored [memory corpus](../test/fixtures/memory/README.md) contains ten synthetic
+incidents. To evaluate a real memory model explicitly, run:
+
+```bash
+npm run eval:memory -- --model PROVIDER/MODEL
+```
+
+This sends synthetic evidence to that configured pi provider and prints JSONL with expected
+facts, extracted memories, independent recall results, an unrelated abstention query and
+token usage. It creates and removes only an isolated temporary journal. Review unsupported
+claims and correction handling manually. A separate coding-model evaluation must measure
+whether the agent actually initiates recall. No real-model run has been performed for this
+implementation, so the quality gate remains open. Proactive recall requires explicit global
+user opt-in regardless of evaluation results. Tests pin manual defaults, rejection of
+project-only opt-in and invalid settings, project opt-out, and removal of proactive guidance
+when a user withdraws consent and resumes a session.
+
+Phase 8 local validation (Linux, Node 24.18.0, pi 0.85.0): typecheck/lint, build,
+48 test files / 515 non-performance tests, the two separate performance tests, lexical
+evaluation and the isolated packaged-install test passed. The quality runner was syntax-
+checked and its help path exercised, without making a credentialed model call. The broader
+Node 22/Bun/macOS matrix has not been rerun for these changes.
+
+During the earlier 501-test validation, one run concurrent with the package build failed the existing clone-cancellation
+cleanup test in `test/unit/onboarding.test.ts` (a temporary `.join-*` directory remained).
+The subsequent full run without the package build passed all 501 tests. That code is
+unchanged in Phase 8; the intermittent failure is recorded, not treated as a repaired bug.
+
 ## Performance and output budgets
 
 `test/unit/query-perf.test.ts` enforces:
@@ -73,7 +110,7 @@ The suite exercises local-only and approved sync, clean and diverged shared meta
 
 Signing fault tests cover failed commits, private installation, recovery trust pinning and final cleanup. Pending-state tests reject corrupt key material, missing or unsupported fields, wrong operation/project/store/member scopes, unsafe permissions and symlinks while preserving recovery bytes.
 
-The independent security review is followed by focused reproductions and the full suite. All 481 tests pass on the reviewed Linux runtime matrix, including the real age test. Linux runtime results are validated locally; the macOS jobs run in CI and are not claimed as local executions. Real pi command tests also verify that `/muninn` reports local transport approval when the shared manifest advertises a different URL.
+The Phase 7 independent security review was followed by focused reproductions and the full suite. All 481 tests passed on that reviewed Linux runtime matrix, including the real age test. Those Linux runtime results were validated locally; the macOS jobs run in CI and are not claimed as local executions. Phase 8 validation is recorded separately above. Real pi command tests also verify that `/muninn` reports local transport approval when the shared manifest advertises a different URL.
 
 ## Validated security repairs
 
@@ -87,4 +124,4 @@ The reviewed security findings are fixed in the shared service boundaries. The i
 | Public successor/revocation → failed commit → lost private key | `src/governance/transaction.ts` durably prepares scoped private material; `operations.ts` resumes publication and installation under a shared identity lock. | `test/unit/governance-operations.test.ts` injects commit, private installation, trust pinning and cleanup failures, verifies the same key/event is resumed, and races rotations across two projects. `governance-transaction.test.ts` verifies private state validation and preservation. Recovery and ordinary rotation still pass. |
 | Failed trust refresh → subsequent read → stale verified evidence | `src/journal/query.ts` publishes the new snapshot and fingerprint only after complete validation. | `test/unit/governance-verification.test.ts` checks repeated search/read/lookup/conflict calls against invalid trust state in both scan and index modes, then verifies recovery after repair and distrust. |
 
-Verification gates: strict typecheck/lint and build passed; focused malicious and legitimate controls passed; the complete 47-suite/481-test matrix passed on Linux with Node 22.19.0, Node 24.18.0 and Bun 1.4.2. `npm run test:package` passed on both Node versions. `npm audit --omit=dev` reported no production dependency advisories. macOS execution is configured in CI but was not available for local execution. Timestamp backdating and complete-history detection retain the limits documented in [security](security.md).
+Phase 7 verification gates: strict typecheck/lint and build passed; focused malicious and legitimate controls passed; the complete 47-suite/481-test matrix passed on Linux with Node 22.19.0, Node 24.18.0 and Bun 1.4.2. `npm run test:package` passed on both Node versions. `npm audit --omit=dev` reported no production dependency advisories. macOS execution is configured in CI but was not available for local execution. Timestamp backdating and complete-history detection retain the limits documented in [security](security.md).

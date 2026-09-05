@@ -68,7 +68,7 @@ muninn tail --follow --jsonl
 
 Search supports words, prefixes, limited typo tolerance and filters. `--explain` shows why a result matched. `show` reads the original record and optionally its correction neighborhood. A missing transcript does not remove the journal record; the CLI still prints it and exits with code `3`.
 
-Pi gets four explicit tools:
+Pi gets six explicit tools:
 
 | Tool | Use |
 | --- | --- |
@@ -76,8 +76,59 @@ Pi gets four explicit tools:
 | `journal_read` | Read selected records and related evidence within a character budget. |
 | `journal_context` | Load only selected IDs into bounded context. |
 | `journal_note` | Append an agent note or annotation. |
+| `journal_remember` | Distill useful lessons from the current session with the selected memory model. |
+| `journal_recall` | Search and select relevant solutions, returning complete records and corrections. |
 
 Oversized records are omitted from bounded model reads with a warning and `truncated: true`; use `muninn show ID` for the complete record. Readers notice changes made by another session, including local trust changes.
+
+## Remember a solution and recall it later
+
+Ask pi “Remember how we solved this” or use:
+
+```text
+/muninn remember the CI hang and failed approaches worth avoiding
+/muninn recall the build worker waits forever
+```
+
+The selected memory model distills symptoms, supported causes, working solutions, failed
+attempts, verification and applicability. Unknown causes or unverified fixes stay explicit.
+General durable decisions are also retained. Long work is processed in bounded chunks, with
+checkpoints before compaction and references to earlier same-task memories. Repeating a
+remember request reuses already processed evidence; a partial result can be retried.
+
+Full transcripts remain in pi's local session files. The memory model receives bounded,
+redacted excerpts; if it uses a remote provider, those excerpts are sent to that provider.
+The journal stores the resulting concise records and source pointers.
+
+By default, capture and assisted selection use the current session model. To select a
+different model, set `muninn.memory.model` to `{ "provider": "YOUR_PROVIDER", "id": "YOUR_MODEL" }`
+in your global pi settings, using a model configured in pi. Missing models or authentication
+produce a diagnostic; Muninn does not silently switch providers.
+
+Proactive recall is disabled by default and requires explicit user opt-in. To enable it,
+merge this block into your **global** pi settings (`settings.json` in pi's agent directory,
+normally `~/.pi/agent/settings.json`), preserving your other settings:
+
+```json
+{
+  "muninn": {
+    "recall": { "mode": "assisted" }
+  }
+}
+```
+
+Reload or restart pi, then check `/muninn` for `recall assisted (proactive on)`. To opt out,
+set the global mode to `"manual"` or remove the setting and reload. Project settings can
+turn proactive recall off, but cannot opt you in. Selecting a memory model or running a
+quality evaluation does not enable it.
+
+Assisted mode instructs the coding agent to recall relevant evidence for substantive tasks
+and new errors. Actual retrieval is a visible tool call and depends on the coding model
+following that guidance. Real-model quality evaluation is still pending; completing it will
+not change the opt-in default. Historical fixes should always be checked against current code.
+
+Manual mode keeps explicit remember/recall requests available and does not disable automatic
+outcome capture. To stop automatic extraction too, set `muninn.capture.outcomes` to `false`.
 
 ## Correct a decision
 
@@ -144,12 +195,26 @@ Muninn reads the `muninn` object in pi's settings. Defaults are:
   "muninn": {
     "scopes": { "project": "auto" },
     "sync": { "onShutdown": true },
-    "capture": { "corrections": true, "outcomes": true }
+    "capture": { "corrections": true, "outcomes": true },
+    "memory": {
+      "model": "session",
+      "maxInputTokens": 12000,
+      "maxOutputTokens": 2000,
+      "timeoutMs": 30000
+    },
+    "recall": { "mode": "manual", "maxCandidates": 20, "maxChars": 12000 }
   }
 }
 ```
 
 Project settings can disable behavior but cannot re-enable a globally disabled capability. Set `scopes.project` to `false` to disable the project journal. Shutdown sync uses only a locally approved remote.
+
+The memory model is a global, user-owned choice. Project settings may lower numeric budgets
+or switch assisted recall to manual. Disabling `capture.outcomes` stops automatic extraction;
+an explicit remember request still works while the journal is enabled. `/muninn` reports the
+effective model, recall mode, operation results and available token usage. Each operation
+shares a deadline and an eight-call ceiling, including at most one format-repair retry;
+token limits apply to each call.
 
 Data lives under pi's agent directory (overridable with `PI_CODING_AGENT_DIR`):
 
@@ -172,3 +237,4 @@ Run `muninn path` to locate the current journal and `muninn doctor` for read-onl
 - [Operations](docs/operations.md): integrations, signing, migration and recovery.
 - [Testing and development](docs/testing.md): checks, packaging, performance and retrieval evaluation.
 - [Reference contracts](docs/README.md): record format, registry and legacy migration input.
+- [Phase 8 implementation](docs/phase-8-plan.md): memory and recall delivery status and remaining quality-evaluation gate.

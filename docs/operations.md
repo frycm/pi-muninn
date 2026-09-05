@@ -6,6 +6,44 @@ repository remains authoritative; this repository contains immutable JSONL histo
 
 See the [user guide](../README.md) for installation, the [technical design](technical-design.md) for implementation, and the [security model](security.md) for trust limits.
 
+## Session memory and solution recall
+
+Inside pi, `/muninn remember [FOCUS]` distills the current branch's useful lessons with the
+configured memory model. `/muninn recall QUERY` asks the coding agent to search and load
+relevant evidence. Natural requests use the `journal_remember` and `journal_recall` tools.
+The standalone CLI continues to provide deterministic `search` and `show` commands.
+
+Set `muninn.memory.model` in global pi settings to `"session"` or `{ "provider": "NAME",
+"id": "MODEL" }`. Pi supplies model configuration and credentials. Model selection is
+user-owned; repository settings can lower budgets or disable assisted recall, but cannot
+redirect excerpts to another provider. A failed explicit model selection never silently
+falls back. Restart or reload pi after changing settings.
+
+Remembering produces agent-authored records even when requested by a user. Direct notes
+and corrections retain their existing authority. `capture.outcomes: false` disables automatic
+extraction but permits an explicit remember command; disabling the project journal disables
+both. Full transcripts remain local, while redacted excerpts go to the selected provider.
+
+`/muninn` reports the selected model, recall mode, last operation and available token usage.
+A partial remember result lists completed IDs and an error; repeat the command to process
+remaining evidence. Prepared records preserve their IDs, timestamps and signatures through
+retry. Do not edit memory-state entries to work around an error. Invalid state or changed
+prepared bytes require investigation, and the original transcript remains available.
+
+Proactive recall stays disabled by default. The user opts in by setting
+`muninn.recall.mode: "assisted"` in global pi settings and reloading or restarting pi.
+`/muninn` then reports `recall assisted (proactive on)`. Set it to `"manual"` or remove the
+global setting and reload to opt out. A project can disable proactive recall but cannot
+enable it without global user opt-in; neither model selection nor quality evaluation opts
+the user in. Explicit remember/recall requests remain available in manual mode, independently
+of the `capture.outcomes` setting for automatic extraction.
+
+Assisted mode guides the coding model to recall before repeating investigations, without
+automatically inserting journal text.
+Missing/unavailable model results are distinct from no relevant evidence: use `journal_search`
+and `journal_read`, or the CLI, when assisted recall fails. Truncation or changed corrections
+can prevent a selected solution from being returned; inspect the complete records explicitly.
+
 ## Start a local project journal
 
 From any checkout or linked worktree:

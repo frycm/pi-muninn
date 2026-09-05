@@ -67,6 +67,13 @@ function report(overrides: Partial<Parameters<typeof formatStatus>[0]> = {}): st
 }
 
 describe("project journal status", () => {
+	it("makes the effective proactive-recall state explicit", () => {
+		expect(report()).toContain("recall manual (proactive off)");
+		const enabled = loaded();
+		enabled.settings.recall.mode = "assisted";
+		expect(report({ session: session({ loaded: enabled }) })).toContain("recall assisted (proactive on)");
+	});
+
 	it("shows versions, actor identity, mapping, alias, and project store", () => {
 		const text = report();
 		expect(text).toContain("⟡ muninn 0.1.0 · pi 0.84.2 · node v22.19.0");

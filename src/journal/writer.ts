@@ -9,6 +9,7 @@ import { readProjectManifest } from "../store/project-manifest.ts";
 import {
 	type AppendJournalOptions,
 	type AppendJournalResult,
+	appendCanonicalRecordLocked,
 	appendJournalRecord,
 	appendJournalRecordLocked,
 	scanJournal,
@@ -16,11 +17,18 @@ import {
 import type {
 	JournalChannel,
 	JournalGitProvenance,
+	JournalRecord,
 	JournalRelationType,
 	JournalSessionPointer,
 	NewJournalRecord,
 } from "./record.ts";
-import { buildJournalRecord, journalRecordSigningPayload, serializeJournalRecord } from "./record.ts";
+import {
+	buildJournalRecord,
+	journalRecordSigningPayload,
+	serializeJournalRecord,
+	validateJournalRecord,
+	verifyJournalRecordSignature,
+} from "./record.ts";
 import { projectRelations } from "./relations.ts";
 
 export type JournalWriterAuthority = "attended-user" | "headless-user" | "model" | "automatic" | "integration";
@@ -205,6 +213,43 @@ export async function appendAuthorizedJournalRecord(
 	assertAuthority(write, id);
 	assertSigningEnrollment(options);
 	return appendJournalRecord(write.record, governedOptions({ ...options, id }));
+}
+
+/** Freeze validated, redacted and optionally signed bytes before persisting a capture operation. */
+export function prepareAutomaticRecord(record: NewJournalRecord, options: AppendJournalOptions): JournalRecord {
+	const id = options.id ?? newEntryId();
+	assertAuthority({ authority: "automatic", record }, id);
+	assertSigningEnrollment(options);
+	const prepared = buildJournalRecord(record, { ...options, id });
+	governedOptions(options).validateRecord?.(prepared);
+	serializeJournalRecord(prepared);
+	return prepared;
+}
+
+/** Replay prepared capture bytes after crashes without re-signing or changing timestamps. */
+export async function appendPreparedAutomaticRecord(
+	record: JournalRecord,
+	options: AppendJournalOptions,
+	signal?: AbortSignal,
+): Promise<AppendJournalResult> {
+	validateJournalRecord(record);
+	const { redacted: _redacted, ...authorityRecord } = record;
+	assertAuthority({ authority: "automatic", record: authorityRecord }, record.id);
+	if (record.signature) {
+		const key = readProjectManifest(options.storePath)?.signing_keys.find((key) => key.id === record.signature?.key);
+		if (!key || key.member !== record.member || !verifyJournalRecordSignature(record, key.public_key)) {
+			throw new JournalAuthorityError("prepared memory signature is invalid or its enrolled key is missing");
+		}
+	}
+	return withStoreLock(
+		options.storePath,
+		"append",
+		{ host: options.host, timeoutMs: options.lockTimeoutMs ?? 5000 },
+		() => {
+			if (signal?.aborted) throw new JournalAuthorityError("prepared memory append cancelled");
+			return appendCanonicalRecordLocked(record, governedOptions(options));
+		},
+	);
 }
 
 export interface UserRelationWriteOptions extends Omit<AppendJournalOptions, "id"> {

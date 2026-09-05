@@ -13,7 +13,12 @@ import {
 	serializeJournalRecord,
 	verifyJournalRecordSignature,
 } from "../../src/journal/record.ts";
-import { appendAuthorizedJournalRecord, appendIntegrationObservation } from "../../src/journal/writer.ts";
+import {
+	appendAuthorizedJournalRecord,
+	appendIntegrationObservation,
+	appendPreparedAutomaticRecord,
+	prepareAutomaticRecord,
+} from "../../src/journal/writer.ts";
 import { ensureStore } from "../../src/store/init.ts";
 
 const roots: string[] = [];
@@ -80,6 +85,44 @@ function richRecord() {
 }
 
 describe("signed journal records", () => {
+	it("replays frozen memory signatures after a restart and refuses changed bytes or cancelled appends", async () => {
+		const storePath = join(root(), "store");
+		const actor = identity();
+		const host = { id: actor.host, name: "laptop", createdAt: "2026-09-04T00:00:00.000Z" };
+		await ensureStore(storePath, {
+			host,
+			project: {
+				id: actor.project,
+				name: "demo",
+				member: { id: actor.member, name: "member", createdAt: host.createdAt },
+			},
+		});
+		await enrollProjectSigningKey({
+			storePath,
+			project: actor.project,
+			member: actor.member,
+			host,
+			identity: actor.signing,
+		});
+		const options = { storePath, ...actor };
+		const prepared = prepareAutomaticRecord(
+			{ type: "outcome", source: "agent", channel: "sdk", body: "password=secret12345678; tests passed." },
+			options,
+		);
+		expect(prepared.redacted).toBe(true);
+		expect(verifyJournalRecordSignature(prepared, actor.signing.public_key)).toBe(true);
+		const first = await appendPreparedAutomaticRecord(prepared, options);
+		const { signing: _key, ...restarted } = options;
+		const replay = await appendPreparedAutomaticRecord(JSON.parse(JSON.stringify(prepared)), restarted);
+		expect(serializeJournalRecord(replay.record)).toBe(serializeJournalRecord(first.record));
+		await expect(appendPreparedAutomaticRecord({ ...prepared, body: "changed" }, restarted)).rejects.toThrow(
+			"signature",
+		);
+		const abort = new AbortController();
+		abort.abort();
+		await expect(appendPreparedAutomaticRecord(prepared, restarted, abort.signal)).rejects.toThrow("cancelled");
+	});
+
 	it("binds every canonical record field and the named signing key", () => {
 		const { actor, record } = richRecord();
 		expect(record.signature).toMatchObject({ algorithm: "ed25519", key: actor.signing.id });

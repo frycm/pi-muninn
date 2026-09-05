@@ -54,6 +54,35 @@ A retry resumes the same transaction after a failed hook, commit or process inte
 
 The pi extension persists task state in custom session entries, gathers substantive tool activity and captures outcomes at settlement and before compaction. Resume and fork state retain task continuity and deduplicate already written records. Model-generated outcome text is validated; an unusable response is retried once and then discarded with diagnostics.
 
+Memory extraction now uses `src/memory/` and pi's authenticated model registry. The default
+is the active session model; a global `{ provider, id }` selection leaves that coding model
+unchanged. `MemoryOperation` bounds each input/output, shares a deadline across calls, allows
+one format repair and caps an operation at eight calls. Provider failures never trigger a
+silent provider fallback. Numeric project settings can only lower the global limits.
+
+Visible messages on the selected session branch become redacted evidence with source IDs.
+Chronological chunks retain error lines and both ends of oversized outputs; omissions are
+explicit. Earlier same-task prepared memories provide bounded context to later extraction.
+The internal JSON contract supports issue/solution and general-outcome variants; code renders
+them into schema-1 bodies with versioned tags. No model-supplied identity or semantic
+correction relations are accepted. Validation establishes shape and valid references, not
+the truth of a causal claim.
+
+`muninn-memory-v1` custom entries contain prepared canonical records and operation state.
+Timestamps, IDs, redaction and optional signatures are frozen before append. A replay checks
+authority, identity, enrolled signing keys and local write policy, then reconciles identical
+bytes under the normal store lock. Prepared records contain no signing secrets. A failure
+after append but before marking completion reuses the same record. Only completed or valid
+empty chunks advance processed evidence; failed work remains retryable. These custom entries
+are local session bookkeeping and do not enter model context or journal Git.
+
+Recall builds bounded lexical candidates, optionally asks for up to three alternative queries,
+and validates the memory model's selection against candidate IDs. It loads correction
+neighborhoods before selection and compares fresh records and labels afterward. Changed,
+incomplete or disallowed evidence is omitted with diagnostics. Canonical records remain
+separate from model-authored applicability reasons. `before_agent_start` adds only static
+procedural guidance when assisted mode is enabled; no journal bytes enter that hook.
+
 External observations enter the same governed writer, never the user-correction path. Transcript export validates a selected local pointer and encrypts a bounded bundle with `age`; import checks metadata and installs an owner-only local copy. Neither bundle nor decrypted copy becomes a canonical journal record or automatic prompt context.
 
 ## Verification strategy
