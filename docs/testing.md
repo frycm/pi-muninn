@@ -60,6 +60,8 @@ For evaluation on a real project, create a JSONL file of judgments using stable 
 | 50 warm verified queries over signed records | <3 s |
 | Append, refresh and verified retrieval over signed history | <15 s |
 
+Run `npm run test:perf` to measure these budgets separately. CI runs this file after the other tests, so concurrent Git repositories and pi processes do not compete with timed queries. The same limits apply on Linux and macOS.
+
 A Linux Node 24 run measured approximately 1.46 s cold, 1.74 s for 50 warm queries and 1.50 s for append/refresh on the signed fixture. These are representative measurements from the test environment, not user latency guarantees. Tests run with generous cold-operation limits; full scans remain proportional to history size.
 
 Records are limited to 64 KiB after serialization. Query/read responses honor a character budget, including relations, warnings and transcript metadata. The default CLI/service budget is 128 KiB; extension search/read uses 16,000 characters. `journal_context` defaults to 12,000 characters and accepts an explicit bounded limit.
