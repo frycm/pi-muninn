@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { git } from "../git.ts";
-import { isHostId, isMemberId, isProjectId } from "../ids.ts";
+import { isProjectId } from "../ids.ts";
 import { scanJournal } from "../journal/jsonl.ts";
 import { parseMigrationManifest } from "../journal/migrate.ts";
 import { isUsableRemote } from "../settings.ts";
@@ -24,12 +24,11 @@ import { ensureStore } from "../store/init.ts";
 import { withStoreLock } from "../store/lock.ts";
 import { projectStorePath, projectsRootPath } from "../store/paths.ts";
 import { type ProjectManifest, readProjectManifest, setProjectRemote } from "../store/project-manifest.ts";
+import { validateTrackedJournalFiles } from "../store/tracked-files.ts";
 import { authorizeJournalRemote, readAuthorizedRemote } from "../sync/remote.ts";
 import { createProjectRegistry, type ProjectRegistry, parseProjectRegistry, readProjectRegistry } from "./registry.ts";
 import { linkLogicalProject, type ResolvedProject } from "./resolver.ts";
 
-const ROOT_FILES = new Set([".gitignore", "project.json", "migration.json"]);
-const SHARD = /^(journal)\/([^/]+)\/([^/]+)\/(\d{4}-\d{2}\.jsonl)$/;
 const JOIN_RECOVERY_SCHEMA = 1;
 
 interface JoinRecovery {
@@ -259,11 +258,7 @@ async function validateJoinedStore(
 	const branch = (await git(storePath, { kind: "current-branch" })).stdout.trim();
 	if (branch !== "main")
 		throw new Error(`muninn: shared journal must use branch main, found ${branch || "detached HEAD"}`);
-	const tracked = trackedFiles((await git(storePath, { kind: "ls-files-stage" })).stdout);
-	if (!tracked.some((file) => file.path === "project.json")) {
-		throw new Error("muninn: shared repository has no tracked project.json");
-	}
-	for (const file of tracked) validateTrackedFile(file);
+	await validateTrackedJournalFiles(storePath);
 	if (requireClean && (await git(storePath, { kind: "status-porcelain", paths: [] })).stdout.trim() !== "") {
 		throw new Error("muninn: shared journal clone is not clean after checkout");
 	}
@@ -294,29 +289,4 @@ async function validateJoinedStore(
 		}
 	}
 	return manifest;
-}
-
-interface TrackedFile {
-	mode: string;
-	path: string;
-}
-
-function trackedFiles(output: string): TrackedFile[] {
-	return output
-		.split("\0")
-		.filter((row) => row !== "")
-		.map((row) => {
-			const match = row.match(/^(\d{6}) [0-9a-f]+ \d\t([\s\S]+)$/i);
-			if (!match) throw new Error("muninn: shared repository returned an unreadable tracked-file entry");
-			return { mode: match[1] as string, path: match[2] as string };
-		});
-}
-
-function validateTrackedFile(file: TrackedFile): void {
-	if (file.mode !== "100644") throw new Error(`muninn: shared journal path ${file.path} is not a regular data file`);
-	if (ROOT_FILES.has(file.path)) return;
-	const shard = file.path.match(SHARD);
-	if (!shard || !isMemberId(shard[2] as string) || !isHostId(shard[3] as string)) {
-		throw new Error(`muninn: shared repository tracks unexpected path ${file.path}`);
-	}
 }

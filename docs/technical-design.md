@@ -8,6 +8,8 @@ The user-owned registry maps canonical roots and Git common directories to proje
 
 Each record belongs to `journal/<member>/<host>/<UTC-month>.jsonl`. Authorized writes check source/type/relation permissions, reject self-relations and duplicate relations, construct deterministic fields, redact sensitive text, optionally sign, validate local policy and enforce the 64 KiB serialized limit. A store lock protects the final read/decide/append transaction. The writer appends a newline-terminated buffer and fsyncs it; readers ignore incomplete tails and report malformed, oversized, colliding or incorrectly owned records.
 
+Initialization and append check each journal/member/host directory before creating descendants. Scans reject symbolic links and non-regular shards; file opens use `O_NOFOLLOW` and verify the opened descriptor is a regular file. A local alias to the store root remains supported. These guards and the store lock contain synchronized Git content; they do not provide atomic ancestor protection against an unrelated local process renaming directories during an operation.
+
 Integration idempotency is keyed by `(provider, external_id)` under the same lock. Replays compare canonical producer content using the first import's local provenance and timestamp. Changed content under the same delivery key is rejected. `at` records local ingestion/signing time; `integration.observed_at` retains the producer's historical timestamp. This permits signed backfills after key initialization or rotation.
 
 ## Query snapshots and index
@@ -27,6 +29,8 @@ Query pages have bounded record counts and character budgets with pagination. Re
 `muninn.remote` in the journal repository's **local** Git configuration is transport approval. Reads disable config includes. Only an explicit `project remote` or `project join` action creates or changes it. A blank or absent value means local-only; neither `project.json.remote` nor an ambient `origin` bootstraps approval. Existing installations must explicitly approve their destination after upgrading.
 
 While holding the store lock, sync commits canonical local files, reads local approval, configures the fetch origin, fetches, checks project identity and writer ownership, rebases, checks local prospective signature policy and pushes without force. Push addresses the approved URL directly, so a distinct `origin.pushurl` cannot override it. Shared manifest URLs remain descriptive metadata. Compatible manifest additions union-merge; unsupported conflicts abort the rebase. A transient network error leaves the local commit intact.
+
+Join and sync share the same tracked-file policy: only canonical data paths with Git mode `100644` are accepted. Sync checks its local index, the fetched tree before checkout, and the resulting index after rebase, including fetch-only runs. A rejected remote tree leaves the local checkout intact. Checking Git modes also rejects links on filesystems where Git materializes symlinks as ordinary files. Both the CLI and `/muninn` status display the locally approved destination.
 
 ## Verification and temporal authority
 

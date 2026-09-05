@@ -36,6 +36,7 @@ import {
 	parseProjectManifest,
 	readProjectManifest,
 } from "../store/project-manifest.ts";
+import { validateTrackedJournalFiles } from "../store/tracked-files.ts";
 import { readAuthorizedRemote } from "./remote.ts";
 
 /** The Git remote name Muninn keeps pointed at the locally approved destination. */
@@ -129,6 +130,7 @@ async function transaction(options: SyncOptions, result: SyncResult): Promise<Sy
 		});
 		result.committed = committed.committed;
 		result.notes.push(committed.committed ? "committed pending journal entries" : `commit: ${committed.reason}`);
+		await validateTrackedJournalFiles(options.storePath);
 		const localProblem = validateWriterOwnership(options.storePath);
 		if (localProblem) return stop(result, "commit", localProblem);
 
@@ -171,11 +173,13 @@ async function transaction(options: SyncOptions, result: SyncResult): Promise<Sy
 		// --- rebase --------------------------------------------------------
 		const remoteRef = `${REMOTE_NAME}/${branch}`;
 		if (await refExists(options.storePath, remoteRef)) {
+			result.stoppedAt = "rebase";
 			// Whose store is that? A mistyped remote is otherwise resolved by
 			// rebasing one store's history onto another's and pushing the result:
 			// two unrelated memories, merged, on a remote neither of them owns.
 			const mismatch = await storeMismatch(options.storePath, remoteRef);
 			if (mismatch) return stop(result, "rebase", mismatch);
+			await validateTrackedJournalFiles(options.storePath, remoteRef);
 			if (options.signal?.aborted) return stop(result, "rebase", "sync ran out of time before rebasing");
 			result.stoppedAt = "rebase";
 			const rebased = await rebaseOnto(options.storePath, remoteRef, result, options.identity);
@@ -183,6 +187,7 @@ async function transaction(options: SyncOptions, result: SyncResult): Promise<Sy
 		} else {
 			result.notes.push(`${remoteRef} does not exist yet — this is the first push`);
 		}
+		await validateTrackedJournalFiles(options.storePath);
 		const synchronizedProblem = validateWriterOwnership(options.storePath);
 		if (synchronizedProblem) return stop(result, "rebase", synchronizedProblem);
 		if (options.agentDir) {
@@ -235,7 +240,9 @@ export function validateWriterOwnership(storePath: string): string | undefined {
 	}
 	if (!manifest) return "project.json is missing";
 	const scan = scanJournal(storePath);
-	const fatal = scan.problems.find((problem) => problem.kind === "collision" || problem.kind === "ownership");
+	const fatal = scan.problems.find(
+		(problem) => problem.kind === "collision" || problem.kind === "ownership" || problem.kind === "unsafe-path",
+	);
 	if (fatal) return `journal ${fatal.kind} at ${fatal.path}:${fatal.line ?? "?"}: ${fatal.message}`;
 	const ownership = new Map(manifest.hosts.map((host) => [host.id, host.member]));
 	for (const item of scan.records) {
