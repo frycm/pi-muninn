@@ -705,12 +705,13 @@ function rankRecords(
 ): Ranked[] {
 	const eligible = new Map(filtered.map((record) => [record.id, record]));
 	const base = new Map<string, Ranked>();
+	const newest = all.reduce((value, record) => Math.max(value, Date.parse(record.at)), 0);
 	for (const record of lexicalCandidates) {
 		const lexical = lexicalEvidence(record, query);
 		if (query !== "" && lexical.score <= 0) continue;
 		const relation = query === "" ? correctionRank(record, projection) : 0;
 		const git = gitEvidence(record, currentGit);
-		const recency = roundScore(recencyScore(record, all));
+		const recency = roundScore(recencyScore(record, newest));
 		const components = {
 			lexical: roundScore(lexical.score),
 			relation: roundScore(relation),
@@ -908,8 +909,7 @@ function componentTotal(components: JournalScoreExplanation["components"]): numb
 	return roundScore(components.lexical + components.relation + components.git + components.recency);
 }
 
-function recencyScore(record: JournalRecord, all: readonly JournalRecord[]): number {
-	const newest = all.reduce((value, candidate) => Math.max(value, Date.parse(candidate.at)), 0);
+function recencyScore(record: JournalRecord, newest: number): number {
 	const days = Math.max(0, newest - Date.parse(record.at)) / 86_400_000;
 	return Math.max(0, 5 - days / 30);
 }

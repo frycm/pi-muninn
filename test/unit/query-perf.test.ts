@@ -55,10 +55,15 @@ describe("journal performance budgets", () => {
 			expect(service.query({ query: queries[attempt % queries.length] as string, limit: 5 }).records).toHaveLength(1);
 		}
 		const queryMs = performance.now() - queryAt;
+		const browseAt = performance.now();
+		expect(service.query({ limit: 5 }).records).toHaveLength(5);
+		const browseMs = performance.now() - browseAt;
+		console.info(JSON.stringify({ benchmark: "unsigned-50000", openMs, query50Ms: queryMs, browseMs }));
 
 		expect(service.size).toBe(50_000);
 		expect(openMs).toBeLessThan(20_000);
 		expect(queryMs).toBeLessThan(3_000);
+		expect(browseMs).toBeLessThan(3_000);
 	}, 30_000);
 });
 

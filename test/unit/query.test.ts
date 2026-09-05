@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { newHostId, newMemberId, newProjectId } from "../../src/ids.ts";
 import { appendJournalRecord } from "../../src/journal/jsonl.ts";
 import { type JournalQuery, JournalQueryError, JournalQueryService } from "../../src/journal/query.ts";
-import { journalIndexPath } from "../../src/journal/query-index.ts";
+import { JournalLexicalIndex, journalIndexPath } from "../../src/journal/query-index.ts";
 import type { JournalRecord, NewJournalRecord } from "../../src/journal/record.ts";
 
 let store: string;
@@ -373,6 +373,24 @@ describe("canonical journal query", () => {
 });
 
 describe("scan/index equivalence", () => {
+	it("narrows common n-grams before record scoring without losing fuzzy, infix or prefix matches", async () => {
+		const needle = await append(
+			{ type: "note", source: "user", channel: "cli", body: "needle-zebra marker" },
+			"2026-09-05T10:00:00.000Z",
+		);
+		const distraction = await append(
+			{ type: "note", source: "user", channel: "cli", body: "deployment ordinary" },
+			"2026-09-05T10:00:00.000Z",
+		);
+		const { index } = JournalLexicalIndex.open(store, [...records, needle, distraction]);
+		for (const query of ["needle-zebrb", "needle-zeb", "zebra", "needle-zebra", needle.id]) {
+			expect([...index.candidates(query)]).toEqual([needle.id]);
+			expect(service("index").query({ query, explain: true }).records).toEqual(
+				service("scan").query({ query, explain: true }).records,
+			);
+		}
+	});
+
 	it("returns identical records, scores, and explanations for every query fixture", () => {
 		const scan = service("scan");
 		const indexed = service("index");

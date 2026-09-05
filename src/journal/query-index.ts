@@ -194,11 +194,17 @@ function addCandidates(found: Set<string>, candidates: ReadonlySet<string> | und
 
 function addTermCandidates(
 	found: Set<string>,
+	queryTerm: string,
 	terms: ReadonlySet<string> | undefined,
 	exactPostings: ReadonlyMap<string, ReadonlySet<string>>,
 ): void {
 	if (!terms) return;
-	for (const term of terms) addCandidates(found, exactPostings.get(term));
+	for (const term of terms) {
+		// N-grams only narrow the vocabulary. Check the term before expanding
+		// its postings, otherwise common fragments send entire journals to the
+		// scorer. Infixes remain eligible for the scorer's phrase matching.
+		if (term.includes(queryTerm) || journalTokenMatch(queryTerm, term)) addCandidates(found, exactPostings.get(term));
+	}
 }
 
 export class JournalLexicalIndex {
@@ -317,12 +323,12 @@ export class JournalLexicalIndex {
 			// fall back to the canonical scorer instead of growing an unbounded index.
 			if (points.length < 3 || points.length > MAX_OPTIMIZED_TOKEN_POINTS) return new Set(this.records.keys());
 			addCandidates(found, this.exactPostings.get(queryTerm));
-			addTermCandidates(found, this.trigramTerms.get(points.slice(0, 3).join("")), this.exactPostings);
+			addTermCandidates(found, queryTerm, this.trigramTerms.get(points.slice(0, 3).join("")), this.exactPostings);
 			if (points.length < 5) continue;
 			// Any insertion, deletion, or substitution in a token of at least five
 			// code points leaves at least one adjacent code-point pair unchanged.
 			for (const bigram of ngrams(points, 2))
-				addTermCandidates(found, this.bigramTerms.get(bigram), this.exactPostings);
+				addTermCandidates(found, queryTerm, this.bigramTerms.get(bigram), this.exactPostings);
 		}
 		return found;
 	}

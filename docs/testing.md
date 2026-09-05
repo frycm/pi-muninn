@@ -56,13 +56,14 @@ For evaluation on a real project, create a JSONL file of judgments using stable 
 | --- | ---: |
 | Open/index 50,000 unsigned records | <20 s |
 | 50 selective queries over those records | <3 s |
+| Unfiltered browsing over those records | <3 s |
 | Cold open and first verified query over 10,000 signed records with annotations | <15 s |
 | 50 warm verified queries over signed records | <3 s |
 | Append, refresh and verified retrieval over signed history | <15 s |
 
 Run `npm run test:perf` to measure these budgets separately. CI runs this file after the other tests, so concurrent Git repositories and pi processes do not compete with timed queries. The same limits apply on Linux and macOS.
 
-A Linux Node 24 run measured approximately 1.46 s cold, 1.74 s for 50 warm queries and 1.50 s for append/refresh on the signed fixture. These are representative measurements from the test environment, not user latency guarantees. Tests run with generous cold-operation limits; full scans remain proportional to history size.
+A Linux Node 24 run measured approximately 1.42 s cold, 0.13 s for 50 warm queries and 1.44 s for append/refresh on the signed fixture. These are representative measurements from the test environment, not user latency guarantees. Tests run with generous cold-operation limits; full scans remain proportional to history size.
 
 Records are limited to 64 KiB after serialization. Query/read responses honor a character budget, including relations, warnings and transcript metadata. The default CLI/service budget is 128 KiB; extension search/read uses 16,000 characters. `journal_context` defaults to 12,000 characters and accepts an explicit bounded limit.
 
@@ -72,7 +73,7 @@ The suite exercises local-only and approved sync, clean and diverged shared meta
 
 Signing fault tests cover failed commits, private installation, recovery trust pinning and final cleanup. Pending-state tests reject corrupt key material, missing or unsupported fields, wrong operation/project/store/member scopes, unsafe permissions and symlinks while preserving recovery bytes.
 
-The independent security review is followed by focused reproductions and the full suite. All 460 tests pass on the reviewed Linux runtime matrix, including the real age test. Linux runtime results are validated locally; the macOS jobs run in CI and are not claimed as local executions.
+The independent security review is followed by focused reproductions and the full suite. All 461 tests pass on the reviewed Linux runtime matrix, including the real age test. Linux runtime results are validated locally; the macOS jobs run in CI and are not claimed as local executions.
 
 ## Validated security repairs
 
@@ -85,4 +86,4 @@ The reviewed security findings are fixed in the shared service boundaries. The i
 | Public successor/revocation → failed commit → lost private key | `src/governance/transaction.ts` durably prepares scoped private material; `operations.ts` resumes publication and installation under a shared identity lock. | `test/unit/governance-operations.test.ts` injects commit, private installation, trust pinning and cleanup failures, verifies the same key/event is resumed, and races rotations across two projects. `governance-transaction.test.ts` verifies private state validation and preservation. Recovery and ordinary rotation still pass. |
 | Failed trust refresh → subsequent read → stale verified evidence | `src/journal/query.ts` publishes the new snapshot and fingerprint only after complete validation. | `test/unit/governance-verification.test.ts` checks repeated search/read/lookup/conflict calls against invalid trust state in both scan and index modes, then verifies recovery after repair and distrust. |
 
-Verification gates: strict typecheck/lint and build passed; focused malicious and legitimate controls passed; the complete 46-suite/460-test matrix passed on Linux with Node 22.19.0, Node 24.18.0 and Bun 1.4.2. `npm run test:package` passed on both Node versions. `npm audit --omit=dev` reported no production dependency advisories. macOS execution is configured in CI but was not available for local execution. Timestamp backdating and complete-history detection retain the limits documented in [security](security.md).
+Verification gates: strict typecheck/lint and build passed; focused malicious and legitimate controls passed; the complete 46-suite/461-test matrix passed on Linux with Node 22.19.0, Node 24.18.0 and Bun 1.4.2. `npm run test:package` passed on both Node versions. `npm audit --omit=dev` reported no production dependency advisories. macOS execution is configured in CI but was not available for local execution. Timestamp backdating and complete-history detection retain the limits documented in [security](security.md).
