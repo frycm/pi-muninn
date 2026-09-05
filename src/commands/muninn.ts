@@ -33,7 +33,7 @@ export interface CommandRuntime {
 	appendRelation(target: string, text: string, relation: JournalRelationType): Promise<AppendJournalResult>;
 	reindex(): Promise<number>;
 	sync(options: { noPush?: boolean }): Promise<Array<{ scope: "project"; result: SyncResult }>>;
-	statusReport(session: SessionContext): string;
+	statusReport(session: SessionContext): string | Promise<string>;
 	teamReport(session: SessionContext): string;
 }
 
@@ -99,7 +99,7 @@ export async function runMuninnCommand(args: string, runtime: CommandRuntime): P
 async function status(runtime: CommandRuntime): Promise<CommandOutput> {
 	const session = await runtime.load({ createStores: true });
 	await runtime.settle();
-	return { level: "info", text: runtime.statusReport(session) };
+	return { level: "info", text: await runtime.statusReport(session) };
 }
 
 async function project(args: string, runtime: CommandRuntime): Promise<CommandOutput> {

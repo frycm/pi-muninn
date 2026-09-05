@@ -1,13 +1,24 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resetCommitDebounce } from "../../src/capture/commit.ts";
 import { setVerificationPolicy } from "../../src/governance/trust.ts";
 import { newHostId, newMemberId, newProjectId } from "../../src/ids.ts";
-import { appendJournalRecord } from "../../src/journal/jsonl.ts";
+import { appendJournalRecord, listJournalShards } from "../../src/journal/jsonl.ts";
 import { JournalQueryService } from "../../src/journal/query.ts";
 import { appendAuthorizedJournalRecord } from "../../src/journal/writer.ts";
 import type { MemberIdentity } from "../../src/project/registry.ts";
@@ -267,6 +278,101 @@ describe("project journal sync", () => {
 		mkdirSync(plain);
 		const invalid = await sync({ storePath: plain, hostId: hostOne.id, hostName: hostOne.name });
 		expect(invalid.problem).toContain("not a git repository");
+	});
+});
+
+describe("synchronized filesystem boundary", () => {
+	it.each([
+		{ path: "shard", existing: false, diverged: false, symlinks: true },
+		{ path: "shard", existing: true, diverged: false, symlinks: true },
+		{ path: "shard", existing: false, diverged: true, symlinks: true },
+		{ path: "shard", existing: true, diverged: true, symlinks: false },
+		{ path: "journal", existing: true, diverged: false, symlinks: true },
+		{ path: "member", existing: true, diverged: true, symlinks: true },
+		{ path: "host", existing: true, diverged: false, symlinks: true },
+	])("rejects remote links before checkout ($path, existing=$existing, diverged=$diverged, symlinks=$symlinks)", async (variant) => {
+		await seed();
+		const shard = relative(one, listJournalShards(one)[0]?.path as string);
+		await git(root, ["clone", "--quiet", remote, two]);
+		const path =
+			variant.path === "shard"
+				? shard
+				: join(
+						"journal",
+						...(variant.path === "member" ? [memberOne.id] : variant.path === "host" ? [memberOne.id, hostOne.id] : []),
+					);
+		const outside = join(root, "outside");
+		if (variant.existing) {
+			if (variant.path === "shard") writeFileSync(outside, "external sentinel\n");
+			else mkdirSync(outside);
+		}
+		rmSync(join(two, path), { recursive: true });
+		symlinkSync(outside, join(two, path), variant.path === "shard" ? "file" : "dir");
+		await git(two, ["add", "-A"]);
+		await git(two, [
+			"-c",
+			"user.name=Peer",
+			"-c",
+			"user.email=peer@example.test",
+			"commit",
+			"--quiet",
+			"-m",
+			"unsafe shard",
+		]);
+		await git(two, ["push", "--quiet", "origin", "main"]);
+		if (variant.diverged) {
+			await note(one, hostOne, memberOne, "local unpushed history");
+			await git(one, ["commit", "--quiet", "-am", "local history"]);
+		}
+		await git(one, ["config", "core.symlinks", String(variant.symlinks)]);
+		const before = await git(one, ["rev-parse", "HEAD"]);
+		const result = await sync({ storePath: one, hostId: hostOne.id, hostName: hostOne.name, noPush: variant.diverged });
+		expect(result).toMatchObject({ stoppedAt: "rebase", fetched: true, rebased: false, pushed: false });
+		expect(result.problem).toContain("not a regular data file");
+		expect(await git(one, ["rev-parse", "HEAD"])).toBe(before);
+		expect(lstatSync(join(one, shard)).isFile()).toBe(true);
+		await expect(note(one, hostOne, memberOne, "still safe to append")).resolves.toMatch(/^j-/);
+		if (!variant.existing) expect(existsSync(outside)).toBe(false);
+		else if (variant.path === "shard") expect(readFileSync(outside, "utf-8")).toBe("external sentinel\n");
+		else expect(readdirSync(outside)).toEqual([]);
+	});
+
+	it("rejects an already tracked link even when Git materializes it as a regular file", async () => {
+		await seed();
+		const shard = listJournalShards(one)[0]?.path as string;
+		const outside = join(root, "outside");
+		rmSync(shard);
+		symlinkSync(outside, shard);
+		await git(one, ["add", "-A"]);
+		await git(one, ["commit", "--quiet", "-m", "unsafe local state"]);
+		await git(one, ["config", "core.symlinks", "false"]);
+		rmSync(shard);
+		await git(one, ["checkout", "--", relative(one, shard)]);
+		expect(lstatSync(shard).isFile()).toBe(true);
+		const result = await synchronize(one, hostOne);
+		expect(result).toMatchObject({ stoppedAt: "commit", fetched: false, pushed: false });
+		expect(result.problem).toContain("not a regular data file");
+		expect(existsSync(outside)).toBe(false);
+	});
+
+	it("rejects executable data files from a peer", async () => {
+		await seed();
+		await git(root, ["clone", "--quiet", remote, two]);
+		chmodSync(join(two, "project.json"), 0o755);
+		await git(two, [
+			"-c",
+			"user.name=Peer",
+			"-c",
+			"user.email=peer@example.test",
+			"commit",
+			"--quiet",
+			"-am",
+			"executable manifest",
+		]);
+		await git(two, ["push", "--quiet", "origin", "main"]);
+		const result = await synchronize(one, hostOne);
+		expect(result).toMatchObject({ stoppedAt: "rebase", rebased: false, pushed: false });
+		expect(result.problem).toContain("not a regular data file");
 	});
 });
 

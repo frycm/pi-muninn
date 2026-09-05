@@ -20,6 +20,13 @@ describe("toArgv — the allow-list is the promise", () => {
 			".",
 		]);
 		expect(toArgv({ kind: "ls-files-stage" })).toEqual(["ls-files", "--stage", "-z"]);
+		expect(toArgv({ kind: "ls-tree", ref: "origin/main" })).toEqual([
+			"ls-tree",
+			"--full-tree",
+			"-r",
+			"-z",
+			"origin/main",
+		]);
 		// The branch is pinned by a symbolic-ref on the unborn HEAD — works on any
 		// git, where `--initial-branch` needs ≥ 2.28 — so two machines with
 		// different defaults never create stores on different branches.
@@ -64,6 +71,7 @@ describe("toArgv — the allow-list is the promise", () => {
 
 	it("refuses a path that could be read as a flag", () => {
 		expect(() => toArgv({ kind: "add", paths: ["--all"] })).toThrow(/outside the store/);
+		expect(() => toArgv({ kind: "ls-tree", ref: "--help" })).toThrow(/ref/);
 	});
 
 	it("refuses executable Git transport helpers during clone", () => {

@@ -47,8 +47,10 @@ export type GitCommand =
 			target: "--show-toplevel" | "--git-common-dir" | "--is-inside-work-tree" | "HEAD";
 	  }
 	| { kind: "log-count" }
-	/** NUL-delimited mode/object/stage/path rows for validating an untrusted clone. */
+	/** NUL-delimited mode/object/stage/path rows for validating the journal index. */
 	| { kind: "ls-files-stage" }
+	/** Inspect a fetched tree before checking out its paths. */
+	| { kind: "ls-tree"; ref: string }
 	/** The branch HEAD points at — works on an unborn branch, fails when detached. */
 	| { kind: "current-branch" }
 	/** Point an unborn HEAD at a branch: `git init` on any git version, without `--initial-branch`. */
@@ -183,6 +185,9 @@ export function toArgv(command: GitCommand): string[] {
 			return ["rev-list", "--count", "HEAD"];
 		case "ls-files-stage":
 			return ["ls-files", "--stage", "-z"];
+		case "ls-tree":
+			assertName("ref", command.ref);
+			return ["ls-tree", "--full-tree", "-r", "-z", command.ref];
 		case "current-branch":
 			return ["symbolic-ref", "--short", "HEAD"];
 		case "set-head":

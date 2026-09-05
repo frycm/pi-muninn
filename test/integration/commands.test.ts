@@ -9,6 +9,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { scanJournal } from "../../src/journal/jsonl.ts";
 import { readProjectRegistry } from "../../src/project/registry.ts";
 import { projectStorePath } from "../../src/store/paths.ts";
+import { setProjectRemote } from "../../src/store/project-manifest.ts";
+import { authorizeJournalRemote } from "../../src/sync/remote.ts";
 import { type MockProvider, startMockProvider } from "../fixtures/mock-provider.ts";
 
 const execFileAsync = promisify(execFile);
@@ -95,6 +97,23 @@ describe("/muninn through pi", () => {
 		expect(stderr).toContain('unknown subcommand "frobnicate"');
 		expect(stderr).toContain("/muninn correct ID TEXT");
 		expect(stderr).not.toContain("/muninn promote");
+	}, 60_000);
+
+	it("reports local transport approval even when shared metadata advertises another URL", async () => {
+		await pi("/muninn");
+		const approved = join(home, "approved.git");
+		await git(home, ["init", "--bare", "--quiet", "--initial-branch=main", approved]);
+		setProjectRemote(store(), "https://example.test/advertised.git");
+		try {
+			const local = await pi("/muninn");
+			expect(local.stderr).toMatch(/^sync\s+no project journal remote configured$/m);
+			await authorizeJournalRemote(store(), approved);
+			const configured = await pi("/muninn status");
+			expect(configured.stderr.split("\n").find((line) => /^sync\s/.test(line))).toBe(`sync      ${approved}`);
+		} finally {
+			await authorizeJournalRemote(store(), null);
+			setProjectRemote(store(), null);
+		}
 	}, 60_000);
 
 	it("appends and searches direct-user JSONL in the same session", async () => {

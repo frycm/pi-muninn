@@ -2,6 +2,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type GitIdentity, git, gitToplevel } from "../git.ts";
+import { ensureJournalDirectory } from "../journal/files.ts";
 import type { MemberIdentity } from "../project/registry.ts";
 import type { ResolvedProject } from "../project/resolver.ts";
 import type { HostIdentity } from "./host.ts";
@@ -100,7 +101,7 @@ export async function ensureStore(storePath: string, options: EnsureProjectStore
 				if (existsSync(join(storePath, name))) staged.add(name);
 			}
 		}
-		mkdirSync(join(storePath, "journal", options.project.member.id, options.host.id), { recursive: true });
+		ensureJournalDirectory(storePath, options.project.member.id, options.host.id);
 
 		if (staged.size > 0) {
 			const paths = [...staged];

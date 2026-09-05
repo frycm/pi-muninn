@@ -4,18 +4,18 @@ import {
 	existsSync,
 	fstatSync,
 	fsyncSync,
-	mkdirSync,
+	lstatSync,
 	openSync,
 	readdirSync,
 	readFileSync,
 	readSync,
-	statSync,
 	writeSync,
 } from "node:fs";
 import { join, relative } from "node:path";
 import type { SigningMaterial } from "../governance/keys.ts";
 import { isHostId, isMemberId } from "../ids.ts";
 import { withStoreLock } from "../store/lock.ts";
+import { ensureJournalDirectory, journalDirectoryExists, openJournalFile, UnsafeJournalPathError } from "./files.ts";
 import {
 	buildJournalRecord,
 	type JournalRecord,
@@ -48,7 +48,15 @@ export interface AppendJournalResult {
 }
 
 export interface JournalScanProblem {
-	kind: "truncated" | "malformed" | "unsupported" | "oversize" | "unreadable" | "collision" | "ownership";
+	kind:
+		| "truncated"
+		| "malformed"
+		| "unsupported"
+		| "oversize"
+		| "unreadable"
+		| "collision"
+		| "ownership"
+		| "unsafe-path";
 	path: string;
 	line?: number;
 	message: string;
@@ -94,7 +102,10 @@ export function appendJournalRecordLocked(input: NewJournalRecord, options: Appe
 	options.validateRecord?.(record);
 	const line = serializeJournalRecord(record);
 	const path = journalShardPath(options.storePath, options.member, options.host, now);
-	const existing = scanJournal(options.storePath).records.find((candidate) => candidate.record.id === record.id);
+	const scan = scanJournal(options.storePath);
+	const unsafe = scan.problems.find((problem) => problem.kind === "unsafe-path");
+	if (unsafe) throw new UnsafeJournalPathError(unsafe.path);
+	const existing = scan.records.find((candidate) => candidate.record.id === record.id);
 	if (existing) {
 		if (serializeJournalRecord(existing.record) === line) {
 			return {
@@ -107,9 +118,8 @@ export function appendJournalRecordLocked(input: NewJournalRecord, options: Appe
 		}
 		throw new Error(`journal id collision: ${record.id} already has different bytes in ${existing.path}`);
 	}
-	const dir = join(options.storePath, "journal", options.member, options.host);
+	const dir = ensureJournalDirectory(options.storePath, options.member, options.host);
 	const created = !existsSync(path);
-	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	writeLine(path, line);
 	if (created) fsyncDirectory(dir);
 	return {
@@ -122,7 +132,7 @@ export function appendJournalRecordLocked(input: NewJournalRecord, options: Appe
 }
 
 function writeLine(path: string, line: string): void {
-	const fd = openSync(path, "a+", 0o600);
+	const fd = openJournalFile(path, true);
 	try {
 		const size = fstatSync(fd).size;
 		const prefix = size > 0 && !endsWithNewline(fd, size) ? "\n" : "";
@@ -160,54 +170,61 @@ interface JournalShard {
 	month: string;
 }
 
-export function listJournalShards(storePath: string): JournalShard[] {
+export function listJournalShards(storePath: string, problems: JournalScanProblem[] = []): JournalShard[] {
 	const shards: JournalShard[] = [];
 	const root = join(storePath, "journal");
-	for (const member of directories(root)) {
+	for (const member of directoryEntries(root, problems)) {
 		if (!isMemberId(member)) continue;
-		for (const host of directories(join(root, member))) {
+		for (const host of directoryEntries(join(root, member), problems)) {
 			if (!isHostId(host)) continue;
-			let files: string[];
-			try {
-				files = readdirSync(join(root, member, host)).sort();
-			} catch {
-				continue;
-			}
-			for (const file of files) {
+			for (const file of directoryEntries(join(root, member, host), problems)) {
 				const match = file.match(MONTH_FILE);
-				if (match) shards.push({ path: join(root, member, host, file), member, host, month: match[1] as string });
+				if (!match) continue;
+				const path = join(root, member, host, file);
+				try {
+					if (!lstatSync(path).isFile()) throw new UnsafeJournalPathError(path);
+					shards.push({ path, member, host, month: match[1] as string });
+				} catch (error) {
+					problems.push(scanFileProblem(path, error));
+				}
 			}
 		}
 	}
 	return shards;
 }
 
-function directories(path: string): string[] {
-	let names: string[];
+function directoryEntries(path: string, problems: JournalScanProblem[]): string[] {
 	try {
-		names = readdirSync(path).sort();
-	} catch {
+		return journalDirectoryExists(path) ? readdirSync(path).sort() : [];
+	} catch (error) {
+		problems.push(scanFileProblem(path, error));
 		return [];
 	}
-	return names.filter((name) => {
-		try {
-			return statSync(join(path, name)).isDirectory();
-		} catch {
-			return false;
-		}
-	});
+}
+
+function scanFileProblem(path: string, error: unknown): JournalScanProblem {
+	return {
+		kind: error instanceof UnsafeJournalPathError ? "unsafe-path" : "unreadable",
+		path,
+		message: describe(error),
+	};
 }
 
 export function scanJournal(storePath: string): ScanJournalResult {
 	const records: ScannedJournalRecord[] = [];
 	const problems: JournalScanProblem[] = [];
 	const ids = new Map<string, ScannedJournalRecord>();
-	for (const shard of listJournalShards(storePath)) {
+	for (const shard of listJournalShards(storePath, problems)) {
 		let bytes: Buffer;
 		try {
-			bytes = readFileSync(shard.path);
+			const fd = openJournalFile(shard.path);
+			try {
+				bytes = readFileSync(fd);
+			} finally {
+				closeSync(fd);
+			}
 		} catch (error) {
-			problems.push({ kind: "unreadable", path: shard.path, message: describe(error) });
+			problems.push(scanFileProblem(shard.path, error));
 			continue;
 		}
 		const terminated = bytes.length === 0 || bytes[bytes.length - 1] === 0x0a;

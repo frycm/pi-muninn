@@ -41,6 +41,7 @@ import { buildSessionContext, journalStats, type SessionContext } from "./sessio
 import { formatStatus, formatStatusLine, formatWarning } from "./status.ts";
 import { storeIdentity } from "./store/init.ts";
 import { readProjectManifest } from "./store/project-manifest.ts";
+import { readAuthorizedRemote } from "./sync/remote.ts";
 import { describeSync, type SyncResult, sync } from "./sync/sync.ts";
 import { locallyGovernedTeamRoster, renderTeamRoster } from "./team/lifecycle.ts";
 import { journalContextTool } from "./tools/journal-context.ts";
@@ -268,8 +269,8 @@ export default function (pi: ExtensionAPI): void {
 	 * The `/muninn` report, assembled from what only this file knows: versions,
 	 * counters, and the objects the session is holding open.
 	 */
-	const statusReport = (current: SessionContext): string => {
-		const remote = current.project ? (readProjectManifest(current.project.storePath)?.remote ?? null) : null;
+	const statusReport = async (current: SessionContext): Promise<string> => {
+		const remote = current.project ? ((await readAuthorizedRemote(current.project.storePath)) ?? null) : null;
 		return formatStatus({
 			muninnVersion: MUNINN_VERSION,
 			piVersion: PI_VERSION,
