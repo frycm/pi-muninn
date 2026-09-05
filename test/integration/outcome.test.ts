@@ -231,6 +231,8 @@ describe("compaction", () => {
 		// is a single turn with no tools — a question, not a task — and is
 		// rightly not an entry of its own.
 		const script: MockScript = (request) => {
+			if (request.raw.includes("<conversation>"))
+				return "Read README.md and diagnosed the CI watch-mode hang. Use pnpm test --run.";
 			if (request.isOutcomeCall) return OUTCOME_REPLY;
 			const calledTool = request.messages.some((message) => message.role === "tool" || message.role === "toolResult");
 			return calledTool
@@ -238,9 +240,12 @@ describe("compaction", () => {
 				: { toolCall: { name: "read", arguments: { path: "README.md" } } };
 		};
 		await setUp(script, COMPACT, 120_000);
-		await pi("Why does CI hang?");
+		const result = await pi("Why does CI hang?");
 
-		expect(compacted(), "pi never compacted, so this test proves nothing").toBe(true);
+		expect(
+			compacted(),
+			`pi never compacted, so this test proves nothing: ${result.stderr} ${result.stdout}; calls=${mock.requests.length}`,
+		).toBe(true);
 		const outcomes = records().filter((entry) => entry.source === "agent");
 		expect(outcomes).toHaveLength(1);
 	}, 90_000);

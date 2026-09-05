@@ -4,7 +4,7 @@ import { closeSync, lstatSync, openSync, readSync, realpathSync } from "node:fs"
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveAgentDir } from "./agent-dir.ts";
-import { commitJournal } from "./capture/commit.ts";
+import { commitJournalLocked } from "./capture/commit.ts";
 import { diagnoseProject, renderDoctor } from "./doctor.ts";
 import { publicSigningIdentity, readEnrolledSigningIdentity, readSigningIdentity } from "./governance/identity.ts";
 import { declareProjectKeyEvent, recoverProjectSigningKey, rotateProjectSigningKey } from "./governance/operations.ts";
@@ -60,8 +60,10 @@ import { joinProjectJournal, projectShare } from "./project/onboarding.ts";
 import { type ResolvedProject, resolveLogicalProject } from "./project/resolver.ts";
 import { type HostIdentity, loadHostIdentity } from "./store/host.ts";
 import { ensureStore, projectStoreIdentity, storeIdentity } from "./store/init.ts";
+import { withStoreLock } from "./store/lock.ts";
 import { storeExistsAt } from "./store/paths.ts";
 import { readProjectManifest, setProjectRemote } from "./store/project-manifest.ts";
+import { authorizeJournalRemote, readAuthorizedRemote } from "./sync/remote.ts";
 import { describeSync, sync } from "./sync/sync.ts";
 import { declareTeamEvent, locallyGovernedTeamRoster, renderTeamRoster } from "./team/lifecycle.ts";
 import { MUNINN_VERSION } from "./version.ts";
@@ -209,7 +211,7 @@ export async function runCli(
 			if (args[0] === "share") {
 				const parsed = parseProjectShareArgs(args.slice(1));
 				const context = await projectContext(parsed.path ? resolve(cwd, parsed.path) : cwd, false);
-				const shared = projectShare(context.project, readProjectManifest(context.project.storePath));
+				const shared = await projectShare(context.project, readProjectManifest(context.project.storePath));
 				return {
 					code: 0,
 					out: parsed.json
@@ -265,17 +267,22 @@ export async function runCli(
 				const before = readProjectManifest(context.project.storePath);
 				if (!before) throw new Error("muninn: project journal has no project.json");
 				if (values.length === 0) {
-					return { code: before.remote ? 0 : 1, out: [before.remote ?? "no project journal remote configured"], err };
+					const remote = await readAuthorizedRemote(context.project.storePath);
+					return { code: remote ? 0 : 1, out: [remote ?? "no project journal remote configured locally"], err };
 				}
 				const remote = values[0] === "--remove" ? null : (values[0] as string);
-				const manifest = setProjectRemote(context.project.storePath, remote);
-				await commitJournal({
-					storePath: context.project.storePath,
-					hostId: context.host.id,
-					hostName: context.host.name,
-					entries: 0,
-					force: true,
-					identity: storeIdentity(context.host),
+				const manifest = await withStoreLock(context.project.storePath, "sync", { host: context.host.id }, async () => {
+					const manifest = setProjectRemote(context.project.storePath, remote);
+					await authorizeJournalRemote(context.project.storePath, remote);
+					await commitJournalLocked({
+						storePath: context.project.storePath,
+						hostId: context.host.id,
+						hostName: context.host.name,
+						entries: 0,
+						force: true,
+						identity: storeIdentity(context.host),
+					});
+					return manifest;
 				});
 				return {
 					code: 0,
@@ -777,6 +784,7 @@ export async function runCli(
 			const context = await projectContext(cwd, false);
 			const scanned = scanJournal(context.project.storePath);
 			const manifest = readProjectManifest(context.project.storePath);
+			const remote = await readAuthorizedRemote(context.project.storePath);
 			const result = {
 				schema: 1,
 				kind: "status",
@@ -785,7 +793,8 @@ export async function runCli(
 					name: context.project.name,
 					store: context.project.storePath,
 					member: context.project.member,
-					remote: manifest?.remote ?? null,
+					remote,
+					advertised_remote: manifest?.remote ?? null,
 					members: manifest?.members ?? [],
 					hosts: manifest?.hosts ?? [],
 				},
@@ -800,7 +809,7 @@ export async function runCli(
 							`${context.project.name} · ${context.project.id}`,
 							`store: ${context.project.storePath}`,
 							`member: ${context.project.member.name} · ${context.project.member.id}`,
-							`remote: ${manifest?.remote ?? "none"}`,
+							`remote: ${remote ?? "none (not approved locally)"}`,
 							`team: ${manifest?.members.length ?? 0} member(s) · ${manifest?.hosts.length ?? 0} host(s)`,
 							`records: ${result.records} · problems: ${result.problems.length}`,
 						],
@@ -815,7 +824,6 @@ export async function runCli(
 				agentDir: context.agentDir,
 				hostId: context.host.id,
 				hostName: context.host.name,
-				remote: readProjectManifest(context.project.storePath)?.remote ?? null,
 				identity: storeIdentity(context.host),
 				...(flags.has("no-push") ? { noPush: true } : {}),
 			});

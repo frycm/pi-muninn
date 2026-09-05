@@ -24,6 +24,7 @@ import { ensureStore } from "../store/init.ts";
 import { withStoreLock } from "../store/lock.ts";
 import { projectStorePath, projectsRootPath } from "../store/paths.ts";
 import { type ProjectManifest, readProjectManifest, setProjectRemote } from "../store/project-manifest.ts";
+import { authorizeJournalRemote, readAuthorizedRemote } from "../sync/remote.ts";
 import { createProjectRegistry, type ProjectRegistry, parseProjectRegistry, readProjectRegistry } from "./registry.ts";
 import { linkLogicalProject, type ResolvedProject } from "./resolver.ts";
 
@@ -45,14 +46,17 @@ export interface ProjectShare {
 	remote: string;
 }
 
-export function projectShare(project: ResolvedProject, manifest: ProjectManifest | undefined): ProjectShare {
+export async function projectShare(
+	project: ResolvedProject,
+	manifest: ProjectManifest | undefined,
+): Promise<ProjectShare> {
 	if (!manifest) throw new Error(`muninn: project journal has no project.json at ${project.storePath}`);
 	if (manifest.project !== project.id) {
 		throw new Error(`muninn: project registry names ${project.id}, but the journal manifest names ${manifest.project}`);
 	}
-	if (!manifest.remote)
-		throw new Error("muninn: no project journal remote configured; run `muninn project remote URL`");
-	return { schema: 1, project: project.id, name: manifest.name, remote: manifest.remote };
+	const remote = await readAuthorizedRemote(project.storePath);
+	if (!remote) throw new Error("muninn: no project journal remote configured; run `muninn project remote URL`");
+	return { schema: 1, project: project.id, name: manifest.name, remote };
 }
 
 export interface JoinProjectOptions {
@@ -138,6 +142,9 @@ export async function joinProjectJournal(options: JoinProjectOptions): Promise<J
 				storeCreated = true;
 			}
 
+			await withStoreLock(destination, "onboarding", { host: options.host.id }, () =>
+				authorizeJournalRemote(destination, options.remote),
+			);
 			const project = await linkLogicalProject({
 				agentDir: options.agentDir,
 				cwd: options.cwd,

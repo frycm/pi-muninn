@@ -7,49 +7,54 @@ on:
 
 jobs:
   check:
-    name: Typecheck and lint
+    name: Typecheck, lint and build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.19.0
           cache: npm
-      - run: npm ci
-      - run: npx tsc --noEmit
-      - run: npx biome ci src test
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+      - run: npm run build
 
   test-node:
-    name: Tests (node, ${{ matrix.os }})
+    name: Tests and package (Node ${{ matrix.node }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest]
+        node: [22.19.0, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           cache: npm
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes age
-      - run: npm ci
+      - if: runner.os == 'macOS'
+        run: brew install age
+      - run: npm ci --ignore-scripts
+      - run: age --version && age-keygen --version
       - run: npm test
+      - run: npm run test:package
 
   test-bun:
-    name: Tests (bun)
+    name: Tests (Bun 1.4.2)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.19.0
           cache: npm
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
-      - run: npm ci
-      # Vitest runs under bun so the same suite proves the modules load on the
-      # runtime pi supports besides node. Tier 0 must stay native-free.
-      - run: bun run vitest --run
+          bun-version: 1.4.2
+      - run: sudo apt-get update && sudo apt-get install --yes age
+      - run: npm ci --ignore-scripts
+      - run: age --version && age-keygen --version
+      - run: bun --bun run vitest --run

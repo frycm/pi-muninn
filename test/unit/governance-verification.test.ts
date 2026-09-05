@@ -6,6 +6,7 @@ import { generateSigningIdentity, initializeSigningIdentity } from "../../src/go
 import { createSigningKeyDescriptor, createSigningKeyEvent } from "../../src/governance/keys.ts";
 import { enrollProjectSigningKey } from "../../src/governance/registry.ts";
 import {
+	distrustProjectSigningKey,
 	formatProjectTrust,
 	parseProjectTrust,
 	pinProjectSigningKey,
@@ -287,5 +288,164 @@ describe("local trust and query interfaces", () => {
 			.query({ query: "same terms" })
 			.records.map((record) => [record.id, record.score]);
 		expect(trustedScores).toEqual(untrustedScores);
+		const trustPath = projectTrustPath(agentDir, project);
+		const validTrust = readFileSync(trustPath, "utf-8");
+		writeFileSync(trustPath, "{broken\n");
+		for (const reader of [scan, index]) {
+			for (let attempt = 0; attempt < 2; attempt++) {
+				expect(() => reader.query({ verification: ["verified"] })).toThrow(/trust.*invalid/);
+				expect(() => reader.read(signed.id)).toThrow(/trust.*invalid/);
+				expect(() => reader.has(signed.id)).toThrow(/trust.*invalid/);
+				expect(() => reader.conflictInbox()).toThrow(/trust.*invalid/);
+			}
+		}
+		writeFileSync(trustPath, validTrust);
+		await distrustProjectSigningKey({ agentDir, manifest: projectManifest, host: host.id, key: signing.id });
+		for (const reader of [scan, index]) {
+			expect(reader.query({ verification: ["verified"] }).records).toHaveLength(0);
+			expect(reader.read(signed.id)?.records[0]?.verification).toBe("untrusted");
+		}
 	});
+});
+
+describe("transition-time authority", () => {
+	it.each([
+		"key-revoked",
+		"key-compromised",
+	] as const)("refuses descendants of a %s predecessor and their governance", (kind) => {
+		const member = newMemberId(),
+			host = newHostId();
+		const first = generateSigningIdentity(member, new Date("2026-09-04T09:00:00.000Z"));
+		const recovery = generateSigningIdentity(member, new Date("2026-09-04T09:00:00.000Z"));
+		const successor = generateSigningIdentity(member, new Date("2026-09-04T11:00:00.000Z"));
+		const child = generateSigningIdentity(member, new Date("2026-09-04T12:00:00.000Z"));
+		let m = manifest(member, host);
+		for (const descriptor of [
+			createSigningKeyDescriptor(first),
+			createSigningKeyDescriptor(recovery),
+			createSigningKeyDescriptor(successor, first),
+			createSigningKeyDescriptor(child, successor),
+		])
+			m = withProjectSigningKey(m, descriptor);
+		const event = createSigningKeyEvent(
+			{
+				id: newKeyEventId(),
+				at: "2026-09-04T10:00:00.000Z",
+				kind,
+				member,
+				key: first.id,
+				actor_key: recovery.id,
+				effective_at: "2026-09-04T10:00:00.000Z",
+			},
+			recovery,
+		);
+		const forged = createSigningKeyEvent(
+			{
+				id: newKeyEventId(),
+				at: "2026-09-04T13:00:00.000Z",
+				kind: "key-revoked",
+				member,
+				key: recovery.id,
+				actor_key: child.id,
+				effective_at: "2026-09-04T13:00:00.000Z",
+			},
+			child,
+		);
+		m = parseProjectManifest(JSON.stringify({ ...m, key_events: [forged, event] }));
+		for (const history of ["retain", "reject"] as const) {
+			const projection = new VerificationProjection(m, trust(m.project, member, [first.id, recovery.id], history));
+			expect(projection.key(successor.id, successor.created_at)).toBe("untrusted");
+			expect(projection.key(child.id, child.created_at)).toBe("untrusted");
+			expect(projection.acceptedKeyEvents.map((e) => e.id)).toEqual([event.id]);
+			expect(projection.key(recovery.id, forged.at)).toBe("verified");
+			const record = buildJournalRecord(
+				{ type: "note", source: "user", channel: "cli", body: "unauthorized successor" },
+				{ project: m.project, member, host, signing: child, now: new Date(forged.at) },
+			);
+			expect(projection.record(record)).toBe("untrusted");
+		}
+		expect(
+			new VerificationProjection(m, trust(m.project, member, [successor.id])).key(child.id, child.created_at),
+		).toBe("verified");
+	});
+
+	it("invalidates a backdated transition discovered after rotation, but preserves earlier rotations", () => {
+		const member = newMemberId(),
+			host = newHostId();
+		const first = generateSigningIdentity(member, new Date("2026-09-04T09:00:00.000Z"));
+		const successor = generateSigningIdentity(member, new Date("2026-09-04T11:00:00.000Z"));
+		const recovery = generateSigningIdentity(member, new Date("2026-09-04T09:00:00.000Z"));
+		let m = manifest(member, host);
+		for (const d of [
+			createSigningKeyDescriptor(first),
+			createSigningKeyDescriptor(successor, first),
+			createSigningKeyDescriptor(recovery),
+		])
+			m = withProjectSigningKey(m, d);
+		for (const effective of ["10", "11", "12"]) {
+			const e = createSigningKeyEvent(
+				{
+					id: newKeyEventId(),
+					at: "2026-09-04T13:00:00.000Z",
+					kind: "key-compromised",
+					member,
+					key: first.id,
+					actor_key: recovery.id,
+					effective_at: `2026-09-04T${effective}:00:00.000Z`,
+				},
+				recovery,
+			);
+			const p = new VerificationProjection(
+				parseProjectManifest(JSON.stringify({ ...m, key_events: [e] })),
+				trust(m.project, member, [first.id, recovery.id], "reject"),
+			);
+			expect(p.key(successor.id, successor.created_at)).toBe(effective === "12" ? "verified" : "untrusted");
+		}
+	});
+});
+
+it("withdraws unrelated governance when a later declaration invalidates the actor transition", () => {
+	const member = newMemberId(),
+		host = newHostId();
+	const a = generateSigningIdentity(member, new Date("2026-09-04T09:00:00.000Z"));
+	const r = generateSigningIdentity(member, new Date("2026-09-04T09:00:00.000Z"));
+	const v = generateSigningIdentity(member, new Date("2026-09-04T09:00:00.000Z"));
+	const s = generateSigningIdentity(member, new Date("2026-09-04T11:00:00.000Z"));
+	let m = manifest(member, host);
+	for (const d of [
+		createSigningKeyDescriptor(a),
+		createSigningKeyDescriptor(r),
+		createSigningKeyDescriptor(v),
+		createSigningKeyDescriptor(s, a),
+	])
+		m = withProjectSigningKey(m, d);
+	const revoked = createSigningKeyEvent(
+		{
+			id: newKeyEventId(),
+			at: "2026-09-04T12:00:00.000Z",
+			kind: "key-revoked",
+			member,
+			key: v.id,
+			actor_key: s.id,
+			effective_at: "2026-09-04T12:00:00.000Z",
+		},
+		s,
+	);
+	const compromised = createSigningKeyEvent(
+		{
+			id: newKeyEventId(),
+			at: "2026-09-04T13:00:00.000Z",
+			kind: "key-compromised",
+			member,
+			key: a.id,
+			actor_key: r.id,
+			effective_at: "2026-09-04T10:00:00.000Z",
+		},
+		r,
+	);
+	m = parseProjectManifest(JSON.stringify({ ...m, key_events: [revoked, compromised] }));
+	const p = new VerificationProjection(m, trust(m.project, member, [a.id, r.id, v.id]));
+	expect(p.key(s.id, s.created_at)).toBe("untrusted");
+	expect(p.key(v.id, compromised.at)).toBe("verified");
+	expect(p.acceptedKeyEvents.map((e) => e.id)).toEqual([compromised.id]);
 });

@@ -94,7 +94,7 @@ export function parseSigningIdentity(text: string, path = "signing.json"): Local
 	}
 }
 
-function assertPrivateFile(path: string): void {
+export function assertPrivateFile(path: string): void {
 	const stat = lstatSync(path);
 	if (stat.isSymbolicLink() || !stat.isFile()) throw new SigningIdentityError(`${path} must be a regular file`);
 	const uid = process.getuid?.();

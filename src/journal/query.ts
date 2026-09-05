@@ -1,11 +1,14 @@
 /** Canonical journal scan, filters, relation-aware ranking and stable DTOs. */
 import { createHash } from "node:crypto";
+import { statSync } from "node:fs";
+import { join } from "node:path";
 import { readProjectTrust } from "../governance/trust.ts";
 import { VERIFICATION_STATES, VerificationProjection, type VerificationState } from "../governance/verification.ts";
 import { locateTranscript } from "../integrations/transcript.ts";
+import { trustRootPath } from "../store/paths.ts";
 import { readProjectManifest } from "../store/project-manifest.ts";
 import { lifecycleWarnings, projectTeamRoster } from "../team/lifecycle.ts";
-import { type JournalScanProblem, scanJournal } from "./jsonl.ts";
+import { type JournalScanProblem, listJournalShards, scanJournal } from "./jsonl.ts";
 import {
 	JournalLexicalIndex,
 	type JournalTokenMatchKind,
@@ -197,13 +200,19 @@ export class JournalQueryService {
 	private problems: JournalScanProblem[];
 	private projection: RelationProjection;
 	private index?: JournalLexicalIndex;
-	private readonly indexWarnings: string[];
+	private indexWarnings: string[];
 	private readonly mode: "scan" | "index";
 	private teamWarnings: string[];
 	private verification: VerificationProjection;
+	private fingerprint: string;
+	private project: string | undefined;
+	private readonly verificationStates = new Map<string, VerificationState>();
+	private cachedWarnings?: string[];
 
 	constructor(options: JournalQueryServiceOptions) {
 		this.options = options;
+		this.project = readProjectManifest(options.storePath)?.project;
+		this.fingerprint = sourceFingerprint(options, this.project);
 		const scan = scanJournal(options.storePath);
 		this.records = scan.records.map((item) => item.record);
 		this.problems = scan.problems;
@@ -221,16 +230,21 @@ export class JournalQueryService {
 	}
 
 	get size(): number {
+		this.ensureFresh();
 		return this.records.length;
 	}
 
 	has(id: string): boolean {
+		this.ensureFresh();
 		return this.projection.views.has(id);
 	}
 
 	/** Add a just-appended record without waiting for a filesystem rescan. */
 	add(record: JournalRecord): void {
+		this.ensureFresh();
+		record = structuredClone(record);
 		const at = this.records.findIndex((candidate) => candidate.id === record.id);
+		if (at >= 0 && JSON.stringify(this.records[at]) === JSON.stringify(record)) return;
 		if (at >= 0) this.records[at] = record;
 		else this.records.push(record);
 		this.records.sort(byTimeThenId);
@@ -238,23 +252,43 @@ export class JournalQueryService {
 		this.projection = projectRelations(this.records, this.options.localMember, lifecycle);
 		this.teamWarnings = lifecycle.warnings;
 		this.verification = loadVerification(this.options);
+		this.verificationStates.clear();
+		delete this.cachedWarnings;
 		this.index?.add(record);
 		this.index?.save(this.options.storePath);
 	}
 
 	refresh(forceReindex = false): void {
+		// Capture before reading: a concurrent append during the scan must cause
+		// another refresh, never certify an older snapshot as current.
+		const project = readProjectManifest(this.options.storePath)?.project;
+		const fingerprint = sourceFingerprint(this.options, project);
 		const scan = scanJournal(this.options.storePath);
-		this.records = scan.records.map((item) => item.record);
+		const records = scan.records.map((item) => item.record);
+		const lifecycle = loadLifecycle(this.options, records);
+		const projection = projectRelations(records, this.options.localMember, lifecycle);
+		const verification = loadVerification(this.options);
+		const opened =
+			this.mode === "index" ? JournalLexicalIndex.open(this.options.storePath, records, forceReindex) : undefined;
+		// Publish only a complete snapshot. In particular, a failed trust read
+		// must leave the fingerprint stale so every subsequent read retries.
+		this.project = project;
+		this.fingerprint = fingerprint;
+		this.records = records;
 		this.problems = scan.problems;
-		const lifecycle = loadLifecycle(this.options, this.records);
-		this.projection = projectRelations(this.records, this.options.localMember, lifecycle);
+		this.projection = projection;
 		this.teamWarnings = lifecycle.warnings;
-		this.verification = loadVerification(this.options);
-		if (this.mode === "index")
-			this.index = JournalLexicalIndex.open(this.options.storePath, this.records, forceReindex).index;
+		this.verification = verification;
+		this.verificationStates.clear();
+		delete this.cachedWarnings;
+		if (opened) {
+			this.index = opened.index;
+			this.indexWarnings = opened.warnings;
+		}
 	}
 
 	query(input: JournalQuery = {}): JournalQueryResult {
+		this.ensureFresh();
 		const query = normalizeQuery(input);
 		const limit = query.limit ?? DEFAULT_LIMIT;
 		if (input.cursor !== undefined && (typeof input.cursor !== "string" || input.cursor.length > 4096))
@@ -263,7 +297,7 @@ export class JournalQueryService {
 		const textual = query.query?.trim() ?? "";
 		const candidates = this.mode === "index" && textual !== "" ? this.index?.candidates(textual) : undefined;
 		const eligible = this.records.filter((record) =>
-			matchesFilters(record, query, this.projection, this.verification.record(record)),
+			matchesFilters(record, query, this.projection, this.recordVerification(record)),
 		);
 		const lexicalCandidates = candidates ? eligible.filter((record) => candidates.has(record.id)) : eligible;
 		const ranked = rankRecords(
@@ -293,7 +327,7 @@ export class JournalQueryService {
 				textual,
 				this.options.snippetChars ?? DEFAULT_SNIPPET_CHARS,
 				query.explain === true,
-				this.verification.record(candidate.record),
+				this.recordVerification(candidate.record),
 			);
 			const nextRecords = [...response.records, dto];
 			const nextConsumed = offset + nextRecords.length;
@@ -331,38 +365,58 @@ export class JournalQueryService {
 			response.warnings.push(warning);
 		}
 		if (response.warnings.length < warnings.length) response.truncated = true;
-		return response;
+		return structuredClone(response);
 	}
 
 	read(id: string, relationDepth = 0, limit = 50): JournalReadResult | undefined {
+		this.ensureFresh();
 		const neighborhood = relationNeighborhood(this.projection, id, { depth: relationDepth, limit });
 		if (!neighborhood) return undefined;
-		const records = neighborhood.records.map((view) => ({
-			...view.record,
-			verification: this.verification.record(view.record),
-		}));
-		return {
-			records,
-			transcripts: records.flatMap((record) => {
-				if (!record.session) return [];
-				const location = locateTranscript(record, this.options.transcriptRoots ?? [], this.options.agentDir);
-				return [
-					{
-						record: record.id,
-						file: record.session.file,
-						...location,
-						...(record.session.first ? { first: record.session.first } : {}),
-						...(record.session.last ? { last: record.session.last } : {}),
-					},
-				];
-			}),
-			warnings: this.warnings(),
+		const maxChars = Math.max(1024, this.options.maxChars ?? DEFAULT_MAX_CHARS);
+		const response: JournalReadResult = {
+			records: [],
+			transcripts: [],
+			warnings: [],
 			truncated: neighborhood.truncated,
 		};
+		const fits = (candidate: JournalReadResult) =>
+			JSON.stringify({ schema: 1, id, ...candidate, truncated: false }).length <= maxChars;
+		for (const view of neighborhood.records) {
+			const record = { ...view.record, verification: this.recordVerification(view.record) };
+			if (!fits({ ...response, records: [...response.records, record] })) {
+				response.truncated = true;
+				const warning = `record ${record.id} omitted: read character budget exceeded; use muninn show ${record.id} for the complete record`;
+				if (fits({ ...response, warnings: [...response.warnings, warning] })) response.warnings.push(warning);
+				continue;
+			}
+			response.records.push(record);
+			if (record.session) {
+				const location = locateTranscript(record, this.options.transcriptRoots ?? [], this.options.agentDir);
+				const transcript = {
+					record: record.id,
+					file: record.session.file,
+					...location,
+					...(record.session.first ? { first: record.session.first } : {}),
+					...(record.session.last ? { last: record.session.last } : {}),
+				};
+				if (fits({ ...response, transcripts: [...response.transcripts, transcript] }))
+					response.transcripts.push(transcript);
+				else response.truncated = true;
+			}
+		}
+		for (const warning of this.warnings()) {
+			if (!fits({ ...response, warnings: [...response.warnings, warning] })) {
+				response.truncated = true;
+				break;
+			}
+			response.warnings.push(warning);
+		}
+		return structuredClone(response);
 	}
 
 	/** The complete active conflict inbox, independently of search ranking or filters. */
 	conflictInbox(limit = 100): JournalConflictsResult {
+		this.ensureFresh();
 		if (!Number.isInteger(limit) || limit < 1 || limit > 100)
 			throw new JournalQueryError("conflict limit must be 1 to 100");
 		const conflicts: JournalConflict[] = [];
@@ -383,7 +437,7 @@ export class JournalQueryService {
 					"",
 					160,
 					false,
-					this.verification.record(target),
+					this.recordVerification(target),
 				),
 				branches: conflict.records.flatMap((id) => {
 					const record = this.projection.views.get(id)?.record;
@@ -395,7 +449,7 @@ export class JournalQueryService {
 									"",
 									160,
 									false,
-									this.verification.record(record),
+									this.recordVerification(record),
 								),
 							]
 						: [];
@@ -417,21 +471,54 @@ export class JournalQueryService {
 			warnings.push(warning);
 		}
 		if (sourceWarnings.length > warnings.length) truncated = true;
-		return { schema: 1, conflicts, warnings, truncated };
+		return structuredClone({ schema: 1, conflicts, warnings, truncated });
+	}
+
+	private ensureFresh(): void {
+		if (sourceFingerprint(this.options, this.project) !== this.fingerprint) this.refresh();
+	}
+
+	private recordVerification(record: JournalRecord): VerificationState {
+		let state = this.verificationStates.get(record.id);
+		if (!state) {
+			state = this.verification.record(record);
+			this.verificationStates.set(record.id, state);
+		}
+		return state;
 	}
 
 	private warnings(): string[] {
-		return [
+		this.cachedWarnings ??= [
 			...this.problems.map(
 				(problem) => `${problem.kind}: ${problem.path}${problem.line ? `:${problem.line}` : ""}: ${problem.message}`,
 			),
 			...this.indexWarnings,
 			...this.teamWarnings,
 			...this.verification.warnings,
-			...verificationWarnings(this.verification, this.records),
+			...verificationWarnings(this.records.map((record) => this.recordVerification(record))),
 			...this.projection.cycles.map((cycle) => `relation cycle: ${cycle.join(" -> ")}`),
 		];
+		return this.cachedWarnings;
 	}
+}
+
+/** Cheap invalidation across processes, including same-size edits and atomic replacements. */
+function sourceFingerprint(options: JournalQueryServiceOptions, project: string | undefined): string {
+	const paths = [
+		join(options.storePath, "project.json"),
+		...listJournalShards(options.storePath).map((shard) => shard.path),
+	];
+	if (options.agentDir && project) paths.push(join(trustRootPath(options.agentDir), `${project}.json`));
+	return paths
+		.map((path) => {
+			try {
+				const stat = statSync(path, { bigint: true });
+				return `${path}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+			} catch (error) {
+				return `${path}:${(error as NodeJS.ErrnoException).code}`;
+			}
+		})
+		.join("\n");
 }
 
 function loadVerification(options: JournalQueryServiceOptions): VerificationProjection {
@@ -440,14 +527,15 @@ function loadVerification(options: JournalQueryServiceOptions): VerificationProj
 	return new VerificationProjection(manifest, trust);
 }
 
-function verificationWarnings(projection: VerificationProjection, records: readonly JournalRecord[]): string[] {
-	const summary = projection.summarize(records);
+function verificationWarnings(states: readonly VerificationState[]): string[] {
+	const counts = new Map<VerificationState, number>();
+	for (const state of states) counts.set(state, (counts.get(state) ?? 0) + 1);
 	const concerning = VERIFICATION_STATES.filter(
-		(state) => state !== "unsigned" && state !== "verified" && summary.states[state] > 0,
+		(state) => state !== "unsigned" && state !== "verified" && (counts.get(state) ?? 0) > 0,
 	);
 	return concerning.length === 0
 		? []
-		: [`record verification: ${concerning.map((state) => `${summary.states[state]} ${state}`).join(", ")}`];
+		: [`record verification: ${concerning.map((state) => `${counts.get(state)} ${state}`).join(", ")}`];
 }
 
 function loadLifecycle(options: JournalQueryServiceOptions, records: readonly JournalRecord[]) {

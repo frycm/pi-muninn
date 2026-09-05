@@ -49,6 +49,8 @@ export function journalContextTool(runtime: JournalToolRuntime) {
 			for (const id of ids) {
 				throwIfAborted(signal);
 				const read = service.read(id, 0, 1);
+				if (read?.truncated) truncated = true;
+				if (read && !read.records[0]) continue;
 				if (!read?.records[0]) {
 					if (!fits(records, [...missing, id])) {
 						truncated = true;

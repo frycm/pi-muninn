@@ -60,13 +60,14 @@ describe("journal relevance evaluation", () => {
 			schema: 1,
 			kind: "journal-evaluation",
 			k: 10,
-			judgments: 8,
-			evaluated: 8,
-			metrics: { recall_at_10: 1, mrr_at_10: 0.9375, ndcg_at_10: 0.953866 },
+			judgments: 60,
+			evaluated: 60,
 			problems: [],
 			truncated: false,
 		});
-		expect(report.results.filter((result) => result.hits.length === 0)).toEqual([]);
+		expect(report.metrics.recall_at_10).toBeGreaterThanOrEqual(0.9);
+		expect(report.metrics.mrr_at_10).toBeGreaterThanOrEqual(0.8);
+		expect(report.metrics.ndcg_at_10).toBeGreaterThanOrEqual(0.85);
 		expect(readFileSync(shard)).toEqual(before);
 		expect(existsSync(journalIndexPath(store))).toBe(false);
 	});

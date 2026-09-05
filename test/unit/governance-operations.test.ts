@@ -1,7 +1,8 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as signingIdentities from "../../src/governance/identity.ts";
 import { initializeSigningIdentity, readSigningIdentity } from "../../src/governance/identity.ts";
 import {
 	declareProjectKeyEvent,
@@ -10,6 +11,9 @@ import {
 } from "../../src/governance/operations.ts";
 import { enrollProjectSigningKey } from "../../src/governance/registry.ts";
 import { initializeProjectCryptography } from "../../src/governance/setup.ts";
+import * as signingTransactions from "../../src/governance/transaction.ts";
+import { signingTransactionPath } from "../../src/governance/transaction.ts";
+import * as signingTrust from "../../src/governance/trust.ts";
 import {
 	distrustProjectSigningKey,
 	pinProjectSigningKey,
@@ -34,6 +38,7 @@ function root(): string {
 }
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
@@ -298,6 +303,137 @@ describe("cryptographic governance operations", () => {
 		});
 		projection = new VerificationProjection(manifest, readProjectTrust(setup.agentDir, setup.project));
 		expect(projection.record(oldBefore)).toBe("compromised");
-		expect(projection.key(successor.id, successor.created_at)).toBe("verified");
+		expect(projection.key(successor.id, successor.created_at)).toBe("untrusted");
 	});
+});
+
+describe("durable identity publication", () => {
+	it.each(["rotation", "recovery"] as const)("resumes the same %s after a failed commit", async (kind) => {
+		const setup = await fixture();
+		if (kind === "recovery") rmSync(join(setup.agentDir, "muninn", "signing.json"));
+		const hook = join(setup.storePath, ".git", "hooks", "pre-commit");
+		writeFileSync(hook, "#!/bin/sh\nexit 1\n");
+		chmodSync(hook, 0o700);
+		const run = () => (kind === "rotation" ? rotateProjectSigningKey(setup) : recoverProjectSigningKey(setup));
+		await expect(run()).rejects.toThrow(/commit/);
+		const pendingPath = signingTransactionPath(setup.agentDir);
+		expect(statSync(pendingPath).mode & 0o777).toBe(0o600);
+		const pending = JSON.parse(readFileSync(pendingPath, "utf-8"));
+		const bytes = readFileSync(join(setup.storePath, "project.json"), "utf-8");
+		expect(bytes).not.toContain(pending.successor.private_key);
+		expect(bytes).toContain(pending.successor.id);
+		rmSync(hook);
+		await run();
+		expect(readSigningIdentity(setup.agentDir, setup.member)?.id).toBe(pending.successor.id);
+		expect(existsSync(pendingPath)).toBe(false);
+		expect(readProjectManifest(setup.storePath)?.signing_keys).toHaveLength(2);
+		if (kind === "rotation") expect(readProjectManifest(setup.storePath)?.key_events).toHaveLength(1);
+	});
+});
+
+it.each([
+	"rotation",
+	"recovery",
+] as const)("resumes %s after private installation but before pending cleanup", async (kind) => {
+	const setup = await fixture();
+	if (kind === "recovery") rmSync(join(setup.agentDir, "muninn", "signing.json"));
+	const run = () => (kind === "rotation" ? rotateProjectSigningKey(setup) : recoverProjectSigningKey(setup));
+	vi.spyOn(signingTransactions, "finishSigningTransaction").mockImplementationOnce(() => {
+		throw new Error("simulated interruption before cleanup");
+	});
+	await expect(run()).rejects.toThrow(/simulated interruption/);
+	const installed = readSigningIdentity(setup.agentDir, setup.member);
+	const pending = JSON.parse(readFileSync(signingTransactionPath(setup.agentDir), "utf-8"));
+	expect(installed?.id).toBe(pending.successor.id);
+	const resumed = await run();
+	expect(resumed.key.key).toBe(installed?.id);
+	expect(readProjectManifest(setup.storePath)?.signing_keys).toHaveLength(2);
+	expect(readProjectManifest(setup.storePath)?.key_events).toHaveLength(kind === "rotation" ? 1 : 0);
+	expect(existsSync(signingTransactionPath(setup.agentDir))).toBe(false);
+});
+
+it.each([
+	"rotation",
+	"recovery",
+] as const)("resumes %s after publication but before private installation", async (kind) => {
+	const setup = await fixture();
+	if (kind === "recovery") rmSync(join(setup.agentDir, "muninn", "signing.json"));
+	vi.spyOn(
+		signingIdentities,
+		kind === "rotation" ? "replaceSigningIdentity" : "installSigningIdentity",
+	).mockImplementationOnce(() => {
+		throw new Error("simulated installation failure");
+	});
+	const run = () => (kind === "rotation" ? rotateProjectSigningKey(setup) : recoverProjectSigningKey(setup));
+	await expect(run()).rejects.toThrow(/simulated installation failure/);
+	expect(readSigningIdentity(setup.agentDir, setup.member)?.id).toBe(
+		kind === "rotation" ? setup.signing.id : undefined,
+	);
+	const pending = JSON.parse(readFileSync(signingTransactionPath(setup.agentDir), "utf-8"));
+	expect(readProjectManifest(setup.storePath)?.signing_keys.map((key) => key.id)).toContain(pending.successor.id);
+	const resumed = await run();
+	expect(resumed.key.key).toBe(pending.successor.id);
+	expect(readSigningIdentity(setup.agentDir, setup.member)?.id).toBe(pending.successor.id);
+	expect(readProjectManifest(setup.storePath)?.signing_keys).toHaveLength(2);
+	expect(existsSync(signingTransactionPath(setup.agentDir))).toBe(false);
+});
+
+it("resumes recovery when local trust pinning fails after private installation", async () => {
+	const setup = await fixture();
+	rmSync(join(setup.agentDir, "muninn", "signing.json"));
+	vi.spyOn(signingTrust, "pinProjectSigningKey").mockRejectedValueOnce(new Error("simulated trust write failure"));
+	await expect(recoverProjectSigningKey(setup)).rejects.toThrow(/simulated trust write failure/);
+	const installed = readSigningIdentity(setup.agentDir, setup.member);
+	if (!installed) throw new Error("installed recovery key missing");
+	const manifest = readProjectManifest(setup.storePath);
+	expect(
+		new VerificationProjection(manifest, readProjectTrust(setup.agentDir, setup.project)).key(
+			installed.id,
+			installed.created_at,
+		),
+	).toBe("untrusted");
+	await expect(initializeProjectCryptography(setup)).rejects.toThrow(/pending/);
+	const resumed = await recoverProjectSigningKey(setup);
+	expect(resumed.key.key).toBe(installed.id);
+	expect(
+		new VerificationProjection(
+			readProjectManifest(setup.storePath),
+			readProjectTrust(setup.agentDir, setup.project),
+		).key(installed.id, installed.created_at),
+	).toBe("verified");
+	expect(existsSync(signingTransactionPath(setup.agentDir))).toBe(false);
+});
+
+it("serializes rotations in different projects sharing one private identity", async () => {
+	const first = await fixture();
+	const second = { ...first, project: newProjectId(), storePath: join(first.base, "second-store") };
+	await ensureStore(second.storePath, {
+		host: second.host,
+		project: {
+			id: second.project,
+			name: "second",
+			member: { id: second.member, name: "member", createdAt: second.host.createdAt },
+		},
+	});
+	await enrollProjectSigningKey({ ...second, identity: second.signing });
+	const manifest = readProjectManifest(second.storePath);
+	if (!manifest) throw new Error("fixture manifest missing");
+	await pinProjectSigningKey({
+		agentDir: second.agentDir,
+		manifest,
+		member: second.member,
+		key: second.signing.id,
+		host: second.host.id,
+	});
+	const results = await Promise.allSettled([rotateProjectSigningKey(first), rotateProjectSigningKey(second)]);
+	expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+	const winner = results.find((result) => result.status === "fulfilled");
+	if (winner?.status !== "fulfilled") throw new Error("rotation winner missing");
+	expect(readSigningIdentity(first.agentDir, first.member)?.id).toBe(winner.value.key.key);
+	expect(
+		[
+			readProjectManifest(first.storePath)?.signing_keys.length,
+			readProjectManifest(second.storePath)?.signing_keys.length,
+		].sort(),
+	).toEqual([1, 2]);
 });

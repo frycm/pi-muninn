@@ -36,8 +36,9 @@ import {
 	parseProjectManifest,
 	readProjectManifest,
 } from "../store/project-manifest.ts";
+import { readAuthorizedRemote } from "./remote.ts";
 
-/** The Git remote name Muninn keeps pointed at the project manifest remote. */
+/** The Git remote name Muninn keeps pointed at the locally approved destination. */
 export const REMOTE_NAME = "origin";
 
 export interface SyncOptions {
@@ -46,12 +47,6 @@ export interface SyncOptions {
 	agentDir?: string;
 	hostId: string;
 	hostName: string;
-	/**
-	 * The remote this store is configured to sync with, or null.
-	 *
-	 * The user-owned project manifest's explicit remote, or null.
-	 */
-	remote: string | null;
 	/** Entries appended since the last commit; used for the commit message. */
 	entries?: number;
 	/** Stop before the network steps. The shutdown path passes a 10 s deadline. */
@@ -206,7 +201,7 @@ async function transaction(options: SyncOptions, result: SyncResult): Promise<Sy
 		try {
 			await git(
 				options.storePath,
-				{ kind: "push", remote: REMOTE_NAME, branch },
+				{ kind: "push-url", url: remote, branch },
 				options.signal ? { signal: options.signal } : {},
 			);
 			result.pushed = true;
@@ -285,11 +280,12 @@ function describe(error: unknown): string {
 /**
  * Where this store pushes, or nothing.
  *
- * A configured remote is the authority and is written into the store's
- * `origin`. With no explicit project remote, sync commits locally and does
+ * Local transport approval is the authority and is written into the store's
+ * `origin`. With no explicit local approval, sync commits locally and does
  * not adopt ambient Git configuration.
  */
 async function resolveRemote(options: SyncOptions, result: SyncResult): Promise<string | undefined> {
+	const remote = await readAuthorizedRemote(options.storePath);
 	let current: string | undefined;
 	try {
 		current = (await git(options.storePath, { kind: "remote-get-url", name: REMOTE_NAME })).stdout.trim() || undefined;
@@ -297,20 +293,22 @@ async function resolveRemote(options: SyncOptions, result: SyncResult): Promise<
 		current = undefined;
 	}
 
-	if (!options.remote) {
-		result.notes.push("no project journal remote configured — committed locally only");
+	if (!remote) {
+		result.notes.push(
+			"no project journal remote configured locally — committed locally only; approve with muninn project remote URL",
+		);
 		return undefined;
 	}
 
-	if (current === options.remote) return options.remote;
+	if (current === remote) return remote;
 	if (current === undefined) {
-		await git(options.storePath, { kind: "remote-add", name: REMOTE_NAME, url: options.remote });
-		result.notes.push(`added remote ${REMOTE_NAME} → ${options.remote}`);
-		return options.remote;
+		await git(options.storePath, { kind: "remote-add", name: REMOTE_NAME, url: remote });
+		result.notes.push(`added remote ${REMOTE_NAME} → ${remote}`);
+		return remote;
 	}
-	await git(options.storePath, { kind: "remote-set-url", name: REMOTE_NAME, url: options.remote });
-	result.notes.push(`remote ${REMOTE_NAME} now points at ${options.remote}`);
-	return options.remote;
+	await git(options.storePath, { kind: "remote-set-url", name: REMOTE_NAME, url: remote });
+	result.notes.push(`remote ${REMOTE_NAME} now points at ${remote}`);
+	return remote;
 }
 
 async function currentBranch(storePath: string): Promise<string> {

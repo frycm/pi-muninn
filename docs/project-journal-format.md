@@ -1,6 +1,6 @@
 # Logical project journal format
 
-> **Normative and implemented through Phase 7.** The legacy
+> **Canonical format contract.** The legacy
 > [Markdown journal format](journal-format.md) remains readable only as migration input.
 
 The logical project journal is an append-only, sharded JSONL event stream. It records bounded
@@ -33,14 +33,15 @@ Imported transcript exchange copies live outside this Git store at
 `<agent-dir>/muninn-transcripts/<project-id>/<record-id>.jsonl`. They are optional,
 user-local evidence and never become canonical journal content.
 
-Optional Phase 7 private identity and trust state also live outside the Git store:
+Optional private identity and trust state also live outside the Git store:
 
 ```text
 <agent-dir>/muninn/signing.json
+<agent-dir>/muninn/signing-pending.json  # only during rotation/recovery
 <agent-dir>/muninn-trust/<project-id>.json
 ```
 
-The first is a mode-`0600` Ed25519 private identity. The second contains explicit local pins,
+The signing identity and pending transaction are mode-`0600` private files. The trust file contains explicit local pins,
 distrust entries and prospective policy. Neither path is synchronized or inferred from a
 checkout.
 
@@ -98,8 +99,7 @@ A reader handles damage locally:
 
 The project ID is immutable. Member and host arrays are sorted unions keyed by immutable
 UUIDs. A host belongs to exactly one member; an ID observed with different metadata is a
-collision. The remote is set only through `muninn project remote`; checked-in code-project
-configuration cannot select a journal store path or remote.
+collision. The advertised remote may arrive through synchronization. Only explicit `muninn project remote` or `project join` actions approve transport locally; code-project configuration cannot select a journal store path or grant remote approval.
 
 Project and member IDs are UUIDs stored in the user-owned project registry. The host UUID is
 kept in the agent-owned host identity file. Display names are projected metadata and do not
@@ -108,7 +108,7 @@ direction-changing characters and credential-shaped text.
 
 ### Team lifecycle events
 
-`team_events` is optional in schema 1 for compatibility with pre-Phase-4 manifests; readers
+`team_events` is optional in schema 1 for compatibility with older manifests; readers
 project a missing field as an empty array. Once emitted, events are union-merged by immutable
 ID and sorted by `(at, id)`. A non-identical duplicate ID is a collision.
 
@@ -143,7 +143,7 @@ must be declared by a different key. Removing an event cannot be detected from o
 so Git history and remote protections remain part of the operational boundary.
 
 Team events may carry the same signature envelope. Under `observe`, structurally valid
-unsigned events retain Phase 4 behavior. Under a local prospective `require` policy, an event
+unsigned events retain advisory lifecycle behavior. Under a local prospective `require` policy, an event
 at or after the cutoff affects that machine's roster only when its signature projects as
 `verified`.
 
@@ -152,7 +152,7 @@ at or after the cutoff affects that machine's roster only when its signature pro
 An outcome record serialized as its actual one-line representation:
 
 ```json
-{"schema":1,"id":"j-019c0123-7f2a-7a10-9c44-2d6e0f1a8b01","at":"2026-08-30T11:32:04.000Z","type":"outcome","project":"019c0111-1c2f-7d33-8e55-aa10b2c3d4e0","member":"019c0112-1c2f-7d33-8e55-aa10b2c3d4e0","host":"019c0113-1c2f-7d33-8e55-aa10b2c3d4e0","source":"agent","channel":"tui","task":"019c0114-1c2f-7d33-8e55-aa10b2c3d4e0","status":"completed","body":"The Phase 3 documentation now defines one journal shared across linked worktrees.","cue":"when implementing logical project identity","tags":["docs","phase-3"],"paths":["README.md","docs/phase-3-plan.md"],"relations":[],"session":{"file":"~/.pi/agent/sessions/--src-pi-muninn--/2026-08-30_019c0114.jsonl","first":"e-104","last":"e-138"},"git":{"worktree":"/src/pi-muninn-phase-3","cwd":"/src/pi-muninn-phase-3","branch":"feature/phase-3","head":"c3390cf3d43178b8b802b2da5fff691375fa390a","dirty":true}}
+{"schema":1,"id":"j-019c0123-7f2a-7a10-9c44-2d6e0f1a8b01","at":"2026-08-30T11:32:04.000Z","type":"outcome","project":"019c0111-1c2f-7d33-8e55-aa10b2c3d4e0","member":"019c0112-1c2f-7d33-8e55-aa10b2c3d4e0","host":"019c0113-1c2f-7d33-8e55-aa10b2c3d4e0","source":"agent","channel":"tui","task":"019c0114-1c2f-7d33-8e55-aa10b2c3d4e0","status":"completed","body":"The architecture documentation defines one journal shared across linked worktrees.","cue":"when implementing logical project identity","tags":["docs","architecture"],"paths":["README.md","docs/architecture.md"],"relations":[],"session":{"file":"~/.pi/agent/sessions/--src-pi-muninn--/2026-08-30_019c0114.jsonl","first":"e-104","last":"e-138"},"git":{"worktree":"/src/pi-muninn-worktree","cwd":"/src/pi-muninn-worktree","branch":"feature/journal","head":"c3390cf3d43178b8b802b2da5fff691375fa390a","dirty":true}}
 ```
 
 ### Required fields
@@ -228,7 +228,7 @@ An optional external observation has `source: "external"` and an `integration` o
 
 `provider`, `kind` and `event` are lowercase integration identifiers of at most 64
 characters. `external_id` is a non-empty producer identifier of at most 512 characters;
-the pair `(provider, external_id)` is the append-time idempotency key. `observed_at` is UTC
+the pair `(provider, external_id)` is the append-time idempotency key. The journal `at` is local append/signing time, independently of producer time, allowing historical backfill. `observed_at` is UTC
 RFC 3339 with millisecond precision. `metadata` is a flat map of at most 32 bounded string,
 number, boolean or null values and at most 8 KiB when encoded. String metadata passes through
 the same mandatory redaction as other journal text.
@@ -360,6 +360,8 @@ identity/event collisions and host-ownership violations stop the operation for a
 resolution. When local policy is `require`, sync validates the fetched/rebased current store
 and stops before push if any object at or after the cutoff is not `verified`.
 
+`project.json.remote` advertises a URL; it does not authorize transfer. Local `muninn.remote` Git configuration, set only by explicit remote/join actions, authorizes synchronization. An absent approval means local-only; origin push URLs cannot override the approved push destination.
+
 The code repository remote is never used as journal identity. It may be shown as a linking
 hint, but only explicit user action connects a local project UUID to a shared journal remote.
 
@@ -369,7 +371,7 @@ See [operations.md](operations.md) for team onboarding, migration and recovery p
 
 Local trust is intentionally absent from Git. A synchronized self-signed descriptor begins
 as `untrusted`; a person pins the full `(member, key)` pair only after comparing it over an
-independent channel. Trust follows a valid transition-signed rotation chain. An unchained
+independent channel. Trust follows a transition-signed rotation chain only when the predecessor was authorized at the successor creation time. Later retrospective compromise can invalidate that transition and its descendant governance; see [technical design](technical-design.md#verification-and-temporal-authority). An unchained
 recovery key requires a new explicit pin on every machine. Local distrust cuts trust at that
 key, including descendants whose only path begins there.
 
@@ -381,7 +383,7 @@ The default policy is:
 
 `require` always records an RFC 3339 `required_after` cutoff and applies only prospectively.
 It refuses new non-verified local records and lifecycle events and stops a synchronized
-violation before push. Reads never omit the evidence. `compromised_history: "retain"` accepts
+violation before push. Verification does not hide evidence; bounded reads may omit records that exceed the response budget and mark that truncation explicitly. `compromised_history: "retain"` accepts
 valid records before a compromise's effective time; `"reject"` conservatively projects every
 record made by that key as compromised.
 

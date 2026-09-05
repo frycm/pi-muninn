@@ -1,7 +1,7 @@
 /**
  * Muninn settings: read the `muninn` key from pi's own settings files.
  *
- * pi has no extension-settings API at the baseline (v0.84.2), so Muninn reads
+ * pi has no extension-settings API at the supported baseline (v0.85.0), so Muninn reads
  * `settings.json` itself. That is safe in both directions:
  *
  *  - pi's `SettingsManager.save()` re-reads the file and persists only the
@@ -12,8 +12,8 @@
  * Project settings are **tighten-only**. A `.pi/settings.json` travels with a
  * repository, so a cloned project must not be able to widen what Muninn does on
  * the machine that clones it: it cannot re-enable something the user disabled
- * globally. It can always ask for *less*. Journal remotes live in the explicit,
- * user-owned project manifest rather than settings.
+ * globally. It can always ask for *less*. Journal transport approval lives in explicit local Git configuration,
+ * separate from shared manifest metadata and settings.
  */
 
 /** Automatically use a user-owned logical-project store, or disable it. */

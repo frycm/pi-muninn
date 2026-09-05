@@ -1,467 +1,174 @@
 # pi-muninn
 
-**Searchable project history for [pi](https://github.com/earendil-works/pi).**
+**Searchable project history for [pi](https://github.com/frycm/pi).**
 
-Muninn records bounded, provenance-rich history from pi sessions and makes the resulting
-project journal searchable by models, people and ordinary Unix tools. The repository remains
-the source of truth for code, configuration and documentation. The journal explains how it
-got there: what was attempted, why a decision was made, what failed and which session holds
-the detailed evidence.
+Muninn remembers the work behind your code: decisions, failed attempts, corrections and task outcomes. It stores that history as a local project journal that you, pi and Unix tools can search. Linked worktrees share a journal; teammates can exchange it through a separate Git repository.
 
-The design is local-first and composable: append-only JSONL, Git synchronization, explicit
-retrieval and no hosted service in the storage or search path.
+Use it when a fresh session needs to answer “why did we do this?”, “what already failed?” or “which session has the details?”. Code, tests and project instructions remain authoritative. Journal entries are fallible historical evidence and are never automatically injected into the prompt.
 
-> [!IMPORTANT]
-> Phases 3 through 7 are implemented. Linked worktrees, team clones and optional evidence
-> producers share one sharded JSONL project journal with validated onboarding, advisory
-> lifecycle declarations, optional Ed25519 provenance, explicit conflict resolution and
-> read-only diagnostics. Automatic capture, model tools, attended commands and Unix
-> interfaces all use the same canonical service. Journal content is never injected into
-> prompts.
+## Install
 
-The legacy Markdown migration-input contract is
-[docs/journal-format.md](docs/journal-format.md). The JSONL contract is
-[docs/project-journal-format.md](docs/project-journal-format.md), and the implementation
-sequence is [docs/phase-3-plan.md](docs/phase-3-plan.md).
-The implemented identity and registry contract is
-[docs/project-registry.md](docs/project-registry.md). Team onboarding, migration and recovery
-are covered by [docs/operations.md](docs/operations.md). The implemented Phase 4 contract is
-[docs/phase-4-plan.md](docs/phase-4-plan.md). Retrieval evaluation, explanation and scale are
-implemented in [docs/phase-5-plan.md](docs/phase-5-plan.md). Optional external producers,
-sandbox evidence and encrypted transcript exchange are implemented under
-[docs/phase-6-plan.md](docs/phase-6-plan.md). Optional signed records, explicit local trust
-and prospective enforcement are implemented in
-[docs/phase-7-plan.md](docs/phase-7-plan.md).
+Requirements: Git and Node.js **22.19 or newer**. This version targets the **pi fork 0.85.x**, tested against **0.85.0**. Bun 1.4.2 is also tested for extension execution. `age` and `age-keygen` are optional, needed only for encrypted transcript exchange.
 
-## Why a project journal
+From a source checkout:
 
-For development and system administration, current truth already has better homes:
+```bash
+git clone https://github.com/frycm/pi-muninn.git
+cd pi-muninn
+npm ci --ignore-scripts
+npm run build
+pi install .
+```
 
-- code and configuration say what the system does;
-- tests say which behavior is required;
-- documentation and project instructions say how it should be used;
-- Git says exactly what changed.
+Restart pi or run `/reload` to load the extension. To install the standalone `muninn` command from the same checkout:
 
-A generated secondary knowledge base would compete with those sources and could silently
-become stale. A journal has a narrower, more useful role: retain the history and provenance
-that the repository does not express well.
+```bash
+npm pack
+npm install --global ./pi-muninn-0.1.0.tgz
+muninn --version
+```
 
-This leads to three rules:
+The tarball contains compiled JavaScript, so using the installed CLI needs no TypeScript loader. For a quick source-only extension trial, run `pi -e ./src/index.ts`. See [development and compatibility](docs/testing.md) for the runtime matrix and the pi 0.85.0 dependency workaround.
 
-1. Journal records are historical evidence, never implicit instructions.
-2. Models retrieve history only when they decide it is relevant.
-3. Stale or mistaken history is corrected by appending a user-authored record that points to
-   the original. Routine operation never rewrites or silently hides evidence.
+## Start using it
 
-## Current foundation
+Open pi in a trusted project. Muninn creates a local journal when enabled and captures explicit remember/correction requests and outcomes from substantive tasks. Ordinary chat does not create task outcomes.
 
-The repository now includes:
+You can also create and use a journal directly:
 
-- a validated, canonically serialized, append-only JSONL record contract;
-- writer-owned member/host/month shards with single-write, fsync-backed appends;
-- restartable and idempotent import of legacy Markdown stores;
-- correction, supersession and annotation graphs with explicit trust labels;
-- one bounded canonical query service with a disposable lexical candidate index;
-- explicit model search, read, context and note tools;
-- a user-owned logical-project registry with atomic updates and stable member/project UUIDs;
-- canonical Git common-directory resolution across linked worktrees;
-- automatic user-cue and agent-outcome capture into the same JSONL contract;
-- explicit project remotes, member/host ownership validation and additive multi-clone sync;
-- validated, rollback-safe `project share` and `project join` onboarding;
-- an additive team-event stream with deterministic active/retired roster projection;
-- a bounded active-conflict inbox and explicit append-only resolution records;
-- a read-only doctor for registry, store, Git, manifest, shard, lifecycle, relation and
-  disposable-index health;
-- bounded, attributable and idempotent external-observation producers plus a verified
-  `pi-enclave` audit summary adapter; and
-- explicit `age`-encrypted exchange of one selected local transcript, kept outside journal
-  Git and resolved through the ordinary read interface after import;
-- optional Ed25519 member identities, signed records and self-lifecycle events;
-- explicit local trust/distrust, transition-signed rotation and unchained recovery; and
-- a prospective local verification policy that gates new writes and stops before push while
-  preserving all synchronized evidence.
+```bash
+cd /path/to/project
+muninn project link --name my-project
+muninn note "Run pnpm test --run: watch mode hangs in CI."
+muninn search "watch mode"
+muninn status
+```
 
-The project store is now `<agent-dir>/muninn-projects/<project-id>/`. Checkout roots, Git
-common directories and paths are registry aliases or provenance, never durable identity.
-
-Current model tools:
-
-| Tool | Purpose |
-|---|---|
-| `journal_search` | Search this logical project's journal with bounded filters, explanations and pagination. |
-| `journal_read` | Read one record by stable ID with a bounded relation neighborhood. |
-| `journal_context` | Batch records already selected by stable ID under a hard output budget. |
-| `journal_note` | Append an agent-authored note or annotation; never a user correction. |
-
-Current attended commands:
+Inside pi, use the corresponding commands:
 
 ```text
 /muninn
-/muninn search QUERY [FILTERS] [--explain]
-/muninn show ID [--relations]
-/muninn sessions [FILTERS]
-/muninn tail [FILTERS]
-/muninn note TEXT
-/muninn correct ID TEXT
-/muninn annotate ID TEXT
-/muninn conflicts
-/muninn project
-/muninn team
-/muninn reindex
-/muninn sync [--no-push]
+/muninn note Use the staging database for integration tests.
+/muninn search staging database
+/muninn show j-<full-uuid> --relations
 ```
 
-Current headless commands:
+Each record has a stable `j-<UUID>` ID. Replace example IDs with complete IDs returned by search. Task records include provenance such as the member, machine, branch, paths and original pi session where available.
 
-```text
-muninn search QUERY [FILTERS] [--explain] [--json|--jsonl]
-muninn show ID [--relations] [--json|--jsonl]
-muninn sessions [FILTERS] [--json|--jsonl]
-muninn tail [FILTERS] [--follow] [--jsonl]
-muninn note TEXT [--json]
-muninn correct ID TEXT [--json]
-muninn annotate ID TEXT [--json]
-muninn conflicts [--json|--jsonl]
-muninn resolve TARGET TEXT [--json]
-muninn ingest FILE|- [--json]
-muninn integrate enclave AUDIT.jsonl [--json]
-muninn transcript export ID BUNDLE.age --recipient RECIPIENT [--json]
-muninn transcript import BUNDLE.age --identity KEY.txt [--json]
-muninn path
-muninn project link [PATH] [--id UUID] [--name NAME] [--force]
-muninn project show [PATH]
-muninn project unlink [PATH]
-muninn project remote [URL|--remove]
-muninn project share [PATH] [--json]
-muninn project join JOURNAL-URL [PATH] [--force] [--json]
-muninn team list [--json]
-muninn team rename-member NAME [--reason TEXT] [--json]
-muninn team rename-host HOST-ID NAME [--reason TEXT] [--json]
-muninn team retire-host|restore-host HOST-ID [--reason TEXT] [--json]
-muninn team leave|return [--reason TEXT] [--json]
-muninn crypto init|public|status|rotate|recover [--json]
-muninn crypto trust MEMBER KEY [--json]
-muninn crypto distrust|revoke KEY [--reason TEXT] [--json]
-muninn crypto compromise KEY --effective RFC3339 [--reason TEXT] [--json]
-muninn crypto policy observe|require [--from now|RFC3339] [--compromised-history retain|reject] [--json]
-muninn migrate [--dry-run] [--json]
-muninn reindex [--json]
-muninn status [--json]
-muninn sync [--no-push]
-muninn doctor [--json]
-muninn evaluate JUDGMENTS.jsonl [--json]
-```
-
-`project show` and `/muninn project` display the project UUID, member UUID, store, aliases and
-the resolver reason. `project remote` reads or changes the explicit journal Git remote.
-`unlink` removes the local mapping, not the store or retained project record. See the
-[registry contract](docs/project-registry.md) for relinking and the
-[operations guide](docs/operations.md) for joining a team journal.
-
-## Phase 3 design
-
-### One logical project across worktrees
-
-A Git worktree is a checkout, not a project identity. The implemented resolver selects a
-logical project in this order:
-
-1. an explicit mapping in the user-owned Muninn registry;
-2. the canonical `git rev-parse --git-common-dir` shared by linked worktrees;
-3. a newly minted local project UUID for an unregistered Git common directory or non-Git
-   root.
-
-A committed `.pi/muninn-project.json` may suggest a UUID to an explicit `muninn project link`
-command. Automatic and untrusted sessions ignore it; it cannot choose a path or remote.
-
-The checkout root, working directory, branch and commit remain on each record as provenance.
-They do not choose the store. Two concurrent pi sessions in linked worktrees therefore append
-to different writer-owned shards of the same logical journal and can search each other's
-completed records.
-
-### Append-only JSONL
-
-The logical journal is sharded by member, host and month:
-
-```text
-<agent-dir>/muninn-projects/<project-id>/
-├── project.json
-├── journal/
-│   └── <member-id>/<host-id>/<YYYY-MM>.jsonl
-├── migration.json
-├── .index/
-└── .git/
-```
-
-Each terminated line is one immutable record. Sharding avoids ordinary append conflicts
-between hosts while keeping the whole store easy to clone, inspect and synchronize. The
-index is disposable; a canonical scan of JSONL is always sufficient to rebuild it.
-
-The journal is intentionally not a copy of pi's session file. A record contains a bounded
-outcome or note, deterministic Git/worktree provenance and a pointer to the local transcript.
-This preserves a useful team history without publishing every prompt, tool result or secret.
-
-### Explicit model interface
-
-The implemented model surface stays narrow around the journal:
-
-```ts
-journal_search({
-  query?: string,
-  ids?: string[],
-  type?: string[],
-  source?: string[],
-  member?: string[],
-  host?: string[],
-  branch?: string[],
-  path?: string[],
-  tag?: string[],
-  status?: string[],
-  trust?: string[],
-  label?: string[],
-  integration?: string[],
-  verification?: string[],
-  since?: string,
-  until?: string,
-  relatedTo?: string,
-  limit?: number,
-  cursor?: string,
-  explain?: boolean
-})
-
-journal_read({
-  id: string,
-  relationDepth?: number
-})
-
-journal_context({
-  ids: string[],
-  maxChars?: number
-})
-
-journal_note({
-  text: string,
-  cue?: string,
-  tags?: string[],
-  paths?: string[],
-  relations?: Array<{ type: "annotates", target: string }>
-})
-```
-
-`journal_search` returns bounded summaries and stable IDs. Projected trust and lifecycle or
-conflict labels can be filtered explicitly; `explain` adds an auditable score breakdown.
-Ranking is deterministic across hosts: exact phrases and tokens lead prefix matches, while
-tokens of at least five characters allow one conservative insertion, deletion or substitution.
-Matching more distinct query terms earns an explicit coverage contribution.
-`journal_read` expands a record,
-its provenance and its correction chain. `journal_context` is an optional batching tool for
-the records a model has already chosen; it is not an automatic prompt hook. `journal_note`
-can write agent-authored observations, but it cannot claim user authority.
-
-### Human and Unix interface
-
-The same query service backs the model tools, attended commands and headless CLI:
-
-```text
-/muninn search QUERY [FILTERS] [--explain]
-/muninn show ID
-/muninn sessions [FILTERS]
-/muninn tail [FILTERS]
-/muninn correct ID TEXT
-/muninn annotate ID TEXT
-/muninn conflicts
-/muninn team
-
-muninn search QUERY [FILTERS] [--explain] [--json]
-muninn show ID [--relations] [--json]
-muninn sessions [FILTERS] [--json]
-muninn tail [FILTERS] [--follow] [--json]
-muninn correct ID TEXT
-muninn annotate ID TEXT
-muninn conflicts [--json|--jsonl]
-muninn resolve TARGET TEXT [--json]
-muninn ingest FILE|- [--json]
-muninn integrate enclave AUDIT.jsonl [--json]
-muninn transcript export ID BUNDLE.age --recipient RECIPIENT [--json]
-muninn transcript import BUNDLE.age --identity KEY.txt [--json]
-muninn path
-muninn project remote [URL|--remove]
-muninn team list [--json]
-muninn crypto status [--json]
-muninn crypto trust MEMBER KEY [--json]
-muninn crypto policy require --from now [--json]
-muninn doctor [--json]
-muninn evaluate JUDGMENTS.jsonl [--json]
-```
-
-Machine-readable output is stable enough for direct composition:
+## Find earlier work
 
 ```bash
-muninn search "database migration" --json | jq -r '.records[] | [.at, .id, .snippet] | @tsv'
-muninn search "deploy" --trust teammate-user --label conflict --explain --json | jq '.records[] | {id, explanation}'
-muninn sessions --branch feature/auth --json | jq '.sessions[] | select(.status == "failed")'
-muninn search --integration pi-enclave --json | jq '.records[].integration.metadata'
-muninn search --verification untrusted --json | jq '.records[] | {id, member, verification}'
-rg -n '"type":"correction"' "$(muninn path)"/journal
-muninn search "timeout" --json | jq -r '.records[].id' | fzf
+muninn search "database migration" --explain
+muninn search --type outcome --status completed --json
+muninn search "deployment" --path deploy/ --since 2026-08-01 --jsonl
+muninn show j-<full-uuid> --relations
+muninn sessions --json
+muninn tail --follow --jsonl
 ```
 
-Interactive polish may use a fuzzy finder when available, but raw JSONL and deterministic CLI
-output remain first-class interfaces.
+Search supports words, prefixes, limited typo tolerance and filters. `--explain` shows why a result matched. `show` reads the original record and optionally its correction neighborhood. A missing transcript does not remove the journal record; the CLI still prints it and exits with code `3`.
 
-`muninn show` returns exit code `3` when its record is available but neither the original nor
-an imported transcript is present on this machine. JSON output distinguishes `original`,
-`exchange` and `missing` availability while preserving the record's original pointer.
+Pi gets four explicit tools:
 
-### User-authored corrections
+| Tool | Use |
+| --- | --- |
+| `journal_search` | Find evidence, with filters, explanations and pagination. |
+| `journal_read` | Read selected records and related evidence within a character budget. |
+| `journal_context` | Load only selected IDs into bounded context. |
+| `journal_note` | Append an agent note or annotation. |
 
-Corrections are ordinary append-only records with explicit relations:
+Oversized records are omitted from bounded model reads with a warning and `truncated: true`; use `muninn show ID` for the complete record. Readers notice changes made by another session, including local trust changes.
 
-```json
-{"schema":1,"id":"j-019c1000-1111-7000-8000-000000000001","at":"2026-08-30T15:42:00.000Z","type":"correction","project":"019c0111-1c2f-7d33-8e55-aa10b2c3d4e0","member":"019c0112-1c2f-7d33-8e55-aa10b2c3d4e0","host":"019c0113-1c2f-7d33-8e55-aa10b2c3d4e0","source":"user","body":"The service now uses PostgreSQL 17; the earlier PostgreSQL 16 note is stale.","relations":[{"type":"corrects","target":"j-019c0000-1111-7000-8000-000000000001"}]}
+## Correct a decision
+
+History is append-only. Corrections link to the original record instead of overwriting it:
+
+```bash
+muninn correct j-<original-id> "The service now uses PostgreSQL 17."
+muninn annotate j-<original-id> "The rollback procedure was tested on staging."
+muninn conflicts
+muninn resolve j-<conflicted-target-id> "Use the new procedure; it covers both deployment paths."
 ```
 
-Supported relations initially are:
+Only direct user actions can create user corrections or resolve conflicts. An agent note cannot impersonate a user decision. Competing corrections remain visible until a user resolves them.
 
-- `corrects`: the target contains a mistake or is stale;
-- `supersedes`: this user-authored record should be preferred for the stated subject;
-- `annotates`: adds context without disputing the target.
+## Share a project journal
 
-The original line remains physically present and searchable. Query projections label the
-relationship and may prefer the newest user correction, but they never pretend the earlier
-record did not exist. Competing corrections are shown as a conflict rather than resolved by
-timestamp alone.
+Create an empty Git repository for the journal, separate from the code repository:
 
-Only direct attended user actions and authenticated user API calls may create
-`source: "user"` correction records. A model may propose correction text or append an
-agent-authored note; it cannot forge the user's authority.
+```bash
+muninn project remote ssh://git.example/team/my-project-journal.git
+muninn sync
+muninn project share
+```
 
-There is no background policy that decides which history is stale, no age-based removal and
-no automatic mutation of the journal. Corrections happen because a user identifies something
-that needs correcting.
+On another machine, from the code checkout:
 
-## Pi extension fit
+```bash
+muninn project join ssh://git.example/team/my-project-journal.git
+muninn sync
+```
 
-The design follows pi's extension model without requiring a core fork:
+Joining validates the journal before linking it locally. Each member and machine owns a separate shard, and ordinary sync merges their additions. Sync commits locally, fetches, rebases and pushes without force. `muninn sync --no-push` fetches and reconciles without publishing local commits.
 
-- session and agent lifecycle events provide capture boundaries;
-- tools provide explicit, bounded model access;
-- slash commands provide an attended user surface;
-- the standalone binary provides automation and Unix composition;
-- versioned custom session entries let another extension request a bounded external append;
-- pi session pointers preserve detailed evidence locally;
-- extension-owned stores and indexes keep project repositories clean.
+Remote approval is local to each journal clone. Shared metadata cannot change where your machine sends history. Existing installations must approve their intended destination once with `muninn project remote URL`; Muninn does not migrate approval from shared metadata or an ambient Git remote. To return to local-only use:
 
-The journal is useful even when no model is running. Its storage contract is plain files,
-its sync transport is Git and its canonical query path is deterministic lexical search.
+```bash
+muninn project remote --remove
+```
 
-## Trust and privacy
+Use `muninn team list` to inspect members and machines. The [operations guide](docs/operations.md) covers team names, retirement, sharing, backups and recovery. Retirement does not change Git hosting permissions.
 
-- Code, docs, config and explicit project instructions outrank journal history.
-- Every record carries source, member, host, session and Git/worktree provenance when known.
-- Teammate records retain their original source but are labelled relative to the reader.
-- Cryptographic governance is opt-in. Without it, lifecycle declarations remain readable and
-  advisory; with it, signatures authenticate present bytes against explicit local pins.
-- The default verification policy is `observe`. `require` applies only from its recorded
-  local cutoff and never rewrites, deletes or hides earlier evidence.
-- Trust files and private signing keys stay outside journal Git. A self-enrolled synchronized
-  key is `untrusted` until a person compares its full fingerprint out of band and pins it.
-- Retirement, revocation and compromise do not revoke Git access. Repository ACLs remain a
-  separate operator responsibility.
-- Secrets are redacted before append; records marked as redacted remain visibly so.
-- Full pi transcripts are local evidence and are not synchronized by default.
-- A user may export one selected transcript through `age`; Muninn never puts the encrypted
-  bundle, recipient key or imported plaintext copy in journal Git.
-- A project checkout cannot silently select an arbitrary journal path or sync remote.
-- Search results are data, not prompt instructions, and are bounded before reaching a model.
+## Optional signing and integrations
 
-## Settings
+Enable Ed25519 signing explicitly:
 
-The current foundation reads the `muninn` object from pi's settings:
+```bash
+muninn crypto init
+muninn crypto public
+muninn crypto status
+```
+
+A synchronized key is not automatically trusted. Compare a teammate's full fingerprint over an independent channel, then run `muninn crypto trust MEMBER KEY`. `muninn crypto policy require --from now` requires verified new evidence from that cutoff on this machine. Older evidence stays readable. See [signing and recovery](docs/operations.md#enable-and-operate-cryptographic-governance) before rotating, revoking or recovering keys.
+
+External tools can submit bounded JSON observations with `muninn ingest observations.jsonl --json`; `muninn integrate enclave audit.jsonl --json` imports a pi-enclave audit checkpoint. Replays are idempotent. Historical imports preserve the producer's `observed_at` separately from the local append timestamp. See [integration examples](docs/operations.md#ingest-external-observations).
+
+Full transcripts stay on the originating machine by default. Explicit `muninn transcript export` and `import` commands exchange one selected transcript through `age` encryption. Neither encrypted bundles nor imported transcript copies enter journal Git.
+
+## Settings and data
+
+Muninn reads the `muninn` object in pi's settings. Defaults are:
 
 ```json
 {
   "muninn": {
-    "scopes": {
-      "project": "auto"
-    },
-    "sync": {
-      "onShutdown": true
-    },
-    "capture": {
-      "corrections": true,
-      "outcomes": true
-    }
+    "scopes": { "project": "auto" },
+    "sync": { "onShutdown": true },
+    "capture": { "corrections": true, "outcomes": true }
   }
 }
 ```
 
-Project settings are tighten-only. They may disable behavior but cannot re-enable a globally
-disabled capability. Identity is not a project setting: only the user-owned registry can
-choose a project UUID or store. The journal remote is explicit user-owned `project.json`
-metadata changed by `muninn project remote`, not a settings field.
+Project settings can disable behavior but cannot re-enable a globally disabled capability. Set `scopes.project` to `false` to disable the project journal. Shutdown sync uses only a locally approved remote.
 
-## Roadmap
+Data lives under pi's agent directory (overridable with `PI_CODING_AGENT_DIR`):
 
-### Phase 1 — foundation
+| Location | Contents |
+| --- | --- |
+| `muninn-projects/registry.json` | Local project mappings and member identity. |
+| `muninn-projects/<project-id>/` | Journal Git repository and disposable search index. |
+| `muninn/host.json` | Local machine identity. |
+| `muninn/signing.json` | Optional private signing identity. |
+| `muninn-trust/<project-id>.json` | Local trust pins and verification policy. |
+| `muninn-transcripts/<project-id>/` | Explicitly imported transcript copies. |
 
-Implemented and retained as migration/safety foundations: append safety, provenance,
-redaction, explicit retrieval, session pointers, store locking and Git sync. The Phase 1
-Markdown format is now migration input only.
+Run `muninn path` to locate the current journal and `muninn doctor` for read-only diagnostics. Back up the journals and local registry; if signing is enabled, keep an encrypted backup of the private signing identity and trust files. Redaction reduces accidental credential capture, but inspect history before sharing it.
 
-### Phase 3 — logical project journal
+## Learn more
 
-Complete: logical project UUID resolution, linked-worktree discovery, member/host identity,
-sharded JSONL, restartable migration, user corrections, deterministic provenance,
-model/human/Unix query interfaces and explicit multi-clone Git synchronization.
-
-### Phase 4 — team operations and governance
-
-Complete: validated share/join commands, deterministic roster projection, shell-only local
-member/host lifecycle declarations, attended read-only team/conflict views, an explicit
-correction-conflict resolution flow and a read-only operational doctor. Its unsigned,
-advisory compatibility behavior remains the Phase 7 default. See the
-[Phase 4 plan](docs/phase-4-plan.md).
-
-### Phase 5 — retrieval quality and scale
-
-Complete: explicit relevance evaluation, projected trust/lifecycle filters, bounded score
-explanations, deterministic phrase/prefix/one-edit ranking, scan/index DTO equivalence and a
-50,000-record performance gate. The checked-in eight-query corpus reaches Recall@10 `1.0`,
-MRR@10 `0.9375` and nDCG@10 `0.953866`. It does not meet the 50-real-query embedding
-experiment gate, and lexical recall is already above its threshold, so no embeddings were
-added. Raw JSONL scanning remains the correctness oracle.
-See the [Phase 5 plan](docs/phase-5-plan.md).
-
-### Phase 6 — integrations
-
-Complete: bounded integration provenance, idempotent file/stdin ingestion, a versioned pi
-custom-entry producer contract, verified aggregate `pi-enclave` audit checkpoints and
-explicit per-record `age` transcript exchange. Normal RPC-hosted pi sessions continue to use
-the ordinary journal path, and every integration remains optional. See the
-[Phase 6 plan](docs/phase-6-plan.md).
-
-### Phase 7 — optional cryptographic governance
-
-Complete: explicit out-of-band trust pins, Ed25519 member keys, signed records and
-self-governance events, rotation/recovery, prospective local enforcement and an explicit
-compromised-history policy. Signatures authenticate present bytes but do not replace Git
-history, completeness guarantees or remote ACL administration. This closes the current
-roadmap; hardware-backed keys, threshold governance, transparency and provider-specific ACL
-automation require separate designs. See the [Phase 7 plan](docs/phase-7-plan.md).
-
-## Development
-
-```bash
-npm ci
-npm run check
-npm test
-```
-
-The supported baseline is `@earendil-works/pi-coding-agent >=0.84.2 <0.85.0`, Node
-`>=22.19.0`, Bun in its CI compatibility job, Git and `proper-lockfile`. Signing uses the
-runtime's standard Ed25519 implementation; retrieval indexing uses no native or hosted search
-dependency. The `age` executable is required only for explicit transcript export/import.
-
-Sibling projects are [pi-huginn](https://github.com/frycm/pi-huginn) for remote sessions and
-voice, and [pi-enclave](https://github.com/frycm/pi-enclave) for sandbox-first automation.
-Muninn can integrate with both but depends on neither.
+- [How it works](docs/how-it-works.md): capture, retrieval, corrections and sharing.
+- [Architecture](docs/architecture.md): components and trust boundaries.
+- [Technical design](docs/technical-design.md): storage, algorithms, concurrency and failure handling.
+- [Operations](docs/operations.md): integrations, signing, migration and recovery.
+- [Testing and development](docs/testing.md): checks, packaging, performance and retrieval evaluation.
+- [Reference contracts](docs/README.md): record format, registry and legacy migration input.

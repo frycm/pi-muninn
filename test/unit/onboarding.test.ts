@@ -11,6 +11,7 @@ import { linkLogicalProject } from "../../src/project/resolver.ts";
 import { ensureStore } from "../../src/store/init.ts";
 import { projectRegistryPath, projectStorePath } from "../../src/store/paths.ts";
 import { readProjectManifest, setProjectRemote } from "../../src/store/project-manifest.ts";
+import { authorizeJournalRemote } from "../../src/sync/remote.ts";
 import { sync } from "../../src/sync/sync.ts";
 
 const execFileAsync = promisify(execFile);
@@ -38,11 +39,11 @@ async function sharedJournal(): Promise<void> {
 		project: { id: project, name: "shared", member: owner.member, createdAt: "2026-09-04T00:00:00.000Z" },
 	});
 	setProjectRemote(source, remote);
+	await authorizeJournalRemote(source, remote);
 	const pushed = await sync({
 		storePath: source,
 		hostId: owner.host.id,
 		hostName: owner.host.name,
-		remote,
 	});
 	expect(pushed.problem).toBeUndefined();
 }

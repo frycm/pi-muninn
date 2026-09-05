@@ -21,7 +21,12 @@ import {
 	replaceSigningIdentity,
 } from "./identity.ts";
 import { createSigningKeyDescriptor, createSigningKeyEvent, type SigningKeyEventKind } from "./keys.ts";
-import { enrollProjectSigningKey } from "./registry.ts";
+import {
+	finishSigningTransaction,
+	prepareSigningTransaction,
+	readSigningTransaction,
+	withSigningIdentityLock,
+} from "./transaction.ts";
 import { pinProjectSigningKey, readProjectTrust } from "./trust.ts";
 import { VerificationProjection } from "./verification.ts";
 
@@ -68,48 +73,82 @@ export interface RotateProjectSigningKeyResult {
 export async function rotateProjectSigningKey(
 	options: GovernanceContext & { now?: Date },
 ): Promise<RotateProjectSigningKeyResult> {
-	const at = (options.now ?? new Date()).toISOString();
-	const current = readSigningIdentity(options.agentDir, options.member);
-	if (!current) throw new Error("muninn: no signing identity; run `muninn crypto init` or recover it");
-	const successor = generateSigningIdentity(options.member, new Date(at));
-	const result = await withStoreLock(options.storePath, "governance", { host: options.host.id }, async () => {
-		const manifest = manifestFor(options);
-		assertTrustedActor(options, manifest, current, at);
-		const descriptor = createSigningKeyDescriptor(successor, current);
-		const event = createSigningKeyEvent(
-			{
-				id: newKeyEventId(),
-				at,
-				kind: "key-revoked",
-				member: options.member,
-				key: current.id,
-				actor_key: successor.id,
-				effective_at: at,
-				reason: "superseded by signed rotation",
-			},
-			successor,
-		);
-		writeProjectManifest(options.storePath, withProjectKeyEvent(withProjectSigningKey(manifest, descriptor), event));
-		const committed = await commitJournalLocked({
-			storePath: options.storePath,
-			hostId: options.host.id,
-			hostName: options.host.name,
-			entries: 0,
-			force: true,
-			identity: storeIdentity(options.host),
-			message: "crypto: rotate member signing key",
-		});
-		return { event, committed: committed.committed };
-	});
-	replaceSigningIdentity(options.agentDir, current.id, successor);
-	return {
-		schema: 1,
-		kind: "key-rotation",
-		previous: current.id,
-		key: publicSigningIdentity(successor),
-		event: result.event.id,
-		committed: result.committed,
-	};
+	return withSigningIdentityLock(options.agentDir, options.host.id, () =>
+		withStoreLock(options.storePath, "governance", { host: options.host.id }, async () => {
+			let pending = readSigningTransaction(options.agentDir, { ...options, kind: "rotation" });
+			const manifest = manifestFor(options);
+			const installed = readSigningIdentity(options.agentDir, options.member);
+			if (!installed) throw new Error("muninn: no signing identity; run `muninn crypto init` or recover it");
+			if (!pending) {
+				const at = (options.now ?? new Date()).toISOString();
+				assertTrustedActor(options, manifest, installed, at);
+				pending = {
+					schema: 1,
+					kind: "rotation",
+					project: options.project,
+					storePath: options.storePath,
+					previous: installed,
+					successor: generateSigningIdentity(options.member, new Date(at)),
+					eventId: newKeyEventId(),
+				};
+				prepareSigningTransaction(options.agentDir, pending);
+			}
+			const current = pending.previous;
+			const successor = pending.successor;
+			if (installed.id !== current.id && installed.id !== successor.id)
+				throw new Error(
+					"muninn: local identity differs from the pending rotation; preserve pending material for recovery",
+				);
+			const at = successor.created_at;
+			const descriptor = createSigningKeyDescriptor(successor, current);
+			const event = createSigningKeyEvent(
+				{
+					id: pending.eventId,
+					at,
+					kind: "key-revoked",
+					member: options.member,
+					key: current.id,
+					actor_key: successor.id,
+					effective_at: at,
+					reason: "superseded by signed rotation",
+				},
+				successor,
+			);
+			const updated = withProjectKeyEvent(withProjectSigningKey(manifest, descriptor), event);
+			// A retry may observe new external governance. Never publish/install an
+			// inherited successor whose authority has since been invalidated.
+			if (
+				new VerificationProjection(updated, readProjectTrust(options.agentDir, options.project)).key(
+					successor.id,
+					at,
+				) !== "verified"
+			) {
+				throw new Error("muninn: pending rotation is no longer trusted; preserve its private recovery material");
+			}
+			writeProjectManifest(options.storePath, updated);
+			const committed = await commitJournalLocked({
+				storePath: options.storePath,
+				hostId: options.host.id,
+				hostName: options.host.name,
+				entries: 0,
+				force: true,
+				identity: storeIdentity(options.host),
+				message: "crypto: rotate member signing key",
+			});
+			if (installed.id !== successor.id) replaceSigningIdentity(options.agentDir, current.id, successor);
+			if (readSigningIdentity(options.agentDir, options.member)?.id !== successor.id)
+				throw new Error("muninn: rotated identity was not installed");
+			finishSigningTransaction(options.agentDir);
+			return {
+				schema: 1,
+				kind: "key-rotation",
+				previous: current.id,
+				key: publicSigningIdentity(successor),
+				event: event.id,
+				committed: committed.committed,
+			};
+		}),
+	);
 }
 
 export interface RecoverProjectSigningKeyResult {
@@ -123,38 +162,61 @@ export interface RecoverProjectSigningKeyResult {
 export async function recoverProjectSigningKey(
 	options: GovernanceContext & { now?: Date },
 ): Promise<RecoverProjectSigningKeyResult> {
-	if (readSigningIdentity(options.agentDir, options.member)) {
-		throw new Error("muninn: recovery requires the local signing identity to be absent");
-	}
-	const manifest = manifestFor(options);
-	if (!manifest.signing_keys.some((key) => key.member === options.member)) {
-		throw new Error("muninn: this member has no signing history; use `muninn crypto init`");
-	}
-	const recovery = generateSigningIdentity(options.member, options.now ?? new Date());
-	const enrollment = await enrollProjectSigningKey({
-		storePath: options.storePath,
-		project: options.project,
-		member: options.member,
-		host: options.host,
-		identity: recovery,
-	});
-	installSigningIdentity(options.agentDir, recovery);
-	const currentManifest = manifestFor(options);
-	const pinned = await pinProjectSigningKey({
-		agentDir: options.agentDir,
-		manifest: currentManifest,
-		member: options.member,
-		key: recovery.id,
-		host: options.host.id,
-		...(options.now ? { now: options.now } : {}),
-	});
-	return {
-		schema: 1,
-		kind: "key-recovery",
-		key: publicSigningIdentity(recovery),
-		key_enrolled: !enrollment.replayed,
-		key_pinned: pinned.changed,
-	};
+	return withSigningIdentityLock(options.agentDir, options.host.id, () =>
+		withStoreLock(options.storePath, "governance", { host: options.host.id }, async () => {
+			let pending = readSigningTransaction(options.agentDir, { ...options, kind: "recovery" });
+			const installed = readSigningIdentity(options.agentDir, options.member);
+			if (installed && installed.id !== pending?.successor.id)
+				throw new Error("muninn: recovery requires the local signing identity to be absent");
+			const manifest = manifestFor(options);
+			if (!manifest.signing_keys.some((key) => key.member === options.member))
+				throw new Error("muninn: this member has no signing history; use `muninn crypto init`");
+			if (!pending) {
+				pending = {
+					schema: 1,
+					kind: "recovery",
+					project: options.project,
+					storePath: options.storePath,
+					successor: generateSigningIdentity(options.member, options.now ?? new Date()),
+				};
+				prepareSigningTransaction(options.agentDir, pending);
+			}
+			const recovery = pending.successor;
+			const existed = manifest.signing_keys.some((key) => key.id === recovery.id);
+			const updated = writeProjectManifest(
+				options.storePath,
+				withProjectSigningKey(manifest, createSigningKeyDescriptor(recovery)),
+			);
+			await commitJournalLocked({
+				storePath: options.storePath,
+				hostId: options.host.id,
+				hostName: options.host.name,
+				entries: 0,
+				force: true,
+				identity: storeIdentity(options.host),
+				message: "crypto: recover member signing key",
+			});
+			if (!installed) installSigningIdentity(options.agentDir, recovery);
+			const pinned = await pinProjectSigningKey({
+				agentDir: options.agentDir,
+				manifest: updated,
+				member: options.member,
+				key: recovery.id,
+				host: options.host.id,
+				...(options.now ? { now: options.now } : {}),
+			});
+			if (readSigningIdentity(options.agentDir, options.member)?.id !== recovery.id)
+				throw new Error("muninn: recovery identity was not installed");
+			finishSigningTransaction(options.agentDir);
+			return {
+				schema: 1,
+				kind: "key-recovery",
+				key: publicSigningIdentity(recovery),
+				key_enrolled: !existed,
+				key_pinned: pinned.changed,
+			};
+		}),
+	);
 }
 
 export interface DeclareProjectKeyEventResult {

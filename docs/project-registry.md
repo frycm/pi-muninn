@@ -36,7 +36,7 @@ The current registry schema is:
           "linkedAt": "2026-09-01T12:01:00.000Z"
         },
         {
-          "root": "/src/pi-muninn-phase-3",
+          "root": "/src/pi-muninn-worktree",
           "gitCommonDir": "/src/pi-muninn/.git",
           "linkedAt": "2026-09-01T12:05:00.000Z"
         }

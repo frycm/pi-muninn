@@ -20,7 +20,8 @@ import { resolveLogicalProject } from "../../src/project/resolver.ts";
 import type { HostIdentity } from "../../src/store/host.ts";
 import { ensureStore, projectStoreIdentity } from "../../src/store/init.ts";
 import { readProjectManifest, setProjectRemote } from "../../src/store/project-manifest.ts";
-import { sync } from "../../src/sync/sync.ts";
+import { authorizeJournalRemote } from "../../src/sync/remote.ts";
+import { type SyncOptions, sync as syncStore } from "../../src/sync/sync.ts";
 import { declareTeamEvent, projectTeamRoster } from "../../src/team/lifecycle.ts";
 
 const execFileAsync = promisify(execFile);
@@ -442,3 +443,9 @@ describe("distributed project journal", () => {
 		}
 	});
 });
+
+// Explicit transport setup for these interoperability fixtures.
+async function sync(options: SyncOptions & { remote: string | null }) {
+	await authorizeJournalRemote(options.storePath, options.remote);
+	return syncStore(options);
+}

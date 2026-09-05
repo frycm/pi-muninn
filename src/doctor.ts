@@ -13,6 +13,7 @@ import { readProjectRegistry } from "./project/registry.ts";
 import { type ResolvedProject, resolveLogicalProject } from "./project/resolver.ts";
 import { canonicalPath } from "./store/paths.ts";
 import { type ProjectManifest, readProjectManifest } from "./store/project-manifest.ts";
+import { readAuthorizedRemote } from "./sync/remote.ts";
 import { lifecycleWarnings, type TeamRosterGovernance } from "./team/lifecycle.ts";
 
 export type DoctorStatus = "ok" | "warning" | "error";
@@ -309,29 +310,31 @@ async function checkRemote(
 			return;
 		}
 	}
-	if (manifest.remote === null && !origin) add("remote.consistent", "ok", "no project journal remote is configured");
-	else if (manifest.remote === null) {
+	const approved = await readAuthorizedRemote(storePath);
+	if (!approved) {
 		add(
 			"remote.consistent",
-			"warning",
-			"Git origin is ignored because the manifest remote is unset",
-			"set it with `muninn project remote URL` or remove origin",
+			origin || manifest.remote ? "warning" : "ok",
+			origin || manifest.remote
+				? "shared remote metadata and ambient origin do not grant local sync approval"
+				: "no project journal remote is configured",
+			...(origin || manifest.remote ? ["approve the destination with `muninn project remote URL`"] : []),
 		);
-	} else if (!origin) {
+	} else if (manifest.remote !== approved) {
 		add(
 			"remote.consistent",
 			"warning",
-			"manifest remote is set but Git origin is missing",
+			"advertised manifest remote differs from the locally approved destination; sync keeps the local approval",
+			"verify the intended URL and use `muninn project remote URL` if changing it",
+		);
+	} else if (origin !== approved) {
+		add(
+			"remote.consistent",
+			"warning",
+			"Git origin differs from the locally approved destination",
 			"run `muninn sync` to configure origin",
 		);
-	} else if (origin !== manifest.remote) {
-		add(
-			"remote.consistent",
-			"error",
-			"manifest remote differs from Git origin",
-			"verify the intended journal before syncing",
-		);
-	} else add("remote.consistent", "ok", "manifest remote and Git origin agree");
+	} else add("remote.consistent", "ok", "local approval, advertised remote and Git origin agree");
 }
 
 function finish(checks: DoctorCheck[], project?: ResolvedProject): DoctorResult {

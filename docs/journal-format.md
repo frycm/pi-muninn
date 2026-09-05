@@ -1,10 +1,10 @@
 # Markdown journal format
 
-> **Legacy migration input.** Phase 3 writes the
+> **Legacy migration input.** Current versions write the
 > [logical-project JSONL format](project-journal-format.md). This grammar remains readable so
 > migration can preserve every valid record and stable ID.
 
-This was the Phase 1 journal source from which its lexical index was rebuilt.
+This was the legacy journal source from which its lexical index was rebuilt.
 `src/journal/format.ts` implements this grammar and `test/unit/journal-format.test.ts` is its
 executable copy.
 
@@ -131,7 +131,7 @@ break evidence resolution. A changed record carries `redacted: true`.
 `source: agent` even when they summarize a user session. The journal is historical evidence;
 it does not override the current repository, configuration, tests or explicit instructions.
 
-## Phase 3 migration
+## Migration to the current journal
 
 Migration reads only complete valid entries and preserves:
 

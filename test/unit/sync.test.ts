@@ -14,7 +14,8 @@ import type { MemberIdentity } from "../../src/project/registry.ts";
 import type { HostIdentity } from "../../src/store/host.ts";
 import { type EnsureProjectStoreOptions, ensureStore } from "../../src/store/init.ts";
 import { withStoreLock } from "../../src/store/lock.ts";
-import { mergeProjectManifests, readProjectManifest } from "../../src/store/project-manifest.ts";
+import { mergeProjectManifests, readProjectManifest, setProjectRemote } from "../../src/store/project-manifest.ts";
+import { authorizeJournalRemote } from "../../src/sync/remote.ts";
 import { describeSync, sync } from "../../src/sync/sync.ts";
 import { declareTeamEvent, projectTeamRoster } from "../../src/team/lifecycle.ts";
 
@@ -55,7 +56,8 @@ async function note(store: string, host: HostIdentity, member: MemberIdentity, b
 
 async function synchronize(store: string, host: HostIdentity, remoteUrl: string | null = remote) {
 	resetCommitDebounce();
-	return sync({ storePath: store, hostId: host.id, hostName: host.name, remote: remoteUrl });
+	await authorizeJournalRemote(store, remoteUrl);
+	return sync({ storePath: store, hostId: host.id, hostName: host.name });
 }
 
 async function seed(): Promise<void> {
@@ -210,7 +212,6 @@ describe("project journal sync", () => {
 			storePath: one,
 			hostId: hostOne.id,
 			hostName: hostOne.name,
-			remote,
 			noPush: true,
 		});
 		expect(noPush.notes).toContain("push skipped");
@@ -218,7 +219,6 @@ describe("project journal sync", () => {
 			storePath: one,
 			hostId: hostOne.id,
 			hostName: hostOne.name,
-			remote,
 			signal: AbortSignal.abort(),
 		});
 		expect(expired.problem).toContain("ran out of time");
@@ -245,12 +245,12 @@ describe("project journal sync", () => {
 			mode: "require",
 			requiredAfter: "2026-09-04T12:00:00.000Z",
 		});
+		await authorizeJournalRemote(one, remote);
 		const result = await sync({
 			storePath: one,
 			agentDir,
 			hostId: hostOne.id,
 			hostName: hostOne.name,
-			remote,
 		});
 		expect(result).toMatchObject({ stoppedAt: "push", pushed: false });
 		expect(result.problem).toContain("local verification policy");
@@ -265,7 +265,7 @@ describe("project journal sync", () => {
 		});
 		const plain = join(root, "plain");
 		mkdirSync(plain);
-		const invalid = await sync({ storePath: plain, hostId: hostOne.id, hostName: hostOne.name, remote });
+		const invalid = await sync({ storePath: plain, hostId: hostOne.id, hostName: hostOne.name });
 		expect(invalid.problem).toContain("not a git repository");
 	});
 });
@@ -297,4 +297,56 @@ describe("project manifest reconciliation", () => {
 			),
 		).toThrow(/remote conflict/);
 	});
+});
+
+describe("local transport authorization", () => {
+	it.each([false, true])("never redirects future syncs through shared metadata (diverged=%s)", async (diverged) => {
+		await seed();
+		const sink = join(root, "sink.git");
+		await git(root, ["init", "--bare", "--quiet", "--initial-branch=main", sink]);
+		await git(root, ["clone", "--quiet", remote, two]);
+		setProjectRemote(two, sink);
+		await git(two, [
+			"-c",
+			"user.name=Peer",
+			"-c",
+			"user.email=peer@example.test",
+			"commit",
+			"--quiet",
+			"-am",
+			"change advertised URL",
+		]);
+		await git(two, ["push", "--quiet", "origin", "main"]);
+		if (diverged) await note(one, hostOne, memberOne, "local unpushed history");
+		const run = () => sync({ storePath: one, hostId: hostOne.id, hostName: hostOne.name });
+		expect((await run()).problem).toBeUndefined();
+		expect(readProjectManifest(one)?.remote).toBe(sink);
+		await note(one, hostOne, memberOne, "future private note");
+		expect((await run()).pushed).toBe(true);
+		expect((await git(one, ["remote", "get-url", "origin"])).trim()).toBe(remote);
+		expect(await git(sink, ["branch", "--list"])).toBe("");
+		await authorizeJournalRemote(one, null);
+		expect((await run()).fetched).toBe(false);
+	});
+
+	it("does not bootstrap approval from legacy manifest or ambient origin", async () => {
+		await ensureStore(one, options(hostOne, memberOne));
+		setProjectRemote(one, remote);
+		await git(one, ["remote", "add", "origin", remote]);
+		const result = await sync({ storePath: one, hostId: hostOne.id, hostName: hostOne.name });
+		expect(result.fetched).toBe(false);
+		expect(result.notes.join(" ")).toContain("approve");
+	});
+});
+
+it("pushes only to the approved URL even when origin has a separate pushurl", async () => {
+	await ensureStore(one, options(hostOne, memberOne));
+	const sink = join(root, "push-sink.git");
+	await git(root, ["init", "--bare", "--quiet", "--initial-branch=main", sink]);
+	await git(one, ["remote", "add", "origin", remote]);
+	await git(one, ["remote", "set-url", "--push", "origin", sink]);
+	await authorizeJournalRemote(one, remote);
+	expect((await sync({ storePath: one, hostId: hostOne.id, hostName: hostOne.name })).pushed).toBe(true);
+	expect(await git(sink, ["branch", "--list"])).toBe("");
+	expect(await git(remote, ["branch", "--list"])).toContain("main");
 });
