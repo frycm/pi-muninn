@@ -37,6 +37,8 @@ export type GitCommand =
 	/** Clone one explicit journal URL into the empty working directory. */
 	| { kind: "clone"; url: string }
 	| { kind: "config"; key: "user.name" | "user.email"; value: string }
+	| { kind: "journal-remote-read" }
+	| { kind: "journal-remote-write"; url: string | null }
 	| { kind: "add"; paths: string[] }
 	| { kind: "commit"; message: string; paths: string[] }
 	| { kind: "status-porcelain"; paths: string[] }
@@ -62,6 +64,7 @@ export type GitCommand =
 	| { kind: "rebase-continue" }
 	| { kind: "rebase-abort" }
 	| { kind: "push"; remote: string; branch: string }
+	| { kind: "push-url"; url: string; branch: string }
 	/** Read one side of a conflicted file: 2 is ours, 3 is theirs. */
 	| { kind: "show-stage"; stage: 2 | 3; path: string }
 	/** Read a file as of a ref, without checking anything out. */
@@ -87,12 +90,15 @@ export class GitMissingError extends Error {
 
 export class GitError extends Error {
 	readonly stderr: string;
+	readonly exitCode: number | undefined;
 	readonly command: GitCommand;
 	constructor(command: GitCommand, stderr: string, cause?: unknown) {
 		super(`git ${command.kind} failed: ${stderr.trim() || String(cause)}`);
 		this.name = "GitError";
 		this.stderr = stderr;
 		this.command = command;
+		const code = (cause as { code?: unknown } | undefined)?.code;
+		this.exitCode = typeof code === "number" ? code : undefined;
 	}
 }
 
@@ -155,6 +161,11 @@ export function toArgv(command: GitCommand): string[] {
 			for (const path of command.paths) assertStageable(path);
 			if (command.paths.length === 0) throw new Error("git add needs at least one path");
 			return ["add", "-A", "--", ...command.paths];
+		case "journal-remote-read":
+			return ["config", "--local", "--no-includes", "--get", "muninn.remote"];
+		case "journal-remote-write":
+			if (command.url !== null) assertRemoteUrl(command.url);
+			return ["config", "--local", "--no-includes", "--replace-all", "muninn.remote", command.url ?? ""];
 		case "commit": {
 			if (command.message.trim() === "") throw new Error("git commit needs a message");
 			for (const path of command.paths) assertStageable(path);
@@ -210,6 +221,10 @@ export function toArgv(command: GitCommand): string[] {
 			// `HEAD:<branch>` and never `--force`: sync fast-forwards the remote or
 			// it reports. Losing another host's commits is not a thing Muninn does.
 			return ["push", "--quiet", command.remote, `HEAD:${command.branch}`];
+		case "push-url":
+			assertRemoteUrl(command.url);
+			assertName("branch", command.branch);
+			return ["push", "--quiet", "--", command.url, `HEAD:${command.branch}`];
 		case "show-stage":
 			assertReadablePath(command.path);
 			return ["show", `:${command.stage}:${command.path}`];

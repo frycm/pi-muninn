@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
 	chmodSync,
 	closeSync,
+	type Dirent,
 	existsSync,
 	fsyncSync,
 	linkSync,
@@ -215,7 +216,7 @@ export function inspectTranscriptExchange(
 		}
 	}
 
-	let entries: ReturnType<typeof readdirSync>;
+	let entries: Dirent<string>[];
 	try {
 		entries = readdirSync(projectRoot, { withFileTypes: true, encoding: "utf-8" });
 	} catch (error) {

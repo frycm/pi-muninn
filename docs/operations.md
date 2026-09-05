@@ -4,11 +4,7 @@ Muninn stores one logical project's history in a separate Git repository. The co
 repository remains authoritative; this repository contains immutable JSONL history,
 `project.json` team metadata and an optional migration manifest.
 
-Validated onboarding, lifecycle governance, conflict resolution, diagnostics, optional
-Phase 6 integrations and optional Phase 7 signatures are implemented. The manual team-join
-procedure below is a recovery path, not the normal setup. Integration boundaries are in
-[phase-6-plan.md](phase-6-plan.md); the cryptographic threat model is in
-[phase-7-plan.md](phase-7-plan.md).
+See the [user guide](../README.md) for installation, the [technical design](technical-design.md) for implementation, and the [security model](security.md) for trust limits.
 
 ## Start a local project journal
 
@@ -30,9 +26,7 @@ muninn project remote ssh://git.example/team/my-project-journal.git
 muninn sync
 ```
 
-The command writes the remote to the user-owned journal manifest. Muninn never infers it
-from the code repository and ignores an ambient journal-repository `origin` while the
-manifest remote is unset.
+The command approves the URL in the journal repository’s local Git configuration and also advertises it in the shared manifest. Synced metadata cannot grant or change local approval. An absent approval means local-only even if a legacy manifest or ambient `origin` names a URL. Existing installations must explicitly approve their intended destination once after upgrading. `muninn project remote --remove` disables local synchronization.
 
 ## Join an existing team journal
 
@@ -144,11 +138,11 @@ muninn crypto public
 muninn sync
 ```
 
-`rotate` creates a successor signed by both keys, records an effective revocation of the old
-key, commits the manifest, and then atomically replaces the local private identity. Trust
-follows the valid transition from an existing pin; teammates do not need a new pin. If the
-process stops after committing the successor but before replacing the private file, preserve
-the store and use the recovery procedure below rather than editing `project.json`.
+`rotate` durably prepares private successor material in `<agent-dir>/muninn/signing-pending.json`, then publishes and commits the public transition and revocation, installs the successor, and clears the pending transaction. Trust follows an authorized transition from an existing pin. Back up the new private identity after successful rotation.
+
+If a hook, Git commit or process fails, preserve the pending file and rerun **the same command in the same project**. It reuses the same key and event instead of generating another successor. Recovery uses the same durable transaction and can also be retried. Until completion, initialization and identity changes in other projects are refused.
+
+If later governance invalidates a pending rotation, automatic retry refuses to install an untrusted successor. Stop writers; privately back up the store, `signing.json`, `signing-pending.json` and trust file. Move both private identity files to an encrypted recovery archive outside the active agent directory, retaining mode `0600`. Then use `muninn crypto recover` and independently establish new teammate pins. Do not edit the synchronized history or delete the only copy of pending private material. A corrupt pending file should likewise be preserved for diagnosis before recovery.
 
 The local signing identity is shared by the member across logical projects, while public-key
 registries and trust remain project-specific. After rotation, visit every other signed project
@@ -321,7 +315,7 @@ identical replay is a no-op. `show` reports that local copy as `availability: "e
 without changing the sender's original pointer.
 
 The `age` executable is needed only for these two commands. Muninn does not manage recipient
-or identity keys and an encryption key must not be treated as a Phase 7 signing identity.
+or identity keys and an encryption key must not be treated as a signing identity.
 Imported copies are local caches: after preserving anything still needed, a user may remove
 one explicitly; the journal record remains and its transcript becomes locally unavailable.
 
@@ -345,7 +339,7 @@ inside a session; resolution is shell-only.
 If `resolve` says the target is not conflicted, it writes nothing. Re-run `muninn conflicts`
 after syncing before deciding whether another resolution is needed.
 
-## Migrate a Phase 1 Markdown store
+## Migrate a legacy Markdown store
 
 Migration is restartable, idempotent and leaves every source byte untouched:
 
@@ -400,8 +394,8 @@ deleting or moving a corrupt `.index/` remains a separate explicit action follow
 transcript exchange directories for ownership, private permissions, symlinks, size and a
 session-backed record ID, but does not treat an absent exchange cache as a problem.
 
-If two manifests name different remotes, choose the intended URL explicitly with
-`muninn project remote`; Muninn will not guess. If a host UUID appears under another member,
+If shared metadata differs from local transport approval, inspect the change. To change or restore the advertised destination explicitly, use
+`muninn project remote URL`; synchronization retains the approved local destination. If a host UUID appears under another member,
 stop and restore the correct host identity or journal clone before syncing again.
 
 A record may point to a transcript that exists only on its originating machine. Search and
@@ -423,12 +417,7 @@ reference environment is:
 `test/unit/query-perf.test.ts` enforces the 50,000-record open/search budgets. Query/index
 equivalence tests enforce that speed cannot change the canonical record set.
 
-The Phase 5 checked-in retrieval corpus has eight development/operations judgments and
-measures Recall@10 `1.0`, MRR@10 `0.9375` and nDCG@10 `0.953866` identically in scan and
-index modes. This is a regression fixture, not evidence broad enough to justify semantic
-retrieval: it is below the 50-real-query experiment gate, while lexical recall is already
-above `0.90`. The release therefore has no embedding model, vector store or hidden retrieval
-service.
+The current fixture has 60 crafted queries over 34 records and measures Recall@10 `1.0`, MRR@10 `0.955556` and nDCG@10 `0.967062`, with identical scan/index rankings. These are authored regression scenarios, not production query measurements. Signed-history benchmarks additionally cover cold reads, 50 warm queries and append refresh over 10,000 records. See [testing](testing.md) for commands, budgets and limitations.
 
 The disposable index is currently schema 2. An old schema, invalid analyzer, damaged JSON,
 oversized file or mismatch with canonical record terms causes an explicit local rebuild;

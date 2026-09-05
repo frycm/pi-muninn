@@ -1,4 +1,5 @@
 /** Explicit cryptographic bootstrap; never called by ordinary startup or writes. */
+import { existsSync } from "node:fs";
 import type { HostIdentity } from "../store/host.ts";
 import { type ProjectManifest, readProjectManifest } from "../store/project-manifest.ts";
 import {
@@ -8,6 +9,7 @@ import {
 	readSigningIdentity,
 } from "./identity.ts";
 import { enrollProjectSigningKey } from "./registry.ts";
+import { signingTransactionPath, withSigningIdentityLock } from "./transaction.ts";
 import { pinProjectSigningKey } from "./trust.ts";
 
 export interface InitializeProjectCryptographyResult {
@@ -27,36 +29,40 @@ export async function initializeProjectCryptography(options: {
 	member: string;
 	host: HostIdentity;
 }): Promise<InitializeProjectCryptographyResult> {
-	const before = readProjectManifest(options.storePath);
-	if (!before) throw new Error(`muninn: no project.json at ${options.storePath}`);
-	const existing = readSigningIdentity(options.agentDir, options.member);
-	if (before.signing_keys.some((key) => key.member === options.member) && !existing) {
-		throw new Error("muninn: this member already has signing history; use `muninn crypto recover`");
-	}
-	const initialized = initializeSigningIdentity(options.agentDir, options.member);
-	const enrollment = await enrollProjectSigningKey({
-		storePath: options.storePath,
-		project: options.project,
-		member: options.member,
-		host: options.host,
-		identity: initialized.identity,
+	return withSigningIdentityLock(options.agentDir, options.host.id, async () => {
+		if (existsSync(signingTransactionPath(options.agentDir)))
+			throw new Error("muninn: finish the pending crypto rotate/recover before initializing cryptography");
+		const before = readProjectManifest(options.storePath);
+		if (!before) throw new Error(`muninn: no project.json at ${options.storePath}`);
+		const existing = readSigningIdentity(options.agentDir, options.member);
+		if (before.signing_keys.some((key) => key.member === options.member) && !existing) {
+			throw new Error("muninn: this member already has signing history; use `muninn crypto recover`");
+		}
+		const initialized = initializeSigningIdentity(options.agentDir, options.member);
+		const enrollment = await enrollProjectSigningKey({
+			storePath: options.storePath,
+			project: options.project,
+			member: options.member,
+			host: options.host,
+			identity: initialized.identity,
+		});
+		const manifest = readProjectManifest(options.storePath);
+		if (!manifest) throw new Error(`muninn: no project.json at ${options.storePath}`);
+		const pinned = await pinProjectSigningKey({
+			agentDir: options.agentDir,
+			manifest,
+			member: options.member,
+			key: initialized.identity.id,
+			host: options.host.id,
+		});
+		return {
+			schema: 1,
+			kind: "cryptographic-initialization",
+			identity: publicSigningIdentity(initialized.identity),
+			identity_created: initialized.created,
+			key_enrolled: !enrollment.replayed,
+			key_pinned: pinned.changed,
+			manifest,
+		};
 	});
-	const manifest = readProjectManifest(options.storePath);
-	if (!manifest) throw new Error(`muninn: no project.json at ${options.storePath}`);
-	const pinned = await pinProjectSigningKey({
-		agentDir: options.agentDir,
-		manifest,
-		member: options.member,
-		key: initialized.identity.id,
-		host: options.host.id,
-	});
-	return {
-		schema: 1,
-		kind: "cryptographic-initialization",
-		identity: publicSigningIdentity(initialized.identity),
-		identity_created: initialized.created,
-		key_enrolled: !enrollment.replayed,
-		key_pinned: pinned.changed,
-		manifest,
-	};
 }

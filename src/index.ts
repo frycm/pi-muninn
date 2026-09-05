@@ -642,7 +642,6 @@ export default function (pi: ExtensionAPI): void {
 				agentDir: getAgentDir(),
 				hostId: current.host.id,
 				hostName: current.host.name,
-				remote: readProjectManifest(scope.path)?.remote ?? null,
 				entries: pending.get(scope.path) ?? 0,
 				identity: storeIdentity(current.host),
 				...(options.noPush ? { noPush: true } : {}),
@@ -708,7 +707,7 @@ export default function (pi: ExtensionAPI): void {
 		// that reaches the network, and a shutdown must not hang on one. The cap
 		// stops the transaction between steps and kills a hanging fetch or push;
 		// a rebase, once started, always finishes.
-		// The setting controls timing; the explicit project manifest remote
+		// The setting controls timing; the explicit local transport approval
 		// decides whether there is network work to do.
 		if (session?.loaded.settings.sync.onShutdown) {
 			queue.enqueue("sync", async () => {

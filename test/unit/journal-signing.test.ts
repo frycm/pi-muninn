@@ -202,13 +202,16 @@ describe("signed journal records", () => {
 				kind: "job",
 				event: "completed",
 				external_id: "job-1",
-				observed_at: "2026-09-04T12:00:00.000Z",
+				observed_at: "2025-01-01T12:00:00.000Z",
 				metadata: {},
 			},
 		};
 		const first = await appendIntegrationObservation(observation, { storePath, ...actor });
 		const replay = await appendIntegrationObservation(observation, { storePath, ...actor });
 		expect(first.replayed).toBe(false);
+		expect(first.record.at >= actor.signing.created_at).toBe(true);
+		expect(first.record.integration?.observed_at).toBe("2025-01-01T12:00:00.000Z");
+		expect(verifyJournalRecordSignature(first.record, actor.signing.public_key)).toBe(true);
 		expect(replay).toMatchObject({ id: first.id, replayed: true });
 		expect(replay.record.signature).toEqual(first.record.signature);
 	});

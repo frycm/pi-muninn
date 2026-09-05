@@ -68,22 +68,70 @@ export class VerificationProjection {
 			}
 			if (!this.distrust.has(pin.key)) trusted.add(pin.key);
 		}
+		const anchors = new Set(trusted);
+		let accepted: SigningKeyEvent[] = [];
+		const keys = [...this.keys.values()].sort(
+			(a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id),
+		);
+		const events = [...(manifest?.key_events ?? [])].sort(
+			(a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id),
+		);
+		const transitionAllowed = (key: SigningKeyDescriptor, evidence: readonly SigningKeyEvent[]) =>
+			!evidence.some((event) => {
+				if (event.key !== key.previous || event.effective_at > key.created_at) return false;
+				// An atomic handover lets exactly this successor revoke its predecessor
+				// at creation. Siblings and later descendants do not get this exception.
+				return !(
+					event.kind === "key-revoked" &&
+					event.actor_key === key.id &&
+					event.at === key.created_at &&
+					event.effective_at === key.created_at
+				);
+			});
+		const rebuildTrust = (at: string, evidence: readonly SigningKeyEvent[] = accepted) => {
+			trusted.clear();
+			for (const anchor of anchors) trusted.add(anchor);
+			let changed = true;
+			while (changed) {
+				changed = false;
+				for (const key of keys) {
+					if (
+						key.created_at > at ||
+						trusted.has(key.id) ||
+						this.distrust.has(key.id) ||
+						!key.previous ||
+						!trusted.has(key.previous)
+					)
+						continue;
+					if (!transitionAllowed(key, evidence)) continue;
+					trusted.add(key.id);
+					changed = true;
+				}
+			}
+		};
+		for (const event of events) {
+			rebuildTrust(event.at);
+			if (!trusted.has(event.actor_key) || this.keyState(event.actor_key, event.at, accepted) !== "verified") continue;
+			accepted.push(event);
+		}
+		// A later declaration may invalidate an earlier actor's transition.
+		// Revoke that actor's authority over other keys as well. Keep only the
+		// narrow self-invalidating ancestor declaration: without that evidence,
+		// the compromised chain would resurrect itself. Test authorization with
+		// the event removed so self-revocation and atomic handover remain valid.
 		let changed = true;
 		while (changed) {
 			changed = false;
-			for (const key of this.keys.values()) {
-				if (trusted.has(key.id) || this.distrust.has(key.id) || !key.previous || !trusted.has(key.previous)) continue;
-				trusted.add(key.id);
+			for (const event of [...accepted].reverse()) {
+				const others = accepted.filter((candidate) => candidate.id !== event.id);
+				rebuildTrust(event.at, others);
+				if (trusted.has(event.actor_key) && this.keyState(event.actor_key, event.at, others) === "verified") continue;
+				accepted = others;
 				changed = true;
 			}
 		}
+		rebuildTrust("9999-12-31T23:59:59.999Z");
 		this.trustedKeys = trusted;
-		const accepted: SigningKeyEvent[] = [];
-		for (const event of manifest?.key_events ?? []) {
-			if (!trusted.has(event.actor_key)) continue;
-			if (this.keyState(event.actor_key, event.at, accepted) !== "verified") continue;
-			accepted.push(event);
-		}
 		this.acceptedKeyEvents = accepted;
 		if (omittedWarnings > 0) warnings.push(`${omittedWarnings} additional verification warning(s) omitted`);
 		this.warnings = warnings;
@@ -115,8 +163,8 @@ export class VerificationProjection {
 	keyEvent(event: SigningKeyEvent): VerificationState {
 		const actor = this.keys.get(event.actor_key);
 		if (!actor || actor.member !== event.member || event.at < actor.created_at) return "invalid";
-		if (!this.trustedKeys.has(actor.id)) return "untrusted";
 		if (this.acceptedKeyEvents.some((candidate) => candidate.id === event.id)) return "verified";
+		if (!this.trustedKeys.has(actor.id)) return "untrusted";
 		return this.keyState(actor.id, event.at, this.acceptedKeyEvents);
 	}
 

@@ -129,7 +129,7 @@ function governedOptions(options: AppendJournalOptions): AppendJournalOptions {
  */
 export async function appendIntegrationObservation(
 	record: NewJournalRecord,
-	options: Omit<AppendJournalOptions, "id" | "now">,
+	options: Omit<AppendJournalOptions, "id">,
 ): Promise<AppendIntegrationResult> {
 	assertAuthority({ authority: "integration", record }, newEntryId());
 	assertSigningEnrollment(options);
@@ -186,13 +186,9 @@ export async function appendIntegrationObservation(
 				replayed: true,
 			};
 		}
-		const written = appendJournalRecordLocked(
-			record,
-			governedOptions({
-				...options,
-				now: new Date(integration.observed_at),
-			}),
-		);
+		// The local signature attests when this delivery was appended. The
+		// producer's (possibly historical) clock remains in observed_at.
+		const written = appendJournalRecordLocked(record, governedOptions(options));
 		return { ...written, replayed: false };
 	});
 }

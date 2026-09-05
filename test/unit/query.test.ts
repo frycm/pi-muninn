@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { newHostId, newMemberId, newProjectId } from "../../src/ids.ts";
 import { appendJournalRecord } from "../../src/journal/jsonl.ts";
 import { type JournalQuery, JournalQueryError, JournalQueryService } from "../../src/journal/query.ts";
-import { journalIndexPath } from "../../src/journal/query-index.ts";
+import { JournalLexicalIndex, journalIndexPath } from "../../src/journal/query-index.ts";
 import type { JournalRecord, NewJournalRecord } from "../../src/journal/record.ts";
 
 let store: string;
@@ -373,6 +373,24 @@ describe("canonical journal query", () => {
 });
 
 describe("scan/index equivalence", () => {
+	it("narrows common n-grams before record scoring without losing fuzzy, infix or prefix matches", async () => {
+		const needle = await append(
+			{ type: "note", source: "user", channel: "cli", body: "needle-zebra marker" },
+			"2026-09-05T10:00:00.000Z",
+		);
+		const distraction = await append(
+			{ type: "note", source: "user", channel: "cli", body: "deployment ordinary" },
+			"2026-09-05T10:00:00.000Z",
+		);
+		const { index } = JournalLexicalIndex.open(store, [...records, needle, distraction]);
+		for (const query of ["needle-zebrb", "needle-zeb", "zebra", "needle-zebra", needle.id]) {
+			expect([...index.candidates(query)]).toEqual([needle.id]);
+			expect(service("index").query({ query, explain: true }).records).toEqual(
+				service("scan").query({ query, explain: true }).records,
+			);
+		}
+	});
+
 	it("returns identical records, scores, and explanations for every query fixture", () => {
 		const scan = service("scan");
 		const indexed = service("index");
@@ -449,5 +467,81 @@ describe("scan/index equivalence", () => {
 		appendFileSync(shard, "{bad json}\n");
 		const result = service("scan").query({ query: "database" });
 		expect(result.warnings.some((warning) => warning.startsWith("malformed:"))).toBe(true);
+	});
+
+	it("refreshes index diagnostics when the cache is damaged and then repaired", async () => {
+		const indexed = service("index");
+		writeFileSync(journalIndexPath(store), "{broken");
+		const fresh = await append(
+			{ type: "note", source: "user", channel: "cli", body: "fresh after cache corruption" },
+			"2026-09-05T10:00:00.000Z",
+		);
+		const repaired = indexed.query({ ids: [fresh.id] });
+		expect(repaired.records[0]?.id).toBe(fresh.id);
+		expect(repaired.warnings.some((warning) => warning.startsWith("index rebuilt:"))).toBe(true);
+		indexed.refresh();
+		expect(indexed.query().warnings.some((warning) => warning.startsWith("index rebuilt:"))).toBe(false);
+	});
+});
+
+describe("live query snapshots and read budgets", () => {
+	it.each([
+		"scan",
+		"index",
+	] as const)("refreshes %s readers after another session appends or replaces a shard", async (mode) => {
+		const first = service(mode);
+		const second = service(mode);
+		const fresh = await append(
+			{ type: "note", source: "user", channel: "cli", body: "external-session unique" },
+			"2026-09-05T10:00:00.000Z",
+		);
+		for (const reader of [first, second]) {
+			expect(reader.has(fresh.id)).toBe(true);
+			expect(reader.query({ query: "external-session" }).records[0]?.id).toBe(fresh.id);
+			expect(reader.read(fresh.id)?.records[0]?.body).toBe(fresh.body);
+		}
+		const path = join(store, "journal", localMember, localHost, "2026-09.jsonl");
+		writeFileSync(path, readFileSync(path, "utf-8").replace("external-session", "modified-session"));
+		expect(first.query({ query: "modified-session" }).records[0]?.id).toBe(fresh.id);
+		rmSync(path);
+		expect(second.has(fresh.id)).toBe(false);
+	});
+
+	it("bounds full records, relations and warnings without changing signed payloads", async () => {
+		const target = records[0] as JournalRecord;
+		const largeRecords: JournalRecord[] = [];
+		for (let n = 0; n < 5; n++)
+			largeRecords.push(
+				await append(
+					{
+						type: "note",
+						source: "agent",
+						channel: "tui",
+						body: "x".repeat(60_000),
+						relations: [{ type: "annotates", target: target.id }],
+					},
+					"2026-09-05T10:00:00.000Z",
+				),
+			);
+		const reader = service("index", { maxChars: 16_000 });
+		const read = reader.read(target.id, 1);
+		expect(JSON.stringify(read).length).toBeLessThanOrEqual(16_000);
+		expect(read?.truncated).toBe(true);
+		expect(read?.records[0]?.body).toBe(target.body);
+		expect(read?.warnings.join(" ")).toContain("omitted");
+		const oversized = largeRecords[0];
+		if (!oversized) throw new Error("missing oversized fixture");
+		const omitted = reader.read(oversized.id);
+		expect(omitted).toMatchObject({ records: [], truncated: true });
+		expect(omitted?.warnings.join(" ")).toContain(`muninn show ${oversized.id}`);
+		expect(JSON.stringify({ schema: 1, id: oversized.id, ...omitted }).length).toBeLessThanOrEqual(16_000);
+	});
+
+	it("does not let returned nested objects mutate a cached snapshot", () => {
+		const reader = service();
+		const record = reader.read(records[0]?.id as string)?.records[0];
+		if (!record) throw new Error("missing fixture");
+		record.tags.push("tampered");
+		expect(reader.read(record.id)?.records[0]?.tags).not.toContain("tampered");
 	});
 });

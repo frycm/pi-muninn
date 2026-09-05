@@ -200,6 +200,19 @@ describe("journal_context", () => {
 		expect(parsed.missing).toEqual([missing]);
 		expect(text).not.toContain(unselected.id);
 	});
+
+	it("marks oversized existing records as truncated and still distinguishes missing IDs", async () => {
+		const large = await seed({ type: "note", source: "user", channel: "cli", body: "x".repeat(60_000) });
+		const small = await seed({ type: "note", source: "user", channel: "cli", body: "small selected evidence" });
+		const missing = newEntryId();
+		const rt = runtime();
+		const read = textOf(await run(journalReadTool(rt), { id: large.id }));
+		expect(read.length).toBeLessThanOrEqual(16_000);
+		expect(JSON.parse(read)).toMatchObject({ id: large.id, records: [], truncated: true });
+		const text = textOf(await run(journalContextTool(rt), { ids: [large.id, small.id, missing] }));
+		expect(text.length).toBeLessThanOrEqual(12_000);
+		expect(JSON.parse(text)).toMatchObject({ records: [{ id: small.id }], missing: [missing], truncated: true });
+	});
 });
 
 describe("journal_note", () => {

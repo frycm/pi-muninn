@@ -6,3 +6,55 @@
 {"id":"deployment-correction","query":"Friday deployment window","relevant":["j-019c1000-0006-7000-8000-000000000006"]}
 {"id":"ingress-typo","query":"ingresx","relevant":["j-019c1000-0007-7000-8000-000000000007"]}
 {"id":"linux-worker","query":"systemctl journalctl","relevant":["j-019c1000-0008-7000-8000-000000000008"]}
+{"id":"project-identity-question","query":"Why do linked worktrees share a journal?","relevant":["j-019c1000-0009-7000-8000-000000000009"]}
+{"id":"project-identity-terms","query":"opaque UUID checkout aliases","relevant":["j-019c1000-0009-7000-8000-000000000009"]}
+{"id":"local-registry-question","query":"Where are project mappings saved?","relevant":["j-019c1000-000a-7000-8000-00000000000a"]}
+{"id":"local-registry-terms","query":"registry.json local store","relevant":["j-019c1000-000a-7000-8000-00000000000a"]}
+{"id":"explicit-retrieval-question","query":"How does the agent load historical context?","relevant":["j-019c1000-000b-7000-8000-00000000000b"]}
+{"id":"explicit-retrieval-terms","query":"journal_search journal_context","relevant":["j-019c1000-000b-7000-8000-00000000000b"]}
+{"id":"sharded-storage-question","query":"Why are JSONL files sharded by host?","relevant":["j-019c1000-000c-7000-8000-00000000000c"]}
+{"id":"sharded-storage-terms","query":"UTC month shard","relevant":["j-019c1000-000c-7000-8000-00000000000c"],"path":["src/journal/jsonl.ts"]}
+{"id":"durable-append-question","query":"What happens to an unterminated crash tail?","relevant":["j-019c1000-000d-7000-8000-00000000000d"]}
+{"id":"durable-append-terms","query":"fsync complete JSON line","relevant":["j-019c1000-000d-7000-8000-00000000000d"]}
+{"id":"local-only-question","query":"How can I keep a project journal local only?","relevant":["j-019c1000-000e-7000-8000-00000000000e"]}
+{"id":"local-only-terms","query":"ambient origin approval","relevant":["j-019c1000-000e-7000-8000-00000000000e"],"branch":["main"]}
+{"id":"sync-authority-question","query":"How do I approve a journal remote?","relevant":["j-019c1000-000f-7000-8000-00000000000f"]}
+{"id":"sync-authority-terms","query":"local transport authorization","relevant":["j-019c1000-000f-7000-8000-00000000000f"]}
+{"id":"sync-conflict-question","query":"What conflicts can sync resolve?","relevant":["j-019c1000-0010-7000-8000-000000000010"]}
+{"id":"sync-conflict-terms","query":"rebase without force push","relevant":["j-019c1000-0010-7000-8000-000000000010"],"path":["src/sync/sync.ts"]}
+{"id":"sharing-question","query":"How does a teammate join a shared journal?","relevant":["j-019c1000-0011-7000-8000-000000000011"]}
+{"id":"sharing-terms","query":"project share approved URL","relevant":["j-019c1000-0011-7000-8000-000000000011"]}
+{"id":"join-validation-question","query":"What is validated before joining a journal?","relevant":["j-019c1000-0012-7000-8000-000000000012"]}
+{"id":"join-validation-terms","query":"regular data files ownership","relevant":["j-019c1000-0012-7000-8000-000000000012"]}
+{"id":"lexical-index-question","query":"Can I delete the search index?","relevant":["j-019c1000-0013-7000-8000-000000000013"]}
+{"id":"lexical-index-terms","query":"journal-v2.json canonical JSONL","relevant":["j-019c1000-0013-7000-8000-000000000013"]}
+{"id":"search-matching-question","query":"Does search normalize Unicode?","relevant":["j-019c1000-0014-7000-8000-000000000014"]}
+{"id":"search-matching-terms","query":"prefix fuzzy matching","relevant":["j-019c1000-0014-7000-8000-000000000014"],"path":["src/journal/query-index.ts"]}
+{"id":"relations-question","query":"How can I correct an earlier decision?","relevant":["j-019c1000-0015-7000-8000-000000000015"]}
+{"id":"relations-terms","query":"competing corrections conflicts","relevant":["j-019c1000-0015-7000-8000-000000000015"],"branch":["main"]}
+{"id":"authority-question","query":"Can a model create user corrections?","relevant":["j-019c1000-0016-7000-8000-000000000016"]}
+{"id":"authority-terms","query":"direct human resolution","relevant":["j-019c1000-0016-7000-8000-000000000016"]}
+{"id":"capture-outcome-question","query":"When is a task outcome recorded?","relevant":["j-019c1000-0017-7000-8000-000000000017"]}
+{"id":"capture-outcome-terms","query":"ordinary chat skipped","relevant":["j-019c1000-0017-7000-8000-000000000017"]}
+{"id":"checkpoint-question","query":"How are duplicate outcomes avoided after resume?","relevant":["j-019c1000-0018-7000-8000-000000000018"]}
+{"id":"checkpoint-terms","query":"compaction continuation links","relevant":["j-019c1000-0018-7000-8000-000000000018"],"path":["src/session/state.ts"]}
+{"id":"redaction-question","query":"Are credentials removed before signing?","relevant":["j-019c1000-0019-7000-8000-000000000019"]}
+{"id":"redaction-terms","query":"redaction unsafe display characters","relevant":["j-019c1000-0019-7000-8000-000000000019"]}
+{"id":"crypto-bootstrap-question","query":"How do I enable Ed25519 signing?","relevant":["j-019c1000-001a-7000-8000-00000000001a"]}
+{"id":"crypto-bootstrap-terms","query":"private keys never synchronized","relevant":["j-019c1000-001a-7000-8000-00000000001a"]}
+{"id":"trust-pins-question","query":"Does a self-proof make a teammate trusted?","relevant":["j-019c1000-001b-7000-8000-00000000001b"]}
+{"id":"trust-pins-terms","query":"fingerprint out of band","relevant":["j-019c1000-001b-7000-8000-00000000001b"]}
+{"id":"rotation-question","query":"Can I retry rotation after a failed commit?","relevant":["j-019c1000-001c-7000-8000-00000000001c"]}
+{"id":"rotation-terms","query":"successor predecessor handover","relevant":["j-019c1000-001c-7000-8000-00000000001c"],"path":["src/governance/operations.ts"],"branch":["main"]}
+{"id":"revocation-question","query":"Can a revoked key authorize a successor?","relevant":["j-019c1000-001d-7000-8000-00000000001d"]}
+{"id":"revocation-terms","query":"retrospective compromise transition","relevant":["j-019c1000-001d-7000-8000-00000000001d"]}
+{"id":"policy-question","query":"How does require mode treat legacy records?","relevant":["j-019c1000-001e-7000-8000-00000000001e"]}
+{"id":"policy-terms","query":"prospective cutoff observe","relevant":["j-019c1000-001e-7000-8000-00000000001e"]}
+{"id":"external-ingest-question","query":"Is replaying an integration delivery idempotent?","relevant":["j-019c1000-001f-7000-8000-00000000001f"]}
+{"id":"external-ingest-terms","query":"external ID changed content","relevant":["j-019c1000-001f-7000-8000-00000000001f"]}
+{"id":"backfill-question","query":"Can a new signing key import older audit events?","relevant":["j-019c1000-0020-7000-8000-000000000020"]}
+{"id":"backfill-terms","query":"observed_at local import time","relevant":["j-019c1000-0020-7000-8000-000000000020"],"path":["src/journal/writer.ts"]}
+{"id":"transcript-question","query":"How do I share an encrypted transcript?","relevant":["j-019c1000-0021-7000-8000-000000000021"]}
+{"id":"transcript-terms","query":"age explicit export import","relevant":["j-019c1000-0021-7000-8000-000000000021"]}
+{"id":"live-query-question","query":"Will a live reader see another session append?","relevant":["j-019c1000-0022-7000-8000-000000000022"]}
+{"id":"live-query-terms","query":"manifest trust fingerprint","relevant":["j-019c1000-0022-7000-8000-000000000022"]}

@@ -64,7 +64,12 @@
 		"body": "The deployment window moved from Tuesday to Friday.",
 		"tags": ["deploy"],
 		"paths": ["deploy/calendar.md"],
-		"relations": [{ "type": "corrects", "target": "j-019c1000-0003-7000-8000-000000000003" }]
+		"relations": [
+			{
+				"type": "corrects",
+				"target": "j-019c1000-0003-7000-8000-000000000003"
+			}
+		]
 	},
 	{
 		"id": "j-019c1000-0007-7000-8000-000000000007",
@@ -86,5 +91,473 @@
 		"body": "Restart the worker with systemctl and inspect its journalctl output.",
 		"tags": ["linux", "operations"],
 		"paths": ["runbooks/worker.md"]
+	},
+	{
+		"id": "j-019c1000-0009-7000-8000-000000000009",
+		"at": "2026-08-10T00:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Logical project identity is an opaque UUID. Worktrees and checkout paths are aliases in the local registry. Renaming a directory does not rename the journal.",
+		"cue": "when linking worktrees",
+		"tags": ["project-identity"],
+		"paths": ["src/project/resolver.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-000a-7000-8000-00000000000a",
+		"at": "2026-08-10T01:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "The user-owned registry lives under muninn-projects/registry.json in the pi agent directory. Repository files cannot select another local store.",
+		"cue": "when finding project mappings",
+		"tags": ["local-registry"],
+		"paths": ["src/project/registry.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-000b-7000-8000-00000000000b",
+		"at": "2026-08-10T02:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Muninn never injects memories into the system prompt. The agent explicitly calls journal_search and selects IDs for journal_context.",
+		"cue": "when loading historical evidence",
+		"tags": ["explicit-retrieval"],
+		"paths": ["src/tools/journal-context.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-000c-7000-8000-00000000000c",
+		"at": "2026-08-10T03:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Journal JSONL is sharded by member UUID, host UUID and UTC month. A host appends only to its own shard.",
+		"cue": "when multiple machines write records",
+		"tags": ["sharded-storage"],
+		"paths": ["src/journal/jsonl.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-000d-7000-8000-00000000000d",
+		"at": "2026-08-10T04:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Append holds a store lock, redacts sensitive strings, validates the record and fsyncs the complete JSON line. Unterminated crash tails are ignored by readers.",
+		"cue": "when a process crashes during append",
+		"tags": ["durable-append"],
+		"paths": ["src/journal/jsonl.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-000e-7000-8000-00000000000e",
+		"at": "2026-08-10T05:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Projects without a locally approved remote commit their journal locally. Ambient Git origin and shared manifest URLs do not authorize network transfer.",
+		"cue": "when keeping a private local journal",
+		"tags": ["local-only"],
+		"paths": ["src/sync/remote.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-000f-7000-8000-00000000000f",
+		"at": "2026-08-10T06:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Approve a journal destination with muninn project remote URL. This local transport approval is stored in Git configuration outside synchronized project metadata.",
+		"cue": "when authorizing a sync destination",
+		"tags": ["sync-authority"],
+		"paths": ["src/sync/remote.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-0010-7000-8000-000000000010",
+		"at": "2026-08-10T07:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Sync commits pending changes, fetches, rebases and pushes without force. Only additive project manifest conflicts can be union merged; journal byte conflicts stop synchronization.",
+		"cue": "when synchronization reports a conflict",
+		"tags": ["sync-conflict"],
+		"paths": ["src/sync/sync.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-0011-7000-8000-000000000011",
+		"at": "2026-08-10T08:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Use muninn project share to print the approved URL and project identity. A teammate runs muninn project join URL inside their checkout to clone and register the journal.",
+		"cue": "when inviting a teammate",
+		"tags": ["sharing"],
+		"paths": ["src/project/onboarding.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-0012-7000-8000-000000000012",
+		"at": "2026-08-10T09:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Joining validates project identity, regular data files, member host ownership and journal lines before making the local checkout mapping visible.",
+		"cue": "when an untrusted journal clone is rejected",
+		"tags": ["join-validation"],
+		"paths": ["src/project/onboarding.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-0013-7000-8000-000000000013",
+		"at": "2026-08-10T10:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "The disposable lexical index is stored in .index/journal-v2.json. It can be deleted or rebuilt; canonical JSONL remains the source of truth.",
+		"cue": "when rebuilding search data",
+		"tags": ["lexical-index"],
+		"paths": ["src/journal/query-index.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-0014-7000-8000-000000000014",
+		"at": "2026-08-10T11:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Search normalizes Unicode with NFKC and lowercase. It supports exact tokens, prefixes of at least three characters, and one-edit fuzzy matches for longer tokens.",
+		"cue": "when a search contains a typo",
+		"tags": ["search-matching"],
+		"paths": ["src/journal/query-index.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-0015-7000-8000-000000000015",
+		"at": "2026-08-11T00:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Corrections are appended as new records linked with corrects, supersedes or retracts. Original evidence is preserved and competing corrections remain visible as conflicts.",
+		"cue": "when changing an earlier decision",
+		"tags": ["relations"],
+		"paths": ["src/journal/relations.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-0016-7000-8000-000000000016",
+		"at": "2026-08-11T01:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Model tools may append only agent notes and annotation relations. Only direct human actions create user records or decide correction and resolution meaning.",
+		"cue": "when trusting model-written evidence",
+		"tags": ["authority"],
+		"paths": ["src/journal/writer.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-0017-7000-8000-000000000017",
+		"at": "2026-08-11T02:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "A substantive task with tool activity produces a concise outcome after the agent finishes. Ordinary chat is skipped. Output is validated before a journal record is appended.",
+		"cue": "when automatic task capture happens",
+		"tags": ["capture-outcome"],
+		"paths": ["src/capture/outcome.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-0018-7000-8000-000000000018",
+		"at": "2026-08-11T03:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Before compaction, pending task evidence is captured once. Persisted task state prevents duplicate outcomes after resume and preserves continuation links.",
+		"cue": "when a session compacts or resumes",
+		"tags": ["checkpoint"],
+		"paths": ["src/session/state.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-0019-7000-8000-000000000019",
+		"at": "2026-08-11T04:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Built-in redaction masks credentials and unsafe display characters before signing or writing evidence. Redaction is conservative and users should still inspect journals before sharing.",
+		"cue": "when a note contains credentials",
+		"tags": ["redaction"],
+		"paths": ["src/redact.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-001a-7000-8000-00000000001a",
+		"at": "2026-08-11T05:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Cryptographic signing is optional and initialized explicitly with muninn crypto init. Private Ed25519 keys stay in the local agent directory and are never synchronized.",
+		"cue": "when enabling signed evidence",
+		"tags": ["crypto-bootstrap"],
+		"paths": ["src/governance/setup.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-001b-7000-8000-00000000001b",
+		"at": "2026-08-11T06:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "A synchronized self-proof does not establish trust. Verify a teammate fingerprint out of band, then explicitly pin their member signing key on each machine.",
+		"cue": "when trusting a teammate signing key",
+		"tags": ["trust-pins"],
+		"paths": ["src/governance/trust.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-001c-7000-8000-00000000001c",
+		"at": "2026-08-11T07:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Key rotation publishes a successor signed by the predecessor and revokes the predecessor at handover. A durable private pending transaction makes failed commits retryable.",
+		"cue": "when rotating a signing identity",
+		"tags": ["rotation"],
+		"paths": ["src/governance/operations.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-001d-7000-8000-00000000001d",
+		"at": "2026-08-11T08:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Revoked or compromised keys cannot grant inherited trust to later successors. A retrospective compromise can invalidate an existing transition. Explicit verified pins can establish a new trust anchor.",
+		"cue": "when a signing key is compromised",
+		"tags": ["revocation"],
+		"paths": ["src/governance/verification.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-001e-7000-8000-00000000001e",
+		"at": "2026-08-11T09:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Observe mode labels evidence without rejecting legacy records. Require mode enforces signatures prospectively after a chosen cutoff; compromised history can be retained or rejected.",
+		"cue": "when enforcing signed records",
+		"tags": ["policy"],
+		"paths": ["src/governance/enforcement.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-001f-7000-8000-00000000001f",
+		"at": "2026-08-11T10:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "External integrations submit observations with provider, external ID and observed_at. Replaying identical content is idempotent; reusing the same external ID with changed content is refused.",
+		"cue": "when replaying an integration delivery",
+		"tags": ["external-ingest"],
+		"paths": ["src/integrations/protocol.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-0020-7000-8000-000000000020",
+		"at": "2026-08-11T11:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Historical observations retain the producer timestamp in integration.observed_at. The journal at timestamp records local import time so a new signing key can attest to old events.",
+		"cue": "when importing older audit events",
+		"tags": ["backfill"],
+		"paths": ["src/journal/writer.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-0021-7000-8000-000000000021",
+		"at": "2026-08-12T00:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Transcript exchange uses age encryption and explicit export and import commands. Original session paths stay local; imported encrypted copies do not automatically enter model context.",
+		"cue": "when sharing encrypted transcript evidence",
+		"tags": ["transcript"],
+		"paths": ["src/integrations/transcript.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
+	},
+	{
+		"id": "j-019c1000-0022-7000-8000-000000000022",
+		"at": "2026-08-12T01:00:00.000Z",
+		"type": "note",
+		"source": "user",
+		"channel": "cli",
+		"body": "Readers fingerprint journal shards, manifest and local trust files before retrieval. Changes from another live session refresh cached records, relations and verification state.",
+		"cue": "when another process appends evidence",
+		"tags": ["live-query"],
+		"paths": ["src/journal/query.ts"],
+		"git": {
+			"worktree": "/work/muninn",
+			"cwd": "/work/muninn",
+			"branch": "main",
+			"head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"dirty": false
+		}
 	}
 ]
